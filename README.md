@@ -2,7 +2,7 @@
 
 WonderLearn is a planned, local-first visual learning assistant. Its intended workflow connects camera-based study-material understanding with component selection, retrieval from a learner's own documents, and evidence-grounded explanations.
 
-The repository contains the architecture blueprint, M0 local development foundation, and M1 local PDF ingestion with evidence retrieval. M1 indexes extracted PDF text locally with SQLite FTS5 and returns cited excerpts; it does not provide generated model inference, OCR, semantic search, or learning features, and no performance results are claimed.
+The repository contains the architecture blueprint, M0 local development foundation, M1 PDF ingestion with SQLite FTS5, and M2 optional local semantic retrieval. M2 adds CPU sentence embeddings and hybrid retrieval while retaining lexical-only operation; there is still no generated model inference, OCR, or learning feature, and the small synthetic evaluation is not a product-quality claim.
 
 ## Architecture
 
@@ -20,4 +20,4 @@ The repository contains the architecture blueprint, M0 local development foundat
 
 ## Current phase
 
-M1: local PDF ingestion and evidence retrieval. See [Windows setup and run instructions](docs/development/setup.md), the [API contract proposal](docs/architecture/api-contracts.md), the [roadmap](docs/architecture/implementation-roadmap.md), and [open decisions](docs/architecture/architecture-decisions.md). Answers are extractive evidence bundles with explicit abstention, not LLM-generated explanations.
+M2: optional local semantic retrieval and embeddings. See [Windows setup and run instructions](docs/development/setup.md), the [semantic retrieval guide and evaluation](docs/development/semantic-retrieval.md), the [API contract proposal](docs/architecture/api-contracts.md), the [roadmap](docs/architecture/implementation-roadmap.md), and [open decisions](docs/architecture/architecture-decisions.md). Answers remain extractive evidence bundles with explicit abstention, not LLM-generated explanations.

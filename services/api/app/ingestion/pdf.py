@@ -16,6 +16,28 @@ from app.errors import ApiError
 from app.ingestion.chunking import chunk_page_text
 from app.storage import store_document
 
+QUERY_STOP_WORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "called",
+    "do",
+    "does",
+    "for",
+    "from",
+    "how",
+    "in",
+    "is",
+    "of",
+    "on",
+    "the",
+    "to",
+    "what",
+    "which",
+    "with",
+}
+
 
 def safe_display_filename(filename: str | None) -> str:
     candidate = (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
@@ -146,7 +168,11 @@ def ingest_pdf(
 
 
 def build_fts_query(query: str) -> str:
-    terms = re.findall(r"\w+", query, flags=re.UNICODE)[:32]
+    terms = [
+        term
+        for term in re.findall(r"\w+", query, flags=re.UNICODE)
+        if term.casefold() not in QUERY_STOP_WORDS
+    ][:32]
     if not terms:
         raise ApiError(422, "INVALID_QUERY", "The query must contain at least one searchable term.")
     return " OR ".join('"' + term.replace('"', '""') + '"' for term in terms)

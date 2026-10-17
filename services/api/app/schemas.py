@@ -18,12 +18,14 @@ class RetrievalRequest(ApiModel):
     query: str = Field(min_length=1, max_length=2_000)
     document_ids: list[str] | None = Field(default=None, max_length=50)
     limit: int = Field(default=5, ge=1, le=100)
+    mode: Literal["lexical", "semantic", "hybrid"] | None = None
 
 
 class AnswerRequest(ApiModel):
     question: str = Field(min_length=1, max_length=2_000)
     document_ids: list[str] | None = Field(default=None, max_length=50)
     limit: int = Field(default=5, ge=1, le=100)
+    mode: Literal["lexical", "semantic", "hybrid"] | None = None
 
 
 class Capabilities(BaseModel):
@@ -58,6 +60,7 @@ class DocumentResponse(ApiModel):
     created_at: str
     parser_version: str
     status: Literal["indexed"]
+    embedding_status: Literal["not_requested", "indexed", "incomplete", "unavailable"] | None = None
 
 
 class DocumentsResponse(ApiModel):
@@ -70,8 +73,12 @@ class DeleteDocumentResponse(ApiModel):
 
 
 class RetrievalInfo(ApiModel):
-    method: Literal["fts5_bm25"]
+    method: Literal["fts5_bm25", "cosine_similarity", "rrf_hybrid"]
     rank: int
+    similarity: float | None = None
+    rrf_score: float | None = None
+    lexical_rank: int | None = None
+    semantic_rank: int | None = None
 
 
 class CitationResponse(ApiModel):
@@ -88,6 +95,8 @@ class CitationResponse(ApiModel):
 
 class RetrievalResponse(ApiModel):
     results: list[CitationResponse]
+    retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"] = "lexical"
+    fallback_reason: str | None = None
 
 
 class AnswerResponse(ApiModel):
@@ -96,3 +105,30 @@ class AnswerResponse(ApiModel):
     answer_type: Literal["extractive_evidence", "abstention"]
     answer: str | None
     citations: list[CitationResponse]
+    retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"] = "lexical"
+    fallback_reason: str | None = None
+
+
+class EmbeddingIndexCounts(ApiModel):
+    total_chunks: int
+    indexed_chunks: int
+    current_chunks: int
+    stale_chunks: int
+    missing_chunks: int
+
+
+class EmbeddingStatusResponse(ApiModel):
+    model_id: str
+    model_revision: str
+    dimensions: int
+    model_state: Literal["not_checked", "available", "unavailable"]
+    index: EmbeddingIndexCounts
+
+
+class RebuildEmbeddingsRequest(ApiModel):
+    force: bool = False
+
+
+class RebuildEmbeddingsResponse(EmbeddingStatusResponse):
+    indexed_this_run: int
+    complete: bool

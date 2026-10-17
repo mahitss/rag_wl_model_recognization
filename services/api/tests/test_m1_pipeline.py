@@ -180,6 +180,16 @@ def test_retrieval_answer_citations_and_query_validation(tmp_path):
         request_with_lifespan(app, "POST", "/api/v1/retrieve", json={"query": "  "})
     )
     assert empty.status_code == 422
+    common_words = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/retrieve",
+            json={"query": "What is the boiling point of nitrogen?"},
+        )
+    )
+    assert common_words.status_code == 200
+    assert common_words.json()["results"] == []
 
 
 def test_delete_removes_evidence_and_allows_reingestion(tmp_path):

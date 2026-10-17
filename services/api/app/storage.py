@@ -1,11 +1,13 @@
 """SQLite schema, readiness checks, and transactional document persistence."""
 
+import math
 import sqlite3
+import struct
 from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
@@ -67,6 +69,23 @@ def initialize_storage(database_path: Path) -> None:
                 CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
                 USING fts5(chunk_id UNINDEXED, text, tokenize='unicode61')
                 """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS chunk_embeddings (
+                    chunk_id TEXT PRIMARY KEY REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                    model_id TEXT NOT NULL,
+                    model_revision TEXT NOT NULL,
+                    config_hash TEXT NOT NULL,
+                    dimensions INTEGER NOT NULL CHECK (dimensions > 0),
+                    vector BLOB NOT NULL,
+                    CHECK (length(vector) = dimensions * 4)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_config "
+                "ON chunk_embeddings(config_hash, chunk_id)"
             )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -213,3 +232,145 @@ def search_chunks(
     with closing(connect_database(database_path)) as connection:
         rows = connection.execute(sql, parameters).fetchall()
     return [dict(row) for row in rows]
+
+
+def fetch_chunk_batch(
+    database_path: Path,
+    *,
+    after_chunk_id: str | None,
+    limit: int,
+) -> list[dict[str, Any]]:
+    """Read a bounded chunk batch for incremental embedding indexing."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT c.chunk_id, c.text, e.model_id, e.model_revision, e.config_hash
+            FROM chunks AS c
+            LEFT JOIN chunk_embeddings AS e ON e.chunk_id = c.chunk_id
+            WHERE (? IS NULL OR c.chunk_id > ?)
+            ORDER BY c.chunk_id ASC
+            LIMIT ?
+            """,
+            (after_chunk_id, after_chunk_id, limit),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def store_chunk_embeddings(
+    database_path: Path,
+    entries: list[dict[str, Any]],
+) -> None:
+    """Atomically upsert a batch of embeddings without touching source chunks or FTS."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.executemany(
+                """
+                INSERT INTO chunk_embeddings(
+                    chunk_id, model_id, model_revision, config_hash, dimensions, vector
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(chunk_id) DO UPDATE SET
+                    model_id=excluded.model_id,
+                    model_revision=excluded.model_revision,
+                    config_hash=excluded.config_hash,
+                    dimensions=excluded.dimensions,
+                    vector=excluded.vector
+                """,
+                [
+                    (
+                        entry["chunk_id"],
+                        entry["model_id"],
+                        entry["model_revision"],
+                        entry["config_hash"],
+                        entry["dimensions"],
+                        entry["vector"],
+                    )
+                    for entry in entries
+                ],
+            )
+
+
+def embedding_index_counts(
+    database_path: Path,
+    *,
+    config_hash: str,
+    dimensions: int,
+) -> dict[str, int]:
+    """Return total, current, stale, and missing vector counts for one config."""
+    with closing(connect_database(database_path)) as connection:
+        total = int(connection.execute("SELECT count(*) FROM chunks").fetchone()[0])
+        vectors = connection.execute(
+            "SELECT config_hash, dimensions, vector FROM chunk_embeddings"
+        ).fetchall()
+    indexed = len(vectors)
+    current = 0
+    for row in vectors:
+        vector_bytes = row["vector"]
+        if (
+            row["config_hash"] != config_hash
+            or row["dimensions"] != dimensions
+            or len(vector_bytes) != dimensions * 4
+        ):
+            continue
+        vector = struct.unpack(f"<{dimensions}f", vector_bytes)
+        norm = math.hypot(*vector)
+        if all(math.isfinite(value) for value in vector) and math.isclose(norm, 1.0, abs_tol=1e-3):
+            current += 1
+    return {
+        "total_chunks": total,
+        "indexed_chunks": indexed,
+        "current_chunks": current,
+        "stale_chunks": indexed - current,
+        "missing_chunks": total - current,
+    }
+
+
+def search_semantic_chunks(
+    database_path: Path,
+    *,
+    config_hash: str,
+    dimensions: int,
+    query_vector: tuple[float, ...],
+    limit: int,
+    document_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Exact cosine search over normalized vectors, bounded in memory by the result limit."""
+    import heapq
+    import math
+    import struct
+
+    sql = """
+        SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
+               c.chunk_index, c.char_start, c.char_end, c.text, e.vector
+        FROM chunk_embeddings AS e
+        JOIN chunks AS c ON c.chunk_id = e.chunk_id
+        JOIN documents AS d ON d.document_id = c.document_id
+        WHERE e.config_hash = ? AND e.dimensions = ? AND length(e.vector) = ?
+    """
+    parameters: list[Any] = [config_hash, dimensions, dimensions * 4]
+    if document_ids is not None:
+        if not document_ids:
+            return []
+        placeholders = ",".join("?" for _ in document_ids)
+        sql += f" AND c.document_id IN ({placeholders})"
+        parameters.extend(document_ids)
+
+    heap: list[tuple[float, str, dict[str, Any]]] = []
+    with closing(connect_database(database_path)) as connection:
+        for row in connection.execute(sql, parameters):
+            vector_bytes = row["vector"]
+            if len(vector_bytes) != dimensions * 4:
+                continue
+            vector = struct.unpack(f"<{dimensions}f", vector_bytes)
+            norm = math.hypot(*vector)
+            if not all(math.isfinite(value) for value in vector) or not math.isclose(
+                norm, 1.0, abs_tol=1e-3
+            ):
+                continue
+            similarity = math.fsum(a * b for a, b in zip(query_vector, vector, strict=True))
+            item = {key: row[key] for key in row.keys() if key != "vector"}
+            item["similarity"] = similarity
+            key = str(row["chunk_id"])
+            heapq.heappush(heap, (similarity, key, item))
+            if len(heap) > limit:
+                heapq.heappop(heap)
+    return [item for _, _, item in sorted(heap, key=lambda value: (-value[0], value[1]))]

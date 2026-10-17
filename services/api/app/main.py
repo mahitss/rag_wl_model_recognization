@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.routes import make_error_response, router
 from app.config import Settings, get_settings
+from app.embeddings.service import EmbeddingService
 from app.errors import ApiError
 from app.storage import initialize_storage
 
@@ -24,12 +25,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="WonderLearn API",
         version="0.1.0",
         description=(
-            "Local PDF ingestion and SQLite FTS5 evidence retrieval. "
-            "M1 does not include generated model inference."
+            "Local PDF ingestion with SQLite FTS5 and optional CPU embedding retrieval. "
+            "Answers remain extractive; no generated model inference is included."
         ),
         lifespan=lifespan,
     )
     application.state.settings = configured
+    application.state.embedding_service = EmbeddingService(configured)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=configured.allowed_origins,

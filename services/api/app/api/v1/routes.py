@@ -5,21 +5,25 @@ import uuid
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Request, UploadFile
+from fastapi import APIRouter, Body, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.config import Settings
+from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
 from app.ingestion.pdf import ingest_pdf
-from app.retrieval.service import answer_from_evidence, retrieve
+from app.retrieval.service import answer_from_evidence, retrieve_with_mode
 from app.schemas import (
     AnswerRequest,
     AnswerResponse,
     DeleteDocumentResponse,
     DocumentResponse,
     DocumentsResponse,
+    EmbeddingStatusResponse,
     HealthResponse,
     ReadinessResponse,
+    RebuildEmbeddingsRequest,
+    RebuildEmbeddingsResponse,
     RetrievalRequest,
     RetrievalResponse,
 )
@@ -34,6 +38,10 @@ def _settings(request: Request) -> Settings:
 
 def _database_path(request: Request) -> Path:
     return _settings(request).database_path
+
+
+def _embedding_service(request: Request) -> EmbeddingService:
+    return request.app.state.embedding_service
 
 
 def _safe_document(document: dict[str, Any]) -> dict[str, Any]:
@@ -93,7 +101,17 @@ def upload_document(request: Request, file: Annotated[UploadFile, File()]) -> di
         database_path=settings.database_path,
         settings=settings,
     )
-    return _safe_document(metadata)  # type: ignore[arg-type]
+    response = _safe_document(metadata)  # type: ignore[arg-type]
+    response["embeddingStatus"] = "not_requested"
+    if settings.retrieval_mode != "lexical":
+        try:
+            result = _embedding_service(request).rebuild(settings.database_path)
+            response["embeddingStatus"] = "indexed" if result["complete"] else "incomplete"
+        except ModelUnavailable:
+            response["embeddingStatus"] = "unavailable"
+        except (OSError, sqlite3.Error, ValueError):
+            response["embeddingStatus"] = "incomplete"
+    return response
 
 
 @router.get("/documents", response_model=DocumentsResponse, tags=["documents"])
@@ -129,13 +147,15 @@ def retrieve_evidence(request: Request, payload: RetrievalRequest) -> dict[str, 
             "INVALID_REQUEST",
             f"The result limit cannot exceed {settings.max_retrieval_results}.",
         )
-    results = retrieve(
+    return retrieve_with_mode(
         settings.database_path,
         query=payload.query,
         document_ids=payload.document_ids,
         limit=payload.limit,
+        mode=payload.mode or settings.retrieval_mode,
+        settings=settings,
+        embeddings=_embedding_service(request),
     )
-    return {"results": results}
 
 
 @router.post("/answers", response_model=AnswerResponse, tags=["retrieval"])
@@ -147,13 +167,63 @@ def answer(request: Request, payload: AnswerRequest) -> dict[str, Any]:
             "INVALID_REQUEST",
             f"The result limit cannot exceed {settings.max_retrieval_results}.",
         )
-    evidence = retrieve(
+    search = retrieve_with_mode(
         settings.database_path,
         query=payload.question,
         document_ids=payload.document_ids,
         limit=payload.limit,
+        mode=payload.mode or settings.retrieval_mode,
+        settings=settings,
+        embeddings=_embedding_service(request),
     )
-    return answer_from_evidence(payload.question, evidence)
+    response = answer_from_evidence(payload.question, search["results"])
+    response["retrievalMode"] = search["retrievalMode"]
+    response["fallbackReason"] = search["fallbackReason"]
+    return response
+
+
+@router.get("/embeddings/status", response_model=EmbeddingStatusResponse, tags=["embeddings"])
+def embedding_status(request: Request) -> dict[str, Any]:
+    service = _embedding_service(request)
+    try:
+        service.load_model()
+    except ModelUnavailable:
+        pass
+    try:
+        return service.status(_database_path(request))
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503, "STORAGE_UNAVAILABLE", "Local embedding storage is unavailable."
+        ) from exc
+
+
+@router.post(
+    "/embeddings/rebuild",
+    response_model=RebuildEmbeddingsResponse,
+    tags=["embeddings"],
+)
+def rebuild_embeddings(
+    request: Request,
+    payload: Annotated[RebuildEmbeddingsRequest | None, Body()] = None,
+) -> dict[str, Any]:
+    try:
+        return _embedding_service(request).rebuild(
+            _database_path(request), force=payload.force if payload else False
+        )
+    except ModelUnavailable as exc:
+        raise ApiError(
+            503,
+            "EMBEDDING_MODEL_UNAVAILABLE",
+            "The local embedding model is unavailable. Install and cache the configured model.",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503, "STORAGE_UNAVAILABLE", "Local embedding storage is unavailable."
+        ) from exc
+    except ValueError as exc:
+        raise ApiError(
+            503, "EMBEDDING_FAILED", "The embedding index could not be rebuilt."
+        ) from exc
 
 
 def make_error_response(status_code: int, code: str, message: str, details: object = None):

@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import field_validator
@@ -24,6 +25,16 @@ class Settings(BaseSettings):
     chunk_size_chars: int = 2_000
     chunk_overlap_chars: int = 200
     max_retrieval_results: int = 10
+    retrieval_mode: Literal["lexical", "semantic", "hybrid"] = "lexical"
+    embedding_model_id: str = "BAAI/bge-small-en-v1.5"
+    embedding_model_revision: str = "c32e6154d1bb7a0e47c5e745fd895e7700f44385"
+    embedding_dimensions: int = 384
+    embedding_batch_size: int = 32
+    lexical_candidate_limit: int = 50
+    semantic_candidate_limit: int = 50
+    rrf_k: int = 60
+    semantic_min_similarity: float = 0.60
+    embedding_cache_path: Path = Path("artifacts/embedding-models")
 
     @field_validator("database_path")
     @classmethod
@@ -58,12 +69,45 @@ class Settings(BaseSettings):
         "max_extracted_chars",
         "chunk_size_chars",
         "max_retrieval_results",
+        "embedding_dimensions",
+        "embedding_batch_size",
+        "lexical_candidate_limit",
+        "semantic_candidate_limit",
+        "rrf_k",
     )
     @classmethod
     def positive_limits(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("Configured limits must be positive")
         return value
+
+    @field_validator(
+        "embedding_dimensions",
+        "embedding_batch_size",
+        "lexical_candidate_limit",
+        "semantic_candidate_limit",
+        "rrf_k",
+    )
+    @classmethod
+    def embedding_limits_are_bounded(cls, value: int, info) -> int:
+        maximum = 4_096 if info.field_name == "embedding_dimensions" else 1_000
+        if value > maximum:
+            raise ValueError(f"{info.field_name} cannot exceed {maximum}")
+        return value
+
+    @field_validator("semantic_min_similarity")
+    @classmethod
+    def semantic_threshold_is_valid(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("WL_SEMANTIC_MIN_SIMILARITY must be between 0 and 1")
+        return value
+
+    @field_validator("embedding_model_id", "embedding_model_revision")
+    @classmethod
+    def model_settings_are_nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Embedding model identifier and revision cannot be empty")
+        return value.strip()
 
     @field_validator("chunk_overlap_chars")
     @classmethod

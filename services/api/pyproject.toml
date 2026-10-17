@@ -17,11 +17,15 @@ dev = [
     "pytest==9.1.1",
     "ruff==0.17.1",
 ]
+semantic = [
+    "fastembed==0.9.0",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
 pythonpath = ["services/api"]
+markers = ["integration: opt-in tests requiring a locally cached pretrained model"]
 
 [tool.ruff]
 line-length = 100

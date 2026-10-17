@@ -1,0 +1,59 @@
+{
+  "description": "Small synthetic English science corpus for a deterministic retrieval smoke evaluation.",
+  "documents": [
+    {
+      "id": "eval-photosynthesis",
+      "filename": "photosynthesis.txt",
+      "pages": [
+        "Photosynthesis is the process plants use to convert sunlight, water, and carbon dioxide into glucose and oxygen. The glucose stores chemical energy for growth.",
+        "Chlorophyll is the green pigment in leaves that absorbs light energy. Light powers the chemical reactions that make glucose from water and carbon dioxide."
+      ]
+    },
+    {
+      "id": "eval-water-cycle",
+      "filename": "water-cycle.txt",
+      "pages": [
+        "Evaporation, also called vaporization, happens when liquid water gains heat and becomes water vapor. The Sun supplies much of this energy in the water cycle.",
+        "Water vapor cools and condenses into cloud droplets. Precipitation returns water from clouds to Earth's surface as rain or snow."
+      ]
+    },
+    {
+      "id": "eval-gravity",
+      "filename": "gravity.txt",
+      "pages": [
+        "Gravity is the attraction between objects that have mass. Earth's gravity pulls objects toward the planet's center.",
+        "The gravitational force between two objects gets weaker as the distance between them increases."
+      ]
+    }
+  ],
+  "queries": [
+    {
+      "query": "What is photosynthesis?",
+      "relevant": ["eval-photosynthesis-p1"]
+    },
+    {
+      "query": "How do green plants make sugar using sunlight?",
+      "relevant": ["eval-photosynthesis-p1", "eval-photosynthesis-p2"]
+    },
+    {
+      "query": "What is water vapor formation from heated liquid called?",
+      "relevant": ["eval-water-cycle-p1"]
+    },
+    {
+      "query": "How does chlorophyll help make glucose and oxygen?",
+      "relevant": ["eval-photosynthesis-p1", "eval-photosynthesis-p2"]
+    },
+    {
+      "query": "What causes objects to attract one another?",
+      "relevant": ["eval-gravity-p1"]
+    },
+    {
+      "query": "How do plate tectonics produce earthquakes?",
+      "relevant": []
+    },
+    {
+      "query": "What is the boiling point of nitrogen?",
+      "relevant": []
+    }
+  ]
+}

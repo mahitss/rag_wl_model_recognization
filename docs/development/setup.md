@@ -4,7 +4,7 @@ M1 adds local PDF ingestion, page-aware chunking, SQLite FTS5 retrieval, and an 
 
 ## Verified toolchain and pinned packages
 
-The host reports Python 3.13.5, Node.js 24.11.0, npm 11.6.0, Git 2.52.0, and uv 0.12.15. `uv` selected Python 3.12.13 for the locked project environment. The backend declares Python `>=3.11,<3.14`, FastAPI 0.143.3, pydantic-settings 2.16.0, Uvicorn 0.54.0, pypdf 6.21.1 (BSD-3-Clause), and python-multipart 0.0.32. Development tools are pytest 9.1.1, HTTPX 0.28.1, and Ruff 0.17.1. Frontend dependencies are pinned exactly in `apps/web/package.json` and `package-lock.json` (React 19.3.1, Vite 8.3.4, TypeScript 7.0.2). `uv.lock` and `package-lock.json` capture resolved dependency trees.
+The host reports Python 3.13.5, Node.js 24.11.0, npm 11.6.0, Git 2.52.0, and uv 0.12.15. `uv` selected Python 3.12.13 for the locked project environment. The backend declares Python `>=3.11,<3.14`, FastAPI 0.143.3, pydantic-settings 2.16.0, Uvicorn 0.54.0, pypdf 6.21.1 (BSD-3-Clause), and python-multipart 0.0.32. The optional semantic extra pins FastEmbed 0.9.0 (Apache-2.0); it uses CPU ONNX Runtime and does not install PyTorch. Development tools are pytest 9.1.1, HTTPX 0.28.1, and Ruff 0.17.1. Frontend dependencies are pinned exactly in `apps/web/package.json` and `package-lock.json` (React 19.3.1, Vite 8.3.4, TypeScript 7.0.2). `uv.lock` and `package-lock.json` capture resolved dependency trees.
 
 Vite 8 requires a supported modern Node runtime; use an even-numbered Node LTS release compatible with Vite 8. This workspace was built with Node 24. Official release references: [FastAPI release notes](https://fastapi.tiangolo.com/release-notes/), [React versions](https://react.dev/versions), and [Vite supported versions](https://vite.dev/releases/).
 
@@ -63,6 +63,16 @@ Settings use the `WL_` prefix and load `.env` from the current working directory
 - `WL_CHUNK_SIZE_CHARS`: maximum chunk length. Default: 2000 characters.
 - `WL_CHUNK_OVERLAP_CHARS`: overlap between chunks on one page. Default: 200 characters.
 - `WL_MAX_RETRIEVAL_RESULTS`: maximum search results accepted per request. Default: 10.
+- `WL_RETRIEVAL_MODE`: default API retrieval mode: `lexical`, `semantic`, or `hybrid`. Default: `lexical`.
+- `WL_EMBEDDING_MODEL_ID` and `WL_EMBEDDING_MODEL_REVISION`: pinned model and upstream revision. See the [semantic retrieval guide](semantic-retrieval.md).
+- `WL_EMBEDDING_DIMENSIONS`: expected vector size. Default: 384.
+- `WL_EMBEDDING_BATCH_SIZE`: chunks per encode batch. Default: 32.
+- `WL_EMBEDDING_CACHE_PATH`: local model cache; default `artifacts/embedding-models` is ignored by Git.
+- `WL_LEXICAL_CANDIDATE_LIMIT`, `WL_SEMANTIC_CANDIDATE_LIMIT`: per-retriever candidate limits. Default: 50 each.
+- `WL_RRF_K`: reciprocal-rank-fusion constant. Default: 60.
+- `WL_SEMANTIC_MIN_SIMILARITY`: cosine cutoff used to abstain from weak semantic matches. Default: 0.60; this initial cutoff is based on a small synthetic set and is not a factual-confidence score.
+
+Lexical retrieval works with the default setup. To install optional semantic runtime support and explicitly cache its model, follow the [semantic retrieval guide](semantic-retrieval.md). No model is downloaded by normal setup or API startup.
 
 ## M1 local PDF workflow
 
@@ -80,7 +90,7 @@ Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/api/v1/documents/$d
 
 `POST /api/v1/documents` extracts text with pypdf, chunks each page deterministically, stores document metadata and text in SQLite, and inserts FTS5 index rows in one transaction. Original PDFs are not retained. Duplicate file bytes return HTTP 409 with the existing document ID. Unsupported, malformed, encrypted, empty, or textless/scanned PDFs are rejected; OCR is not available. Limits are configurable above.
 
-`POST /api/v1/retrieve` uses SQLite FTS5 lexical OR matching over up to 32 normalized query tokens and ranks matches with BM25. Results include the exact stored chunk and page provenance. It is lexical retrieval, not semantic search. `POST /api/v1/answers` packages the retrieved excerpts verbatim with their citations; when no chunks match, it returns `insufficient_evidence` and a null answer. It does not synthesize an explanation or call a model.
+`POST /api/v1/retrieve` defaults to SQLite FTS5 lexical OR matching over up to 32 query tokens after common English stop words are removed; FTS5 BM25 ranks matches. Optional semantic or hybrid modes are described in the [semantic retrieval guide](semantic-retrieval.md). Results include the exact stored chunk and page provenance. `POST /api/v1/answers` packages retrieved excerpts verbatim with their citations; semantic results below the configured cutoff abstain, and lexical retrieval abstains when it finds no matches. It does not synthesize an explanation or call a model.
 
 ## Project locations
 

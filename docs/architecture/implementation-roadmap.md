@@ -20,7 +20,9 @@ This is a first learning slice, not a production-ready product.
 
 Semantic retrieval was delivered early as an optional capability in commit `245737d`; it does not replace the FTS5 baseline. The synthetic evaluation currently shows no measured semantic or hybrid improvement over lexical retrieval. The similarity cutoff is an operational configuration value, not a calibrated confidence threshold. This early delivery does not mean the original retrieval evaluation gate was satisfied.
 
-The original M2 milestone, curated diagram concept selection, remains outstanding and is the next planned product milestone. The dense retrieval portion of M5 has been delivered early; the local tutor experiment and human review of answers and citations remain outstanding. Milestone ordering and IDs below continue to describe the planned product sequence.
+The original M2 milestone, curated diagram concept selection, is now implemented as the next slice after M2.1. The dense retrieval portion of M5 has been delivered early; the local tutor experiment and human review of answers and citations remain outstanding. Milestone ordering and IDs below continue to describe the planned product sequence.
+
+**M2 implementation update:** The first vertical slice is now implemented with an authored photosynthesis SVG, server-validated normalized rectangular regions, curated concept aliases, and evidence lookup through the existing retrieval service. Region selection uses pointer and keyboard-accessible buttons. Unsupported diagram/region IDs return safe errors, and concepts without matching local material return explicit insufficient evidence. This closes the original M2 selection milestone; camera alignment and recognition remain M3 work.
 
 | Milestone | Depends on | Estimate | Definition of done |
 |---|---|---:|---|

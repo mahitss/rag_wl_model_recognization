@@ -1,6 +1,6 @@
 # Local setup (Windows PowerShell)
 
-M1 adds local PDF ingestion, page-aware chunking, SQLite FTS5 retrieval, and an evidence-only answer endpoint to the M0 API. It does **not** implement OCR, semantic search, generated model inference, a tutor, or camera processing. Nothing downloads a dataset/model or calls a paid service.
+The local application includes M1 PDF ingestion and FTS5 retrieval, optional M2 semantic retrieval, and one M2 authored photosynthesis diagram with curated region selection and evidence lookup. It does **not** implement OCR, generated model inference, open-world diagram recognition, or camera processing. Nothing downloads a dataset/model automatically or calls a paid service.
 
 ## Verified toolchain and pinned packages
 
@@ -39,6 +39,12 @@ npm run dev --prefix apps/web
 Open `http://127.0.0.1:5173`. API health is `http://127.0.0.1:8000/api/v1/health`; readiness is `http://127.0.0.1:8000/api/v1/ready`; interactive OpenAPI docs are at `http://127.0.0.1:8000/docs`.
 
 Health reports process liveness and explicitly marks planned capabilities false. Readiness opens the configured SQLite database, runs `PRAGMA quick_check`, and verifies FTS5 can create a temporary virtual table. The default database path is `data/local/wonderlearn.sqlite3`; it is local and ignored by Git. Readiness returning HTTP 503 means a real storage prerequisite failed.
+
+## Curated diagram workflow
+
+Open the frontend and choose a labeled region in the authored photosynthesis diagram. The outlined region buttons work with a pointer and keyboard; the region list below the image is an additional accessible control. Selection resolves a server-owned concept and searches the indexed local PDFs through the same retrieval service used by `/retrieve`. Results show the stored filename, page, exact passage, and citation/chunk ID. With no matching evidence, the UI says so and shows no citation. Upload permitted PDFs through the existing `/api/v1/documents` endpoint before selecting concepts. The only current diagram is `photosynthesis-cycle`; arbitrary client queries, diagram IDs, document filters, and fabricated source metadata are not accepted by this flow.
+
+Diagram geometry uses normalized image-relative rectangles: each `{x, y, width, height}` value is between 0 and 1, and the frontend positions buttons as percentages over the same aspect-ratio-preserving image stage.
 
 ## Checks
 
@@ -94,7 +100,7 @@ Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/api/v1/documents/$d
 
 ## Project locations
 
-- `apps/web`: minimal React/TypeScript shell.
+- `apps/web`: React/TypeScript diagram selection and evidence interface; the authored SVG is under `public/diagrams`.
 - `services/api`: FastAPI modular-monolith boundary and system routes.
 - `ml/notebooks`: future training experiments; no training code in M0.
 - `data/manifests`: dataset provenance metadata only.

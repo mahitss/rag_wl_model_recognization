@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 640" role="img" aria-labelledby="title description">
+  <title id="title">Photosynthesis</title>
+  <desc id="description">Light and water and carbon dioxide enter a plant. The plant uses chlorophyll to make glucose and release oxygen.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#55766a" />
+    </marker>
+    <linearGradient id="leaf" x2="0" y2="1">
+      <stop stop-color="#8ecb76" />
+      <stop offset="1" stop-color="#347b58" />
+    </linearGradient>
+  </defs>
+  <rect width="1000" height="640" rx="32" fill="#fffefa" />
+  <circle cx="145" cy="150" r="62" fill="#f3c969" />
+  <g stroke="#e2b64f" stroke-width="9" stroke-linecap="round">
+    <path d="M145 55V34M145 266v-21M50 150H29M261 150h-21M77 82 62 67M228 233l-15-15M213 82l15-15M77 218l-15 15" />
+  </g>
+  <text x="145" y="248" text-anchor="middle" fill="#25483d" font-family="system-ui,sans-serif" font-size="26" font-weight="700">Light energy</text>
+  <path d="M280 168C355 168 360 230 420 245" fill="none" stroke="#55766a" stroke-width="8" marker-end="url(#arrow)" />
+  <text x="310" y="125" fill="#466259" font-family="system-ui,sans-serif" font-size="22">sunlight</text>
+  <path d="M110 418c-12 30-14 65-5 91m44-86c8 33 9 63 2 87" fill="none" stroke="#6aa6cf" stroke-width="10" stroke-linecap="round" />
+  <text x="78" y="555" fill="#25483d" font-family="system-ui,sans-serif" font-size="23" font-weight="700">Water + CO₂</text>
+  <path d="M250 462C333 462 354 405 418 378" fill="none" stroke="#55766a" stroke-width="8" marker-end="url(#arrow)" />
+  <path d="M510 495V322" fill="none" stroke="#72543d" stroke-width="17" stroke-linecap="round" />
+  <path d="M505 384C433 380 403 336 421 291c63-7 100 24 84 82Zm14-53c2-77 48-112 112-94 1 61-42 103-112 94Zm-10-16c-49-49-42-100 13-129 45 36 47 85-13 129Z" fill="url(#leaf)" stroke="#347b58" stroke-width="5" />
+  <path d="M504 373 444 310m75 17 74-47m-74 34 2-81" stroke="#e2f0cf" stroke-width="5" stroke-linecap="round" />
+  <text x="505" y="550" text-anchor="middle" fill="#25483d" font-family="system-ui,sans-serif" font-size="24" font-weight="700">Chlorophyll in leaves</text>
+  <path d="M632 250C690 220 704 190 738 174" fill="none" stroke="#55766a" stroke-width="8" marker-end="url(#arrow)" />
+  <rect x="754" y="99" width="204" height="117" rx="22" fill="#f5efd9" />
+  <text x="856" y="149" text-anchor="middle" fill="#25483d" font-family="system-ui,sans-serif" font-size="27" font-weight="700">Glucose</text>
+  <text x="856" y="184" text-anchor="middle" fill="#466259" font-family="system-ui,sans-serif" font-size="18">stored chemical energy</text>
+  <path d="M630 408C687 430 705 466 740 483" fill="none" stroke="#55766a" stroke-width="8" marker-end="url(#arrow)" />
+  <rect x="754" y="432" width="204" height="117" rx="22" fill="#e9f3f6" />
+  <text x="856" y="483" text-anchor="middle" fill="#25483d" font-family="system-ui,sans-serif" font-size="27" font-weight="700">Oxygen</text>
+  <text x="856" y="518" text-anchor="middle" fill="#466259" font-family="system-ui,sans-serif" font-size="18">released to the air</text>
+</svg>

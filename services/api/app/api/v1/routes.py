@@ -9,6 +9,7 @@ from fastapi import APIRouter, Body, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 
 from app.config import Settings
+from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
 from app.ingestion.pdf import ingest_pdf
@@ -17,6 +18,13 @@ from app.schemas import (
     AnswerRequest,
     AnswerResponse,
     DeleteDocumentResponse,
+    DiagramConceptResponse,
+    DiagramEvidenceRequest,
+    DiagramEvidenceResponse,
+    DiagramGeometry,
+    DiagramRegionResponse,
+    DiagramResponse,
+    DiagramsResponse,
     DocumentResponse,
     DocumentsResponse,
     EmbeddingStatusResponse,
@@ -180,6 +188,93 @@ def answer(request: Request, payload: AnswerRequest) -> dict[str, Any]:
     response["retrievalMode"] = search["retrievalMode"]
     response["fallbackReason"] = search["fallbackReason"]
     return response
+
+
+@router.get("/diagrams", response_model=DiagramsResponse, tags=["diagrams"])
+def diagrams() -> dict[str, Any]:
+    response = []
+    for diagram in DIAGRAMS.values():
+        concepts = {concept.concept_id: concept for concept in diagram.concepts}
+        response.append(
+            DiagramResponse(
+                diagram_id=diagram.diagram_id,
+                title=diagram.title,
+                description=diagram.description,
+                image_url=diagram.image_url,
+                image_aspect_ratio=diagram.image_aspect_ratio,
+                regions=[
+                    DiagramRegionResponse(
+                        region_id=region.region_id,
+                        concept_id=region.concept_id,
+                        display_name=concepts[region.concept_id].display_name,
+                        aliases=list(concepts[region.concept_id].aliases),
+                        geometry=DiagramGeometry(
+                            x=region.x,
+                            y=region.y,
+                            width=region.width,
+                            height=region.height,
+                        ),
+                    )
+                    for region in diagram.regions
+                ],
+            )
+        )
+    return {"diagrams": response}
+
+
+@router.post(
+    "/diagrams/{diagram_id}/regions/{region_id}/evidence",
+    response_model=DiagramEvidenceResponse,
+    tags=["diagrams"],
+)
+def diagram_region_evidence(
+    request: Request,
+    diagram_id: str,
+    region_id: str,
+    payload: DiagramEvidenceRequest,
+) -> dict[str, Any]:
+    diagram = get_diagram(diagram_id)
+    if diagram is None:
+        raise ApiError(404, "DIAGRAM_NOT_FOUND", "The requested diagram is not supported.")
+    resolved = resolve_region(diagram_id, region_id)
+    if resolved is None:
+        raise ApiError(
+            404,
+            "DIAGRAM_REGION_NOT_FOUND",
+            "The selected diagram region was not found.",
+        )
+
+    _, _, concept = resolved
+    settings = _settings(request)
+    if payload.limit > settings.max_retrieval_results:
+        raise ApiError(
+            422,
+            "INVALID_REQUEST",
+            f"The result limit cannot exceed {settings.max_retrieval_results}.",
+        )
+    result = retrieve_with_mode(
+        settings.database_path,
+        query=concept.retrieval_query,
+        document_ids=None,
+        limit=payload.limit,
+        mode=settings.retrieval_mode,
+        settings=settings,
+        embeddings=_embedding_service(request),
+    )
+    citations = result["results"]
+    return {
+        "status": "evidence_found" if citations else "insufficient_evidence",
+        "diagramId": diagram_id,
+        "regionId": region_id,
+        "concept": DiagramConceptResponse(
+            concept_id=concept.concept_id,
+            display_name=concept.display_name,
+            aliases=list(concept.aliases),
+        ),
+        "results": citations,
+        "retrievalMode": result["retrievalMode"],
+        "fallbackReason": result["fallbackReason"],
+    }
 
 
 @router.get("/embeddings/status", response_model=EmbeddingStatusResponse, tags=["embeddings"])

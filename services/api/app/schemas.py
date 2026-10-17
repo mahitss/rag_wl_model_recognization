@@ -99,6 +99,54 @@ class RetrievalResponse(ApiModel):
     fallback_reason: str | None = None
 
 
+class DiagramGeometry(ApiModel):
+    x: float
+    y: float
+    width: float
+    height: float
+
+
+class DiagramRegionResponse(ApiModel):
+    region_id: str
+    concept_id: str
+    display_name: str
+    aliases: list[str]
+    geometry: DiagramGeometry
+
+
+class DiagramResponse(ApiModel):
+    diagram_id: str
+    title: str
+    description: str
+    image_url: str
+    image_aspect_ratio: float
+    regions: list[DiagramRegionResponse]
+
+
+class DiagramsResponse(ApiModel):
+    diagrams: list[DiagramResponse]
+
+
+class DiagramEvidenceRequest(ApiModel):
+    limit: int = Field(default=5, ge=1, le=10)
+
+
+class DiagramConceptResponse(ApiModel):
+    concept_id: str
+    display_name: str
+    aliases: list[str]
+
+
+class DiagramEvidenceResponse(ApiModel):
+    status: Literal["evidence_found", "insufficient_evidence"]
+    diagram_id: str
+    region_id: str
+    concept: DiagramConceptResponse
+    results: list[CitationResponse]
+    retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"]
+    fallback_reason: str | None = None
+
+
 class AnswerResponse(ApiModel):
     question: str
     status: Literal["evidence_found", "insufficient_evidence"]

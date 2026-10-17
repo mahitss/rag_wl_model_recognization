@@ -18,6 +18,12 @@ class Settings(BaseSettings):
 
     database_path: Path = Path("data/local/wonderlearn.sqlite3")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    max_upload_bytes: int = 10 * 1024 * 1024
+    max_pdf_pages: int = 250
+    max_extracted_chars: int = 5_000_000
+    chunk_size_chars: int = 2_000
+    chunk_overlap_chars: int = 200
+    max_retrieval_results: int = 10
 
     @field_validator("database_path")
     @classmethod
@@ -45,6 +51,29 @@ class Settings(BaseSettings):
             ):
                 raise ValueError("M0 CORS origins must use localhost or 127.0.0.1 over HTTP")
         return ",".join(origins)
+
+    @field_validator(
+        "max_upload_bytes",
+        "max_pdf_pages",
+        "max_extracted_chars",
+        "chunk_size_chars",
+        "max_retrieval_results",
+    )
+    @classmethod
+    def positive_limits(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Configured limits must be positive")
+        return value
+
+    @field_validator("chunk_overlap_chars")
+    @classmethod
+    def overlap_must_be_smaller_than_chunk_size(cls, value: int, info) -> int:
+        if value < 0:
+            raise ValueError("WL_CHUNK_OVERLAP_CHARS cannot be negative")
+        chunk_size = info.data.get("chunk_size_chars", 2_000)
+        if value >= chunk_size:
+            raise ValueError("WL_CHUNK_OVERLAP_CHARS must be smaller than WL_CHUNK_SIZE_CHARS")
+        return value
 
     @property
     def allowed_origins(self) -> list[str]:

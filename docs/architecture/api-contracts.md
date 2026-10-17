@@ -1,5 +1,7 @@
 # API contracts (proposal)
 
+This document remains the broader proposed product contract. M1 implements the local PDF and evidence subset listed in `docs/development/setup.md`; future concepts, tutoring sessions, semantic retrieval, generated answers, and the representative schemas below remain proposals rather than shipped behavior. M1's `/answers` response is explicitly extractive and abstains when retrieval finds no evidence.
+
 Base path `/api/v1`; JSON camelCase in browser and explicit Pydantic mapping at API boundary. All IDs are opaque strings. Enforce request-size and field limits. Local origins only in MVP; configure CORS narrowly.
 
 ## Endpoints

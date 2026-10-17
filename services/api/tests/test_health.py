@@ -35,8 +35,8 @@ def test_health_reports_only_implemented_capabilities(tmp_path):
         "status": "ok",
         "service": "wonderlearn-api",
         "capabilities": {
-            "document_ingestion": False,
-            "retrieval": False,
+            "document_ingestion": True,
+            "retrieval": True,
             "model_inference": False,
         },
     }

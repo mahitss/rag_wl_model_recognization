@@ -1,14 +1,15 @@
-"""FastAPI application factory and M0 health/readiness routes."""
+"""FastAPI application factory and local learning API routes."""
 
 from contextlib import asynccontextmanager
-from typing import Any
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
+from app.api.v1.routes import make_error_response, router
 from app.config import Settings, get_settings
-from app.storage import check_storage, initialize_storage
+from app.errors import ApiError
+from app.storage import initialize_storage
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -22,38 +23,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application = FastAPI(
         title="WonderLearn API",
         version="0.1.0",
-        description="Local development foundation. Learning capabilities are not implemented yet.",
+        description=(
+            "Local PDF ingestion and SQLite FTS5 evidence retrieval. "
+            "M1 does not include generated model inference."
+        ),
         lifespan=lifespan,
     )
+    application.state.settings = configured
     application.add_middleware(
         CORSMiddleware,
         allow_origins=configured.allowed_origins,
         allow_credentials=False,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["Content-Type"],
     )
 
-    @application.get("/api/v1/health", tags=["system"])
-    def health() -> dict[str, Any]:
-        return {
-            "status": "ok",
-            "service": "wonderlearn-api",
-            "capabilities": {
-                "document_ingestion": False,
-                "retrieval": False,
-                "model_inference": False,
-            },
-        }
+    @application.exception_handler(ApiError)
+    async def handle_api_error(_, exc: ApiError):
+        return make_error_response(exc.status_code, exc.code, exc.message, exc.details)
 
-    @application.get("/api/v1/ready", tags=["system"])
-    def readiness() -> JSONResponse:
-        checks = check_storage(configured.database_path)
-        ready = all(checks.values())
-        return JSONResponse(
-            status_code=200 if ready else 503,
-            content={"status": "ready" if ready else "not_ready", "checks": checks},
-        )
+    @application.exception_handler(RequestValidationError)
+    async def handle_validation_error(_, __: RequestValidationError):
+        return make_error_response(422, "INVALID_REQUEST", "The request did not pass validation.")
 
+    application.include_router(router)
     return application
 
 

@@ -4,6 +4,7 @@ import httpx
 
 from app.config import Settings
 from app.main import create_app
+from app.storage import check_storage
 
 
 def make_app(tmp_path):
@@ -15,8 +16,10 @@ def make_app(tmp_path):
     return create_app(settings)
 
 
-async def get_with_lifespan(app, path):
+async def get_with_lifespan(app, path, before_request=None):
     async with app.router.lifespan_context(app):
+        if before_request is not None:
+            before_request()
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://testserver",
@@ -49,18 +52,24 @@ def test_readiness_checks_real_sqlite_and_fts5_dependencies(tmp_path):
     }
 
 
-def test_readiness_reports_failed_dependency_check(tmp_path, monkeypatch):
-    import app.main
+def test_missing_database_fails_check_and_readiness_without_creating_file(tmp_path):
+    app = make_app(tmp_path)
+    database_path = tmp_path / "local" / "wonderlearn.sqlite3"
 
-    monkeypatch.setattr(
-        app.main,
-        "check_storage",
-        lambda _: {"sqlite": False, "sqlite_fts5": False},
+    assert check_storage(database_path) == {"sqlite": False, "sqlite_fts5": False}
+    assert not database_path.exists()
+
+    response = asyncio.run(
+        get_with_lifespan(
+            app,
+            "/api/v1/ready",
+            before_request=lambda: database_path.unlink(),
+        )
     )
-    response = asyncio.run(get_with_lifespan(make_app(tmp_path), "/api/v1/ready"))
 
     assert response.status_code == 503
     assert response.json() == {
         "status": "not_ready",
         "checks": {"sqlite": False, "sqlite_fts5": False},
     }
+    assert not database_path.exists()

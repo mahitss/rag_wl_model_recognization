@@ -2,7 +2,7 @@
 
 WonderLearn is a planned, local-first visual learning assistant. Its intended workflow connects camera-based study-material understanding with component selection, retrieval from a learner's own documents, and evidence-grounded explanations.
 
-This repository currently contains the architecture blueprint only. No application features, model training, or experiments have been implemented, and no performance results are claimed.
+The repository now contains the architecture blueprint and M0 development foundation. The API and frontend are scaffolds only: document ingestion, retrieval, model inference, and learning features are not implemented, and no performance results are claimed.
 
 ## Architecture
 
@@ -20,4 +20,4 @@ This repository currently contains the architecture blueprint only. No applicati
 
 ## Current phase
 
-Architecture and requirements planning. The first proposed implementation milestone is a local document ingestion and evidence retrieval vertical slice, followed by explicit concept selection from a single supported diagram. See the [roadmap](docs/architecture/implementation-roadmap.md) and [open decisions](docs/architecture/architecture-decisions.md).
+M0: reproducible local development foundation. See [Windows setup and run instructions](docs/development/setup.md), the [roadmap](docs/architecture/implementation-roadmap.md), and [open decisions](docs/architecture/architecture-decisions.md). The recommended next milestone is M1: local PDF ingestion and evidence retrieval.

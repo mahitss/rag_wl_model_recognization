@@ -1,0 +1,64 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Python environments, packages, caches, and test output
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist-python/
+build/
+
+# Node dependencies and build output
+node_modules/
+**/node_modules/
+apps/web/dist/
+apps/web/.vite/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# User data, local databases, datasets, model weights, generated artifacts
+data/raw/**
+!data/raw/.gitkeep
+data/processed/**
+!data/processed/.gitkeep
+data/local/**
+datasets/raw/**
+datasets/processed/**
+artifacts/**
+!artifacts/.gitkeep
+evaluations/generated/**
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.gguf
+*.model
+*.ckpt
+*.h5
+*.parquet
+*.arrow
+
+# Editors and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

@@ -42,6 +42,8 @@
 
 **Reason:** smallest reliable local stack; FTS5 provides keyword search and BM25 ranking.
 
+**Implementation update (M2.1):** Semantic retrieval was delivered early in commit `245737d` as an optional local capability while retaining FTS5. The small synthetic comparison measured identical lexical, semantic, and hybrid metrics, so it did not demonstrate the need specified by this ADR. The delivery records a sequencing exception; it does not satisfy or remove the evaluation gate for making dense retrieval the preferred or mandatory path. The existing similarity cutoff is operational configuration, not calibrated confidence.
+
 ## Open decisions for founder
 
 1. Is the intended product ultimately fully open source, or should the architecture preserve the possibility of proprietary distribution? This affects AGPL choices and model licensing.

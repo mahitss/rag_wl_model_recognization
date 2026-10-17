@@ -16,6 +16,12 @@ This is a first learning slice, not a production-ready product.
 
 ## Ordered milestones
 
+### Delivery status and sequencing update
+
+Semantic retrieval was delivered early as an optional capability in commit `245737d`; it does not replace the FTS5 baseline. The synthetic evaluation currently shows no measured semantic or hybrid improvement over lexical retrieval. The similarity cutoff is an operational configuration value, not a calibrated confidence threshold. This early delivery does not mean the original retrieval evaluation gate was satisfied.
+
+The original M2 milestone, curated diagram concept selection, remains outstanding and is the next planned product milestone. The dense retrieval portion of M5 has been delivered early; the local tutor experiment and human review of answers and citations remain outstanding. Milestone ordering and IDs below continue to describe the planned product sequence.
+
 | Milestone | Depends on | Estimate | Definition of done |
 |---|---|---:|---|
 | M0: Environment and repository scaffold | none | 1–2 days | verified versions, project boundaries, license/data policy, run notes |
@@ -23,7 +29,7 @@ This is a first learning slice, not a production-ready product.
 | M2: Curated diagram concept selection | M1 | 1 week | one licensed/authored diagram, configured regions, concept resolver, retrieval link, pointer fallback |
 | M3: Camera alignment and interaction | M2 | 1–2 weeks | camera permission/lifecycle, normalized 2D overlays, movement/occlusion stale state, usability fallback |
 | M4: Gesture baseline | M3 | 2–4 weeks | rule baseline, collection consent process, evaluated landmarks/classifier comparison and false activation report |
-| M5: Dense hybrid retrieval + local tutor experiment | M1 | 2–4 weeks | model/license manifest, CPU benchmark, retrieval comparison, answer/citation human review, optional fallback |
+| M5: Dense hybrid retrieval + local tutor experiment (dense retrieval delivered early) | M1 | 2–4 weeks | local tutor experiment, human review of answers and citations, optional fallback |
 | M6: Vision dataset/model pilot | M2 | 3–6 weeks | dataset card, group split, baseline, candidate model report, no promotion without criteria |
 | M7: Teaching mode and progress | M1/M5 | 2–4 weeks | authored quiz rubric, response evaluation, opt-in local progress/deletion, learning task evaluation |
 | M8: Multimodal retrieval | M6 | 4–8+ weeks | figure assets and captions provenance, evaluated visual retrieval, clear text/image capability boundary |

@@ -167,6 +167,7 @@ def test_rebuild_is_batched_persistent_and_idempotent(tmp_path):
     second = service.rebuild(settings.database_path)
     assert second["indexedThisRun"] == 0
     assert second["complete"] is True
+    assert len(model.batch_sizes) == 2
 
     with sqlite3.connect(settings.database_path) as connection:
         assert connection.execute("SELECT count(*) FROM chunk_embeddings").fetchone()[0] == 4
@@ -183,6 +184,44 @@ def test_rebuild_is_batched_persistent_and_idempotent(tmp_path):
     assert semantic["results"][0]["citationId"] == "chunk-plant-p1"
     assert semantic["results"][0]["pageNumber"] == 1
     assert semantic["results"][0]["retrieval"]["method"] == "cosine_similarity"
+
+
+def test_rebuild_repairs_invalid_vector_with_matching_config_hash(tmp_path):
+    settings = make_settings(tmp_path)
+    seed_chunks(settings.database_path)
+    service, model = fake_service(settings)
+    service.rebuild(settings.database_path)
+    initial_status = service.status(settings.database_path)["index"]
+    assert initial_status["current_chunks"] == 4
+
+    with sqlite3.connect(settings.database_path) as connection:
+        connection.execute(
+            "UPDATE chunk_embeddings SET vector = ? WHERE chunk_id = ?",
+            ("x" * (4 * settings.embedding_dimensions), "chunk-plant-p1"),
+        )
+
+    invalid_status = service.status(settings.database_path)
+    assert invalid_status["index"]["stale_chunks"] == 1
+    assert invalid_status["index"]["missing_chunks"] == 1
+    with pytest.raises(ApiError) as error:
+        retrieve_with_mode(
+            settings.database_path,
+            query="photosynthesis",
+            document_ids=None,
+            limit=3,
+            mode="semantic",
+            settings=settings,
+            embeddings=service,
+        )
+    assert error.value.code == "EMBEDDING_INDEX_INCOMPLETE"
+
+    batches_before_repair = len(model.batch_sizes)
+    repaired = service.rebuild(settings.database_path)
+    assert repaired["indexedThisRun"] == 1
+    assert repaired["index"]["current_chunks"] == 4
+    assert repaired["index"]["stale_chunks"] == 0
+    assert repaired["index"]["missing_chunks"] == 0
+    assert len(model.batch_sizes) == batches_before_repair + 1
 
 
 def test_model_revision_change_marks_index_stale_until_rebuild(tmp_path):

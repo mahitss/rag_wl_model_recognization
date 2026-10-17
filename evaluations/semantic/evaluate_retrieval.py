@@ -1,7 +1,10 @@
 """Run the small synthetic lexical/semantic/hybrid retrieval comparison."""
 
 import hashlib
+import importlib.metadata
 import json
+import platform
+import sqlite3
 import sys
 import tempfile
 import time
@@ -14,6 +17,47 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "services" / "api"))
 
 DATASET_PATH = Path(__file__).with_name("retrieval_eval.json")
 TOP_K = 5
+
+
+def evaluation_settings(
+    settings,
+    *,
+    query_instruction_prefix: str,
+    lexical_query_stop_words: set[str],
+) -> dict:
+    """Describe the effective settings used by this evaluation run."""
+    return {
+        "model_id": settings.embedding_model_id,
+        "model_revision": settings.embedding_model_revision,
+        "embedding_dimensions": settings.embedding_dimensions,
+        "embedding_batch_size": settings.embedding_batch_size,
+        "query_instruction_prefix": query_instruction_prefix,
+        "vector_normalization": "L2",
+        "similarity_metric": "cosine",
+        "default_retrieval_mode": settings.retrieval_mode,
+        "retrieval_modes_compared": ["lexical", "semantic", "hybrid"],
+        "lexical_candidate_limit": settings.lexical_candidate_limit,
+        "semantic_candidate_limit": settings.semantic_candidate_limit,
+        "evaluation_result_limit": TOP_K,
+        "configured_max_retrieval_results": settings.max_retrieval_results,
+        "rrf_k": settings.rrf_k,
+        "semantic_min_similarity": settings.semantic_min_similarity,
+        "chunk_size_chars": settings.chunk_size_chars,
+        "chunk_overlap_chars": settings.chunk_overlap_chars,
+        "lexical_ranker": "SQLite FTS5 BM25",
+        "fts5_tokenizer": "unicode61",
+        "lexical_query_term_limit": 32,
+        "lexical_query_stop_words": sorted(lexical_query_stop_words),
+    }
+
+
+def runtime_versions() -> dict[str, str]:
+    return {
+        "python": platform.python_version(),
+        "sqlite": sqlite3.sqlite_version,
+        "fastembed": importlib.metadata.version("fastembed"),
+        "onnxruntime": importlib.metadata.version("onnxruntime"),
+    }
 
 
 def _load_synthetic_corpus(
@@ -73,23 +117,20 @@ def _metrics(results: list[dict], relevant_ids: set[str]) -> dict[str, float]:
 
 def main() -> int:
     from app.config import Settings, get_settings
-    from app.embeddings.service import EmbeddingService, ModelUnavailable
+    from app.embeddings.service import (
+        QUERY_INSTRUCTION_PREFIX as query_instruction_prefix,
+    )
+    from app.embeddings.service import (
+        EmbeddingService,
+        ModelUnavailable,
+    )
+    from app.ingestion.pdf import QUERY_STOP_WORDS as lexical_query_stop_words
     from app.retrieval.service import retrieve_with_mode
     from app.storage import initialize_storage, store_document
 
     dataset = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
     base = get_settings()
-    settings = Settings(
-        _env_file=None,
-        database_path=Path(tempfile.gettempdir()) / "wonderlearn-m2-eval.sqlite3",
-        embedding_cache_path=base.embedding_cache_path,
-        embedding_model_id=base.embedding_model_id,
-        embedding_model_revision=base.embedding_model_revision,
-        retrieval_mode="lexical",
-        max_retrieval_results=TOP_K,
-        lexical_candidate_limit=20,
-        semantic_candidate_limit=20,
-    )
+    settings = Settings(_env_file=None, **base.model_dump())
 
     with tempfile.TemporaryDirectory(prefix="wonderlearn-eval-") as temporary:
         database_path = Path(temporary) / "eval.sqlite3"
@@ -154,6 +195,26 @@ def main() -> int:
                     "modelId": settings.embedding_model_id,
                     "modelRevision": settings.embedding_model_revision,
                     "dimensions": settings.embedding_dimensions,
+                    "datasetSha256": hashlib.sha256(
+                        DATASET_PATH.read_bytes()
+                    ).hexdigest(),
+                    "runtimeVersions": runtime_versions(),
+                    "effectiveSettings": evaluation_settings(
+                        settings,
+                        query_instruction_prefix=query_instruction_prefix,
+                        lexical_query_stop_words=lexical_query_stop_words,
+                    ),
+                    "metricConventions": {
+                        "recallAt5": "macro average over answerable queries only",
+                        "precisionAt5": (
+                            "relevant results divided by 5 for every query; missing result slots "
+                            "and unanswerable queries count as non-relevant"
+                        ),
+                        "meanReciprocalRank": (
+                            "mean reciprocal first relevant rank across all queries; "
+                            "unanswerable queries contribute zero"
+                        ),
+                    },
                     "corpusChunks": index_result["index"]["total_chunks"],
                     "indexWallSeconds": round(index_wall_seconds, 3),
                     "indexCpuSeconds": round(index_cpu_seconds, 3),

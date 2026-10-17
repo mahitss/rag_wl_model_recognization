@@ -244,7 +244,8 @@ def fetch_chunk_batch(
     with closing(connect_database(database_path)) as connection:
         rows = connection.execute(
             """
-            SELECT c.chunk_id, c.text, e.model_id, e.model_revision, e.config_hash
+            SELECT c.chunk_id, c.text, e.model_id, e.model_revision, e.config_hash,
+                   e.dimensions, e.vector
             FROM chunks AS c
             LEFT JOIN chunk_embeddings AS e ON e.chunk_id = c.chunk_id
             WHERE (? IS NULL OR c.chunk_id > ?)
@@ -289,6 +290,20 @@ def store_chunk_embeddings(
             )
 
 
+def is_valid_normalized_vector_blob(vector_bytes: bytes | None, dimensions: int) -> bool:
+    """Return whether a stored vector has the expected float32 shape and unit norm."""
+    if not isinstance(vector_bytes, (bytes, bytearray, memoryview)):
+        return False
+    try:
+        if len(vector_bytes) != dimensions * 4:
+            return False
+        vector = struct.unpack(f"<{dimensions}f", vector_bytes)
+    except (TypeError, struct.error):
+        return False
+    norm = math.hypot(*vector)
+    return all(math.isfinite(value) for value in vector) and math.isclose(norm, 1.0, abs_tol=1e-3)
+
+
 def embedding_index_counts(
     database_path: Path,
     *,
@@ -308,13 +323,10 @@ def embedding_index_counts(
         if (
             row["config_hash"] != config_hash
             or row["dimensions"] != dimensions
-            or len(vector_bytes) != dimensions * 4
+            or not is_valid_normalized_vector_blob(vector_bytes, dimensions)
         ):
             continue
-        vector = struct.unpack(f"<{dimensions}f", vector_bytes)
-        norm = math.hypot(*vector)
-        if all(math.isfinite(value) for value in vector) and math.isclose(norm, 1.0, abs_tol=1e-3):
-            current += 1
+        current += 1
     return {
         "total_chunks": total,
         "indexed_chunks": indexed,
@@ -335,8 +347,6 @@ def search_semantic_chunks(
 ) -> list[dict[str, Any]]:
     """Exact cosine search over normalized vectors, bounded in memory by the result limit."""
     import heapq
-    import math
-    import struct
 
     sql = """
         SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
@@ -358,14 +368,9 @@ def search_semantic_chunks(
     with closing(connect_database(database_path)) as connection:
         for row in connection.execute(sql, parameters):
             vector_bytes = row["vector"]
-            if len(vector_bytes) != dimensions * 4:
+            if not is_valid_normalized_vector_blob(vector_bytes, dimensions):
                 continue
             vector = struct.unpack(f"<{dimensions}f", vector_bytes)
-            norm = math.hypot(*vector)
-            if not all(math.isfinite(value) for value in vector) or not math.isclose(
-                norm, 1.0, abs_tol=1e-3
-            ):
-                continue
             similarity = math.fsum(a * b for a, b in zip(query_vector, vector, strict=True))
             item = {key: row[key] for key in row.keys() if key != "vector"}
             item["similarity"] = similarity

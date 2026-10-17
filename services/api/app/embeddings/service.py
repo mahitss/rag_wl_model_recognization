@@ -13,8 +13,11 @@ from app.config import Settings
 from app.storage import (
     embedding_index_counts,
     fetch_chunk_batch,
+    is_valid_normalized_vector_blob,
     store_chunk_embeddings,
 )
+
+QUERY_INSTRUCTION_PREFIX = "Represent this sentence for searching relevant passages: "
 
 
 class ModelUnavailable(RuntimeError):
@@ -125,10 +128,9 @@ class EmbeddingService:
             return []
         model = self.load_model()
         all_vectors: list[tuple[float, ...]] = []
-        prefix = "Represent this sentence for searching relevant passages: "
         for start in range(0, len(texts), self.settings.embedding_batch_size):
             batch = texts[start : start + self.settings.embedding_batch_size]
-            inputs = [prefix + text for text in batch] if query else batch
+            inputs = [QUERY_INSTRUCTION_PREFIX + text for text in batch] if query else batch
             try:
                 with self._inference_lock:
                     raw_vectors = list(
@@ -176,7 +178,16 @@ class EmbeddingService:
             if not batch:
                 break
             cursor = str(batch[-1]["chunk_id"])
-            pending = [chunk for chunk in batch if force or chunk["config_hash"] != config_hash]
+            pending = [
+                chunk
+                for chunk in batch
+                if force
+                or chunk["config_hash"] != config_hash
+                or chunk["dimensions"] != self.settings.embedding_dimensions
+                or not is_valid_normalized_vector_blob(
+                    chunk["vector"], self.settings.embedding_dimensions
+                )
+            ]
             if not pending:
                 continue
             vectors = self.embed_texts([str(chunk["text"]) for chunk in pending])

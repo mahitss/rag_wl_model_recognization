@@ -16,7 +16,7 @@ Scanned PDFs: detect pages with little/no text and report them as unavailable in
 
 - **Lexical:** SQLite FTS5 with BM25 ranking; it is built into SQLite's full-text search facilities, subject to checking the actual bundled SQLite build. [SQLite FTS5](https://www.sqlite.org/fts5.html)
 - **Dense:** optional local sentence encoder plus FAISS CPU or a simple exact cosine scan for small corpora. FAISS project metadata identifies MIT licensing; check wheel/platform compatibility on Windows before selecting it. [FAISS](https://github.com/facebookresearch/faiss)
-- **Hybrid:** fetch top N from each branch, normalize ranks, combine using reciprocal-rank fusion, deduplicate overlap, preserve source metadata. Avoid arbitrary similarity thresholds until calibrated on real labeled questions.
+- **Hybrid:** fetch top N from each branch, normalize ranks, combine using reciprocal-rank fusion, deduplicate overlap, preserve source metadata. Avoid treating similarity thresholds as calibrated until evaluated on real labeled questions. The optional implementation delivered early in commit `245737d` has a configurable `0.60` operational cutoff; the current synthetic comparison shows no measured semantic or hybrid improvement, and this cutoff is not a confidence score or a calibrated threshold.
 - **Reranking:** defer. Train/evaluate a local reranker only after retrieval judgments demonstrate a ranking gap.
 
 FTS5-only is the first working baseline and does not require a separate vector database. SQLite FTS5 uses BM25 ranking; lexical search is often strong for exact diagram labels and textbook terms. Dense search helps paraphrases but introduces model download/license/latency and may be worse on domain terms. Keep both replaceable.

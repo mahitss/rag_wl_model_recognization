@@ -7,7 +7,7 @@ Initial deployment is one local web client and one local FastAPI process on the 
 ```mermaid
 flowchart LR
   U[Learner] --> W[React / TypeScript web client]
-  W -->|camera frames stay in browser; permission gated| C[Browser camera + MediaPipe landmarks]
+  W -->|camera frames stay in browser; permission gated| C[Browser camera + local ORB tracker]
   W -->|selection / question / document upload| A[FastAPI modular monolith]
   A --> I[Ingestion and provenance]
   I --> S[(SQLite: metadata, chunks, FTS5)]
@@ -21,8 +21,8 @@ flowchart LR
 
 ## Components and responsibility boundaries
 
-- **Web client:** webcam permission/lifecycle, frame throttling, canvas/SVG overlays, selection UX, accessible pointer fallback, citations, question and quiz display. The M3 prototype displays camera frames locally only; it does not upload or record them. Its diagram overlay is manually aligned, not automatically tracked.
-- **Browser vision adapter:** hand landmarks through MediaPipe when available; camera capture remains separate from backend. Detector adapters may run local inference in browser or backend later, selected by measured performance and license review.
+- **Web client:** webcam permission/lifecycle, frame throttling, canvas/SVG overlays, selection UX, accessible pointer fallback, citations, question and quiz display. M3/M4 camera frames remain local and are not uploaded, recorded, or persisted. The known diagram overlay can be automatically tracked with manual alignment fallback.
+- **Browser vision adapter:** the M4 prototype uses local OpenCV.js ORB descriptors, Hamming matching, and RANSAC homography for one known planar diagram. Camera capture and transient frame analysis remain in the browser and separate from the backend. Learned detector adapters remain gated on data and evaluation; the prototype makes no general detection claim.
 - **API:** validation, orchestration, error mapping, document and session endpoints. It does not own model training.
 - **Ingestion:** file validation, text extraction, page-aware segmentation, content hashes, incremental indexing and deletion.
 - **Retrieval:** SQLite FTS5 BM25 first; optional local embedding model and vector index; reciprocal-rank fusion; provenance-preserving results.
@@ -41,7 +41,7 @@ flowchart LR
 
 For MVP, use a static supported diagram with predefined regions or user-confirmed 2D regions. A browser overlay uses the same normalized image/video coordinate space as its source, with explicit transforms for `object-fit`, crop, mirroring, and device pixel ratio. On camera movement, target loss, or occlusion, hide or mark the overlay stale and require re-detection/reconfirmation. Never claim world coordinates or physical distance from a monocular webcam. Gesture pointing is a convenience; click/touch/list fallback remains available.
 
-The current M3 prototype implements this fallback with manual translation/scale/rotation, orientation-change invalidation, and a learner-operated stale/reconfirm control. It does not automatically observe camera motion, target loss, or occlusion; automatic detection remains future work and the learner must mark the alignment stale when the page or camera moves or the page is covered.
+M3 implements manual translation/scale/rotation as an accessible fallback. M4 adds feature matching against the authored photosynthesis diagram and updates a projective 2D overlay while the target remains visible. Weak/missing matches pause camera-region selection and the tracker attempts reacquisition. This is a bounded planar prototype, not world-anchored AR; occlusion, glare, low texture, severe perspective, motion blur, and similar-looking pages can cause loss or false matches. The current implementation has simulated tests only; real-camera accuracy remains unmeasured.
 
 ## Reliability and deployment
 

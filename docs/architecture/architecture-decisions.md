@@ -26,6 +26,8 @@
 
 **Reason:** localization and concept mapping are the core useful task; constrained labels make training and rejection evaluation tractable.
 
+**Implementation note (M4):** A classical ORB feature-matching/homography proof of concept now tracks only the existing authored planar photosynthesis diagram. It uses no learned detector and does not satisfy the annotated-data, held-out evaluation, or promotion gates above. Broader detector work remains deferred until those gates can be met.
+
 ### ADR-004: Browser hand landmarks, learned gesture later
 
 **Decision:** MediaPipe landmark extraction with rules baseline; custom classifier only after a consented, diverse dataset and evaluation plan exist.

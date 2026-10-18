@@ -2,6 +2,11 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CameraPanel } from "./CameraPanel";
+import { createDiagramTracker } from "./opencvTracker";
+
+vi.mock("./opencvTracker", () => ({
+  createDiagramTracker: vi.fn().mockResolvedValue({ detect: () => null, dispose: vi.fn() }),
+}));
 
 const diagram = {
   imageUrl: "/diagrams/photosynthesis.svg",
@@ -46,6 +51,7 @@ describe("camera alignment panel", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     cleanup();
     vi.restoreAllMocks();
   });
@@ -131,13 +137,14 @@ describe("camera alignment panel", () => {
     render(<CameraPanel diagram={diagram} onSelectRegion={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Enable camera" }));
     await screen.findByText(/Camera on · stays on this device/);
+    await user.click(screen.getByRole("button", { name: "Use manual alignment" }));
     await user.click(screen.getByRole("button", { name: "Confirm manual alignment" }));
     await user.click(screen.getByRole("button", { name: "Turn camera off" }));
     expect(first.track.stop).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole("button", { name: "Enable camera" }));
     await screen.findByText(/Camera on · stays on this device/);
-    expect(screen.getByRole("button", { name: "Confirm manual alignment" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Use manual alignment" })).not.toBeNull();
     expect(
       (screen.getByRole("button", { name: "Explore Light energy in camera overlay" }) as HTMLButtonElement)
         .disabled,
@@ -190,6 +197,7 @@ describe("camera alignment panel", () => {
     await user.click(screen.getByRole("button", { name: "Enable camera" }));
     const sunlight = await screen.findByRole("button", { name: "Explore Light energy in camera overlay" });
     expect((sunlight as HTMLButtonElement).disabled).toBe(true);
+    await user.click(screen.getByRole("button", { name: "Use manual alignment" }));
     await user.click(screen.getByRole("button", { name: "Confirm manual alignment" }));
     expect((sunlight as HTMLButtonElement).disabled).toBe(false);
 
@@ -217,12 +225,58 @@ describe("camera alignment panel", () => {
     render(<CameraPanel diagram={diagram} onSelectRegion={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Enable camera" }));
     await screen.findByText(/Camera on · stays on this device/);
+    await user.click(screen.getByRole("button", { name: "Use manual alignment" }));
     await user.click(screen.getByRole("button", { name: "Confirm manual alignment" }));
 
     fireEvent.change(screen.getByRole("slider", { name: /Horizontal offset/ }), {
       target: { value: "0.12" },
     });
     expect(screen.getByRole("button", { name: "Confirm manual alignment" })).not.toBeNull();
-    expect(screen.getByText(/Alignment is stale/)).not.toBeNull();
+    expect(screen.getByText(/Manual alignment active/)).not.toBeNull();
+  });
+
+  it("enables regions after detection, pauses on loss, and recovers after reacquisition", async () => {
+    const user = userEvent.setup();
+    const { stream } = makeStream();
+    setMediaDevices(vi.fn().mockResolvedValue(stream));
+    const sample = {
+      matrix: [0.5, 0, 0, 0, 0.5, 0, 0, 0, 1],
+      inliers: 18,
+      referenceWidth: 1000,
+      referenceHeight: 640,
+      frameWidth: 500,
+      frameHeight: 320,
+    };
+    const detections = [sample, sample, null, null, null, sample, sample];
+    vi.mocked(createDiagramTracker).mockResolvedValue({
+      detect: vi.fn(() => detections.shift() ?? null),
+      dispose: vi.fn(),
+    });
+    render(<CameraPanel diagram={diagram} onSelectRegion={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Enable camera" }));
+    await screen.findByText(/Searching locally for the full photosynthesis diagram/);
+
+    const video = screen.getByLabelText("Local camera preview");
+    const stage = video.parentElement;
+    Object.defineProperties(video, {
+      readyState: { configurable: true, value: HTMLMediaElement.HAVE_CURRENT_DATA },
+      videoWidth: { configurable: true, value: 500 },
+      videoHeight: { configurable: true, value: 320 },
+    });
+    Object.defineProperties(stage, {
+      clientWidth: { configurable: true, value: 500 },
+      clientHeight: { configurable: true, value: 320 },
+    });
+    const region = screen.getByRole("button", { name: "Explore Light energy in camera overlay" });
+    await waitFor(() => expect((region as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByText(/Diagram tracked locally/)).not.toBeNull();
+
+    await waitFor(() => {
+      expect((region as HTMLButtonElement).disabled).toBe(true);
+      expect(screen.getByText(/Tracking lost/)).not.toBeNull();
+    });
+
+    await waitFor(() => expect((region as HTMLButtonElement).disabled).toBe(false));
+    expect(screen.getByText(/Diagram tracked locally/)).not.toBeNull();
   });
 });

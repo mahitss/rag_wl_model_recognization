@@ -482,6 +482,36 @@ code {
   line-height: 1.5;
 }
 
+.tracking-state {
+  width: fit-content;
+  max-width: min(100%, 760px);
+  margin: 0.75rem 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #d6ded6;
+  border-radius: 0.55rem;
+  background: #f6f8f3;
+  color: #344b40;
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.tracking-state--tracking {
+  border-color: #a9d2b3;
+  background: #edf8ed;
+}
+
+.tracking-state--lost,
+.tracking-state--unavailable {
+  border-color: #e6bd91;
+  background: #fff5e9;
+  color: #704418;
+}
+
+.tracking-state--manual {
+  border-color: #c6bddf;
+  background: #f5f1fc;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;

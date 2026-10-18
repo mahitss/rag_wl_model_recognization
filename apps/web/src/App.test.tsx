@@ -3,6 +3,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./main";
 
+vi.mock("./opencvTracker", () => ({
+  createDiagramTracker: vi.fn().mockResolvedValue({ detect: () => null, dispose: vi.fn() }),
+}));
+
 const diagramResponse = {
   diagrams: [
     {
@@ -99,6 +103,7 @@ describe("camera selection evidence flow", () => {
     await screen.findByRole("heading", { name: "Photosynthesis" });
     await user.click(screen.getByRole("button", { name: "Enable camera" }));
     await screen.findByText(/Camera on · stays on this device/);
+    await user.click(screen.getByRole("button", { name: "Use manual alignment" }));
     await user.click(screen.getByRole("button", { name: "Confirm manual alignment" }));
     await user.click(
       screen.getByRole("button", { name: "Explore Chlorophyll in leaves in camera overlay" }),

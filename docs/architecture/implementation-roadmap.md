@@ -22,9 +22,11 @@ Semantic retrieval was delivered early as an optional capability in commit `2457
 
 The original M2 milestone, curated diagram concept selection, is now implemented as the next slice after M2.1. The dense retrieval portion of M5 has been delivered early; the local tutor experiment and human review of answers and citations remain outstanding. Milestone ordering and IDs below continue to describe the planned product sequence.
 
-**M2 implementation update:** The first vertical slice is now implemented with an authored photosynthesis SVG, server-validated normalized rectangular regions, curated concept aliases, and evidence lookup through the existing retrieval service. Region selection uses pointer and keyboard-accessible buttons. Unsupported diagram/region IDs return safe errors, and concepts without matching local material return explicit insufficient evidence. This closes the original M2 selection milestone; camera alignment and recognition remain M3 work.
+**M2 implementation update:** The first vertical slice is now implemented with an authored photosynthesis SVG, server-validated normalized rectangular regions, curated concept aliases, and evidence lookup through the existing retrieval service. Region selection uses pointer and keyboard-accessible buttons. Unsupported diagram/region IDs return safe errors, and concepts without matching local material return explicit insufficient evidence. This closes the original M2 selection milestone.
 
-**M3 prototype update:** Browser camera preview is explicitly user-started and stays local. The diagram overlay has normalized regions and manual translation, scale, and rotation controls. Manual confirmation gates camera-region selection; users can mark alignment stale after movement or occlusion, which pauses region selection until reconfirmed. There is no automatic tracking or movement/occlusion detection; see `docs/development/camera-alignment.md` for assumptions and limitations.
+**M3 prototype update:** Browser camera preview is explicitly user-started and stays local. The diagram overlay has normalized regions and manual translation, scale, and rotation controls. Manual confirmation gates camera-region selection; users can mark alignment stale after movement or occlusion, which pauses region selection until reconfirmed. See `docs/development/camera-alignment.md` for assumptions and limitations.
+
+**M4 tracking prototype update:** A local OpenCV.js ORB feature-matching and RANSAC homography proof of concept now estimates the authored planar photosynthesis diagram's overlay transform from sampled browser camera frames. It pauses region selection on tracking loss and attempts automatic reacquisition; manual alignment remains a fallback. This classical, single-reference prototype does not satisfy ADR-003's data gate for a learned/general detector and has not been validated on real camera footage. Gesture recognition remains outstanding.
 
 | Milestone | Depends on | Estimate | Definition of done |
 |---|---|---:|---|
@@ -32,11 +34,12 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 | M1: PDF → evidence retrieval vertical slice | M0 | 1–2 weeks | ingest, page provenance, FTS retrieval, citations, abstention, deletion, basic UI |
 | M2: Curated diagram concept selection | M1 | 1 week | one licensed/authored diagram, configured regions, concept resolver, retrieval link, pointer fallback |
 | M3: Camera alignment and interaction (manual prototype implemented) | M2 | 1–2 weeks | camera permission/lifecycle, normalized 2D overlays, movement/occlusion stale state, usability fallback |
-| M4: Gesture baseline | M3 | 2–4 weeks | rule baseline, collection consent process, evaluated landmarks/classifier comparison and false activation report |
-| M5: Dense hybrid retrieval + local tutor experiment (dense retrieval delivered early) | M1 | 2–4 weeks | local tutor experiment, human review of answers and citations, optional fallback |
-| M6: Vision dataset/model pilot | M2 | 3–6 weeks | dataset card, group split, baseline, candidate model report, no promotion without criteria |
-| M7: Teaching mode and progress | M1/M5 | 2–4 weeks | authored quiz rubric, response evaluation, opt-in local progress/deletion, learning task evaluation |
-| M8: Multimodal retrieval | M6 | 4–8+ weeks | figure assets and captions provenance, evaluated visual retrieval, clear text/image capability boundary |
+| M4: Automatic diagram tracking prototype (implemented; bounded POC) | M3 | 1–2 weeks | local known-image features, planar alignment estimate, tracking-loss state, manual fallback, privacy behavior |
+| M5: Gesture baseline | M3 | 2–4 weeks | rule baseline, collection consent process, evaluated landmarks/classifier comparison and false activation report |
+| M6: Dense hybrid retrieval + local tutor experiment (dense retrieval delivered early) | M1 | 2–4 weeks | local tutor experiment, human review of answers and citations, optional fallback |
+| M7: Vision dataset/model pilot | M2 | 3–6 weeks | dataset card, group split, baseline, candidate model report, no promotion without criteria |
+| M8: Teaching mode and progress | M1/M6 | 2–4 weeks | authored quiz rubric, response evaluation, opt-in local progress/deletion, learning task evaluation |
+| M9: Multimodal retrieval | M7 | 4–8+ weeks | figure assets and captions provenance, evaluated visual retrieval, clear text/image capability boundary |
 
 ## Risks and sequencing
 

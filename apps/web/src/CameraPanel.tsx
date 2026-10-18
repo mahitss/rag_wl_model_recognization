@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { useCamera } from "./camera";
 import { alignmentTransform, normalizedRegionStyle } from "./geometry";
+import { useDiagramTracking } from "./useDiagramTracking";
 
 type CameraDiagram = {
   imageUrl: string;
@@ -21,9 +22,11 @@ const INITIAL_ALIGNMENT = { x: 0, y: 0, scale: 1, rotation: 0 };
 
 export function CameraPanel({ diagram, onSelectRegion }: CameraPanelProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const { status, startCamera, stopCamera } = useCamera(videoRef);
   const [alignment, setAlignment] = useState(INITIAL_ALIGNMENT);
   const [alignmentConfirmed, setAlignmentConfirmed] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
 
   function adjustAlignment(key: keyof typeof INITIAL_ALIGNMENT, value: number) {
     setAlignment((current) => ({ ...current, [key]: value }));
@@ -31,13 +34,24 @@ export function CameraPanel({ diagram, onSelectRegion }: CameraPanelProps) {
   }
 
   const cameraActive = status.kind === "active";
+  const tracking = useDiagramTracking(
+    videoRef,
+    stageRef,
+    diagram.imageUrl,
+    cameraActive && !manualMode,
+  );
+  const alignmentReady = manualMode ? alignmentConfirmed : tracking.status === "tracking";
   const overlayStyle = {
-    transform: alignmentTransform(alignment),
-    aspectRatio: diagram.imageAspectRatio,
+    transform: manualMode ? alignmentTransform(alignment) : tracking.transform ?? "none",
+    transformOrigin: manualMode ? "center" : "0 0",
+    opacity: manualMode || tracking.status === "tracking" ? 0.65 : 0,
   } as CSSProperties;
 
   useEffect(() => {
-    if (!cameraActive) setAlignmentConfirmed(false);
+    if (!cameraActive) {
+      setAlignmentConfirmed(false);
+      setManualMode(false);
+    }
   }, [cameraActive]);
 
   useEffect(() => {
@@ -65,8 +79,9 @@ export function CameraPanel({ diagram, onSelectRegion }: CameraPanelProps) {
         )}
       </div>
       <p className="camera-explanation">
-        Camera access starts only when you press the button. Video is shown locally and is never
-        uploaded, recorded, or saved. Align the overlay manually with the printed diagram.
+        Camera access starts only when you press the button. Video stays on this device. Automatic
+        tracking uses local feature matching against the curated diagram; no frames are uploaded,
+        recorded, or saved.
       </p>
 
       {status.kind !== "active" && (
@@ -97,8 +112,9 @@ export function CameraPanel({ diagram, onSelectRegion }: CameraPanelProps) {
           <div className="camera-stage-wrap">
             <div
               className="camera-stage"
+              ref={stageRef}
               style={{ "--camera-ratio": diagram.imageAspectRatio } as CSSProperties}
-              aria-label="Camera preview with manually aligned diagram overlay"
+              aria-label="Camera preview with diagram tracking overlay"
             >
               <video
                 ref={videoRef}
@@ -117,7 +133,7 @@ export function CameraPanel({ diagram, onSelectRegion }: CameraPanelProps) {
                     type="button"
                     style={normalizedRegionStyle(region.geometry)}
                     aria-label={`Explore ${region.displayName} in camera overlay`}
-                    disabled={!alignmentConfirmed}
+                    disabled={!alignmentReady}
                     onClick={() => onSelectRegion(region.regionId)}
                   >
                     <span className="sr-only">{region.displayName}</span>
@@ -128,84 +144,129 @@ export function CameraPanel({ diagram, onSelectRegion }: CameraPanelProps) {
             </div>
           </div>
 
-          <fieldset className="alignment-controls">
-            <legend>Manual overlay alignment</legend>
-            <p className="alignment-help">
-              Adjust normalized offsets, scale, and rotation. If the page moves or is covered, mark
-              the alignment stale and realign it.
-            </p>
-            <AlignmentSlider
-              label="Horizontal offset"
-              min={-0.5}
-              max={0.5}
-              step={0.01}
-              value={alignment.x}
-              onChange={(value) => adjustAlignment("x", value)}
-              output={`${Math.round(alignment.x * 100)}%`}
-            />
-            <AlignmentSlider
-              label="Vertical offset"
-              min={-0.5}
-              max={0.5}
-              step={0.01}
-              value={alignment.y}
-              onChange={(value) => adjustAlignment("y", value)}
-              output={`${Math.round(alignment.y * 100)}%`}
-            />
-            <AlignmentSlider
-              label="Scale"
-              min={0.5}
-              max={1.5}
-              step={0.01}
-              value={alignment.scale}
-              onChange={(value) => adjustAlignment("scale", value)}
-              output={`${alignment.scale.toFixed(2)}×`}
-            />
-            <AlignmentSlider
-              label="Rotation"
-              min={-180}
-              max={180}
-              step={1}
-              value={alignment.rotation}
-              onChange={(value) => adjustAlignment("rotation", value)}
-              output={`${alignment.rotation}°`}
-            />
-          </fieldset>
+          <p
+            className={`tracking-state tracking-state--${manualMode ? "manual" : tracking.status}`}
+            role="status"
+            aria-live="polite"
+          >
+            {manualMode
+              ? alignmentConfirmed
+                ? "Manual alignment confirmed. Automatic tracking is paused."
+                : "Manual alignment active. Region selection is paused until you confirm it."
+              : tracking.status === "loading"
+                ? "Loading local visual tracker…"
+                : tracking.status === "searching"
+                  ? "Searching locally for the full photosynthesis diagram…"
+                  : tracking.status === "tracking"
+                    ? `Diagram tracked locally (${tracking.inliers} feature matches). Region selection is enabled.`
+                    : tracking.status === "lost"
+                      ? "Tracking lost. Point the camera at the full diagram; automatic reacquisition is running."
+                      : tracking.message ?? "Waiting for local diagram tracker."}
+          </p>
 
           <div className="alignment-actions">
-            {!alignmentConfirmed ? (
+            {manualMode ? (
               <button
-                className="camera-action camera-action--primary"
+                className="camera-action"
                 type="button"
-                onClick={() => setAlignmentConfirmed(true)}
+                onClick={() => {
+                  setAlignmentConfirmed(false);
+                  setManualMode(false);
+                }}
               >
-                Confirm manual alignment
+                Resume automatic tracking
               </button>
             ) : (
               <button
                 className="camera-action"
                 type="button"
-                onClick={() => setAlignmentConfirmed(false)}
+                onClick={() => {
+                  setAlignmentConfirmed(false);
+                  setManualMode(true);
+                }}
               >
-                Mark alignment stale
+                Use manual alignment
               </button>
             )}
-            <button
-              className="camera-action camera-action--quiet"
-              type="button"
-              onClick={() => {
-                setAlignment(INITIAL_ALIGNMENT);
-                setAlignmentConfirmed(false);
-              }}
-            >
-              Reset alignment
-            </button>
           </div>
-          <p className="alignment-state" role="status" aria-live="polite">
-            {alignmentConfirmed
-              ? "Manual alignment confirmed. If the camera or page moves, mark this alignment stale."
-              : "Alignment is stale. Region selection is paused until you confirm the manual alignment."}
-          </p>
+
+          {manualMode && (
+            <>
+              <fieldset className="alignment-controls">
+                <legend>Manual overlay alignment</legend>
+                <p className="alignment-help">
+                  Automatic tracking is paused while you adjust the overlay. Region selection remains
+                  disabled until you confirm the manual alignment.
+                </p>
+                <AlignmentSlider
+                  label="Horizontal offset"
+                  min={-0.5}
+                  max={0.5}
+                  step={0.01}
+                  value={alignment.x}
+                  onChange={(value) => adjustAlignment("x", value)}
+                  output={`${Math.round(alignment.x * 100)}%`}
+                />
+                <AlignmentSlider
+                  label="Vertical offset"
+                  min={-0.5}
+                  max={0.5}
+                  step={0.01}
+                  value={alignment.y}
+                  onChange={(value) => adjustAlignment("y", value)}
+                  output={`${Math.round(alignment.y * 100)}%`}
+                />
+                <AlignmentSlider
+                  label="Scale"
+                  min={0.5}
+                  max={1.5}
+                  step={0.01}
+                  value={alignment.scale}
+                  onChange={(value) => adjustAlignment("scale", value)}
+                  output={`${alignment.scale.toFixed(2)}×`}
+                />
+                <AlignmentSlider
+                  label="Rotation"
+                  min={-180}
+                  max={180}
+                  step={1}
+                  value={alignment.rotation}
+                  onChange={(value) => adjustAlignment("rotation", value)}
+                  output={`${alignment.rotation}°`}
+                />
+              </fieldset>
+
+              <div className="alignment-actions">
+                {!alignmentConfirmed ? (
+                  <button
+                    className="camera-action camera-action--primary"
+                    type="button"
+                    onClick={() => setAlignmentConfirmed(true)}
+                  >
+                    Confirm manual alignment
+                  </button>
+                ) : (
+                  <button
+                    className="camera-action"
+                    type="button"
+                    onClick={() => setAlignmentConfirmed(false)}
+                  >
+                    Mark alignment stale
+                  </button>
+                )}
+                <button
+                  className="camera-action camera-action--quiet"
+                  type="button"
+                  onClick={() => {
+                    setAlignment(INITIAL_ALIGNMENT);
+                    setAlignmentConfirmed(false);
+                  }}
+                >
+                  Reset alignment
+                </button>
+              </div>
+            </>
+          )}
         </>
       )}
     </section>

@@ -53,9 +53,12 @@ From the repository root:
 ```powershell
 uv run --project services/api --extra dev pytest
 uv run --project services/api --extra dev ruff check services/api
+npm test --prefix apps/web
 npm run typecheck --prefix apps/web
 npm run build --prefix apps/web
 ```
+
+The M3 camera preview and manual overlay prototype uses no service or model. See the [camera alignment guide](camera-alignment.md) for its privacy behavior, controls, and alignment limitations.
 
 ## Configuration
 

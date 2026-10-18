@@ -157,6 +157,10 @@ h2 {
   outline-offset: 3px;
 }
 
+.region-button:disabled {
+  cursor: not-allowed;
+}
+
 .region-button__label {
   max-width: 100%;
   overflow: hidden;
@@ -272,6 +276,222 @@ code {
   color: #762f26;
 }
 
+.camera-panel {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e2e7df;
+}
+
+.camera-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.camera-heading h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.05rem;
+}
+
+.privacy-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid #a9d2b3;
+  border-radius: 999px;
+  background: #edf8ed;
+  color: #1f603e;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.privacy-indicator span {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: #21884c;
+  box-shadow: 0 0 0 3px rgb(33 136 76 / 14%);
+}
+
+.camera-explanation,
+.alignment-help {
+  max-width: 54rem;
+  color: #61746b;
+  font-size: 0.88rem;
+  line-height: 1.55;
+}
+
+.camera-action {
+  min-height: 2.6rem;
+  margin: 0 0.45rem 0.65rem 0;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid #b9c9bb;
+  border-radius: 0.6rem;
+  background: #f6f8f3;
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.camera-action:hover {
+  border-color: #226544;
+  background: #e8f3e8;
+}
+
+.camera-action--primary {
+  border-color: #226544;
+  background: #226544;
+  color: white;
+}
+
+.camera-action--primary:hover {
+  background: #194d34;
+  color: white;
+}
+
+.camera-action--quiet {
+  background: transparent;
+}
+
+.camera-stage-wrap {
+  width: min(100%, 760px);
+  margin-top: 0.7rem;
+}
+
+.camera-stage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: var(--camera-ratio);
+  overflow: hidden;
+  border: 1px solid #293b34;
+  border-radius: 0.8rem;
+  background: #17251f;
+}
+
+.camera-video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.camera-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  transform-origin: center;
+  opacity: 0.65;
+}
+
+.camera-overlay > img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  user-select: none;
+}
+
+.camera-region {
+  position: absolute;
+  padding: 0;
+  border: 2px dashed rgb(255 255 255 / 85%);
+  border-radius: 0.45rem;
+  background: rgb(77 191 117 / 12%);
+  cursor: pointer;
+}
+
+.camera-region:hover:not(:disabled),
+.camera-region:focus-visible {
+  border: 3px solid #fff;
+  outline: 3px solid #a85f15;
+  outline-offset: 2px;
+  background: rgb(68 185 111 / 36%);
+}
+
+.camera-region:disabled {
+  cursor: not-allowed;
+}
+
+.camera-live-label {
+  position: absolute;
+  right: 0.65rem;
+  bottom: 0.65rem;
+  padding: 0.3rem 0.5rem;
+  border-radius: 0.35rem;
+  background: rgb(17 31 24 / 82%);
+  color: white;
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.1em;
+  pointer-events: none;
+}
+
+.alignment-controls {
+  display: grid;
+  gap: 0.55rem;
+  max-width: 760px;
+  margin: 1rem 0 0.75rem;
+  padding: 1rem;
+  border: 1px solid #d8ded6;
+  border-radius: 0.75rem;
+}
+
+.alignment-controls legend {
+  padding: 0 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 750;
+}
+
+.alignment-help {
+  margin: 0;
+}
+
+.alignment-slider {
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.7fr) minmax(8rem, 1.5fr) 3.5rem;
+  align-items: center;
+  gap: 0.75rem;
+  color: #334b41;
+  font-size: 0.85rem;
+}
+
+.alignment-slider input {
+  width: 100%;
+  accent-color: #226544;
+}
+
+.alignment-slider output {
+  color: #466259;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.alignment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.alignment-state {
+  margin: 0.25rem 0 0;
+  color: #466259;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
 @media (max-width: 900px) {
   .learning-layout {
     grid-template-columns: minmax(0, 1fr);
@@ -279,6 +499,23 @@ code {
 
   .evidence-card {
     position: static;
+  }
+}
+
+@media (max-width: 520px) {
+  .alignment-slider {
+    grid-template-columns: 1fr 3.5rem;
+    gap: 0.35rem 0.6rem;
+  }
+
+  .alignment-slider input {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .alignment-slider output {
+    grid-column: 2;
+    grid-row: 1 / span 2;
   }
 }
 

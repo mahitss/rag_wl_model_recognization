@@ -1,5 +1,7 @@
 import { StrictMode, useEffect, useRef, useState, type CSSProperties } from "react";
 import { createRoot } from "react-dom/client";
+import { CameraPanel } from "./CameraPanel";
+import { normalizedRegionStyle } from "./geometry";
 import "./style.css";
 
 type DiagramRegion = {
@@ -46,7 +48,7 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
-function App() {
+export function App() {
   const [diagram, setDiagram] = useState<Diagram | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<DiagramRegion | null>(null);
@@ -139,19 +141,12 @@ function App() {
                 alt="Photosynthesis diagram showing light, plant inputs, and glucose and oxygen outputs"
               />
               {diagram.regions.map((region) => {
-                const geometry = region.geometry;
-                const style = {
-                  left: `${geometry.x * 100}%`,
-                  top: `${geometry.y * 100}%`,
-                  width: `${geometry.width * 100}%`,
-                  height: `${geometry.height * 100}%`,
-                } satisfies CSSProperties;
                 return (
                   <button
                     className={`region-button${selectedRegion?.regionId === region.regionId ? " region-button--selected" : ""}`}
                     key={region.regionId}
                     type="button"
-                    style={style}
+                    style={normalizedRegionStyle(region.geometry)}
                     aria-label={`Explore ${region.displayName}`}
                     aria-pressed={selectedRegion?.regionId === region.regionId}
                     onClick={() => void selectRegion(region)}
@@ -174,6 +169,13 @@ function App() {
                 </button>
               ))}
             </nav>
+            <CameraPanel
+              diagram={diagram}
+              onSelectRegion={(regionId) => {
+                const region = diagram.regions.find((item) => item.regionId === regionId);
+                if (region) void selectRegion(region);
+              }}
+            />
           </div>
 
           <section className="evidence-card" aria-labelledby="evidence-title" aria-live="polite">
@@ -231,8 +233,11 @@ function App() {
   );
 }
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+const rootElement = document.getElementById("root");
+if (rootElement) {
+  createRoot(rootElement).render(
+    <StrictMode>
+      <App />
+    </StrictMode>,
+  );
+}

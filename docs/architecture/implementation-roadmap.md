@@ -24,12 +24,14 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 
 **M2 implementation update:** The first vertical slice is now implemented with an authored photosynthesis SVG, server-validated normalized rectangular regions, curated concept aliases, and evidence lookup through the existing retrieval service. Region selection uses pointer and keyboard-accessible buttons. Unsupported diagram/region IDs return safe errors, and concepts without matching local material return explicit insufficient evidence. This closes the original M2 selection milestone; camera alignment and recognition remain M3 work.
 
+**M3 prototype update:** Browser camera preview is explicitly user-started and stays local. The diagram overlay has normalized regions and manual translation, scale, and rotation controls. Manual confirmation gates camera-region selection; users can mark alignment stale after movement or occlusion, which pauses region selection until reconfirmed. There is no automatic tracking or movement/occlusion detection; see `docs/development/camera-alignment.md` for assumptions and limitations.
+
 | Milestone | Depends on | Estimate | Definition of done |
 |---|---|---:|---|
 | M0: Environment and repository scaffold | none | 1–2 days | verified versions, project boundaries, license/data policy, run notes |
 | M1: PDF → evidence retrieval vertical slice | M0 | 1–2 weeks | ingest, page provenance, FTS retrieval, citations, abstention, deletion, basic UI |
 | M2: Curated diagram concept selection | M1 | 1 week | one licensed/authored diagram, configured regions, concept resolver, retrieval link, pointer fallback |
-| M3: Camera alignment and interaction | M2 | 1–2 weeks | camera permission/lifecycle, normalized 2D overlays, movement/occlusion stale state, usability fallback |
+| M3: Camera alignment and interaction (manual prototype implemented) | M2 | 1–2 weeks | camera permission/lifecycle, normalized 2D overlays, movement/occlusion stale state, usability fallback |
 | M4: Gesture baseline | M3 | 2–4 weeks | rule baseline, collection consent process, evaluated landmarks/classifier comparison and false activation report |
 | M5: Dense hybrid retrieval + local tutor experiment (dense retrieval delivered early) | M1 | 2–4 weeks | local tutor experiment, human review of answers and citations, optional fallback |
 | M6: Vision dataset/model pilot | M2 | 3–6 weeks | dataset card, group split, baseline, candidate model report, no promotion without criteria |

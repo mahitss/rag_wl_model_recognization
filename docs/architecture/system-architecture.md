@@ -21,7 +21,7 @@ flowchart LR
 
 ## Components and responsibility boundaries
 
-- **Web client:** webcam permission/lifecycle, frame throttling, canvas/SVG overlays, selection UX, accessible pointer fallback, citations, question and quiz display. Frames are not uploaded by default.
+- **Web client:** webcam permission/lifecycle, frame throttling, canvas/SVG overlays, selection UX, accessible pointer fallback, citations, question and quiz display. The M3 prototype displays camera frames locally only; it does not upload or record them. Its diagram overlay is manually aligned, not automatically tracked.
 - **Browser vision adapter:** hand landmarks through MediaPipe when available; camera capture remains separate from backend. Detector adapters may run local inference in browser or backend later, selected by measured performance and license review.
 - **API:** validation, orchestration, error mapping, document and session endpoints. It does not own model training.
 - **Ingestion:** file validation, text extraction, page-aware segmentation, content hashes, incremental indexing and deletion.
@@ -40,6 +40,8 @@ flowchart LR
 ## Vision and spatial behavior
 
 For MVP, use a static supported diagram with predefined regions or user-confirmed 2D regions. A browser overlay uses the same normalized image/video coordinate space as its source, with explicit transforms for `object-fit`, crop, mirroring, and device pixel ratio. On camera movement, target loss, or occlusion, hide or mark the overlay stale and require re-detection/reconfirmation. Never claim world coordinates or physical distance from a monocular webcam. Gesture pointing is a convenience; click/touch/list fallback remains available.
+
+The current M3 prototype implements this fallback with manual translation/scale/rotation, orientation-change invalidation, and a learner-operated stale/reconfirm control. It does not automatically observe camera motion, target loss, or occlusion; automatic detection remains future work and the learner must mark the alignment stale when the page or camera moves or the page is covered.
 
 ## Reliability and deployment
 

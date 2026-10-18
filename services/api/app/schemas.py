@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -324,6 +324,97 @@ class LearningProgressResponse(ApiModel):
     topics: list[TopicProgress]
     total_attempts: int
     recent_attempts: list[RecentQuizAttempt]
+
+
+class StudySessionRequest(ApiModel):
+    topic: str = Field(min_length=2, max_length=160)
+
+    @field_validator("topic", mode="before")
+    @classmethod
+    def trim_topic(cls, value: str) -> str:
+        return value.strip() if isinstance(value, str) else value
+
+
+class StudySessionResponse(ApiModel):
+    session_id: str
+    topic_id: str
+    topic: str
+    started_at: str
+    completed_at: str | None
+
+
+class AnalyticsTotals(ApiModel):
+    attempt_count: int
+    attempted_questions: int
+    correct_questions: int
+    incorrect_questions: int
+    ambiguous_questions: int
+    quiz_accuracy: float | None
+    completed_study_sessions: int
+    active_study_sessions: int
+    overdue_reviews: int
+
+
+class AnalyticsTopic(ApiModel):
+    topic_id: str
+    topic: str
+    attempt_count: int
+    attempted_questions: int
+    correct_questions: int
+    incorrect_questions: int
+    ambiguous_questions: int
+    accuracy: float | None
+    mastery: float | None
+    weak: bool
+    overdue_review_count: int
+    next_review_at: str | None
+    graph_concept_id: str | None
+    citations: list[CitationResponse]
+
+
+class DailyActivity(ApiModel):
+    date: str
+    attempts: int
+    correct: int
+    completed_study_sessions: int
+
+
+class AnalyticsActivity(ApiModel):
+    activity_id: str
+    kind: Literal["quiz_attempt", "study_session"]
+    topic: str
+    outcome: Literal["correct", "incorrect", "ambiguous"] | None
+    occurred_at: str
+    prompt: str | None
+
+
+class ReviewHistoryItem(ApiModel):
+    question_id: str
+    topic_id: str
+    topic: str
+    outcome: Literal["correct", "incorrect", "ambiguous"]
+    attempted_at: str
+    due_at: str
+    status: Literal["overdue", "upcoming"]
+
+
+class AnalyticsMethodology(ApiModel):
+    mastery: str
+    recency_half_life_days: int
+    weak_topic_threshold: float
+    review_intervals_days: dict[str, int]
+    review_due_boundary: str
+
+
+class LearningAnalyticsResponse(ApiModel):
+    generated_at: str
+    totals: AnalyticsTotals
+    topics: list[AnalyticsTopic]
+    daily_activity: list[DailyActivity]
+    recent_activity: list[AnalyticsActivity]
+    review_history: list[ReviewHistoryItem]
+    active_sessions: list[StudySessionResponse]
+    methodology: AnalyticsMethodology
 
 
 class EmbeddingIndexCounts(ApiModel):

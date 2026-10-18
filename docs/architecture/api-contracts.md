@@ -20,6 +20,9 @@ Base path `/api/v1`; JSON camelCase in browser and explicit Pydantic mapping at 
 | `GET /quizzes/{quizId}` | Load a persisted local quiz; `review_incorrect=true` filters to latest incorrect or ambiguous questions |
 | `POST /quizzes/{quizId}/questions/{questionId}/attempts` | Deterministically score and persist a response, then return explanation and stored citations |
 | `GET /progress` | Return topic-level latest outcomes and recent local review history |
+| `GET /learning-analytics` | Return persisted quiz, completed-session, daily activity, topic mastery, and due-review analytics |
+| `POST /study-sessions` | Start an explicitly learner-initiated local study session |
+| `POST /study-sessions/{sessionId}/complete` | Record the learner's explicit session completion |
 | `GET /knowledge-graph` | List locally stored evidence-backed concepts |
 | `POST /knowledge-graph/extract` | Extract bounded candidate concepts/relationships from selected stored chunks with the optional loopback tutor model |
 | `GET /knowledge-graph/concepts/{conceptId}` | Return a concept, connected concepts, exact supporting passages, and document/chunk/page provenance |
@@ -45,6 +48,14 @@ No WebSocket is justified for the MVP: camera work stays in browser, upload and 
 `POST /api/v1/quizzes` accepts a topic, question count, and optional document/concept scope. It uses the same retrieval service and optional loopback model adapter as the tutor. Empty retrieval returns `insufficient_evidence` and never calls the model. Generated questions must match the strict multiple-choice/short-answer schema, cite only retrieved evidence labels, and pass a conservative lexical support check for the question, expected answer, and explanation. The API persists questions and foreign-key citations to actual chunks. Correct answers are withheld from quiz responses until submission.
 
 `POST /api/v1/quizzes/{quizId}/questions/{questionId}/attempts` accepts an answer and records it locally. Multiple-choice answers use exact option IDs. Short answers are compared with the expected answer and accepted alternatives after Unicode normalization, case-folding, and tokenization; token-set F1 >= 0.80 is correct, <= 0.20 is incorrect, and intermediate scores are ambiguous. This is a conservative lexical heuristic, not semantic grading. The response returns the explanation and citations resolved from current stored chunks. `GET /api/v1/progress` summarizes each question's latest outcome by topic and returns up to 100 recent attempts. Deleting a source document cascades its cited quiz questions and related attempt history so deleted source passages are not retained as stale citations.
+
+## Learning analytics and local study sessions
+
+`GET /api/v1/learning-analytics` derives its output from persisted quiz attempts, quiz citation rows, current source chunks, knowledge graph concepts, local study-session rows, and the current per-question review schedule. It returns totals, topic comparisons, daily activity for the current UTC day and preceding 13 days, recent activity, citations, active sessions, and upcoming/overdue review items. It does not estimate activity from page views or fabricate empty-history values. Accuracy is `null` when there are no scored answers; ambiguous quiz outcomes are not counted as correct or incorrect.
+
+Topic mastery is the weighted accuracy of each question's latest outcome when that outcome is scored. For a scored result with age `d` days, weight is `2^(-d/30)`; the mastery score is weighted correct outcomes divided by total scored weight. Ambiguous latest results are excluded. The operational weak-topic marker is mastery below 0.60; this threshold and formula are reporting rules, not validated measures of knowledge or learning.
+
+Quiz attempts schedule a local review item per question: one day after incorrect or ambiguous outcomes and seven days after correct outcomes. A later attempt replaces that question's due date. Due means `dueAt <= current UTC time`. `POST /api/v1/study-sessions` records a learner-initiated topic and start time; `POST /api/v1/study-sessions/{sessionId}/complete` records explicit completion. These records are local to the SQLite database. Deleting source material cascades its quiz/citation/attempt/review data; independently recorded study sessions are retained because they have no source-document association. The dashboard is not an adaptive planner and does not claim that completing a session proves learning.
 
 ## Knowledge graph
 

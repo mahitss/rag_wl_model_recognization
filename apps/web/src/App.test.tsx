@@ -109,8 +109,26 @@ const emptyProgress: {
   recentAttempts: unknown[];
 } = { topics: [], totalAttempts: 0, recentAttempts: [] };
 
+type TestAnalytics = {
+  generatedAt: string;
+  totals: { attemptCount: number; attemptedQuestions: number; correctQuestions: number; incorrectQuestions: number; ambiguousQuestions: number; quizAccuracy: number | null; completedStudySessions: number; activeStudySessions: number; overdueReviews: number };
+  topics: unknown[];
+  dailyActivity: unknown[];
+  recentActivity: { activityId: string; kind: "quiz_attempt" | "study_session"; topic: string; outcome: string | null; occurredAt: string; prompt: string | null }[];
+  reviewHistory: unknown[];
+  activeSessions: { sessionId: string; topicId: string; topic: string; startedAt: string; completedAt: string | null }[];
+  methodology: { mastery: string; recencyHalfLifeDays: number; weakTopicThreshold: number; reviewIntervalsDays: Record<string, number>; reviewDueBoundary: string };
+};
+const analyticsFixture: TestAnalytics = {
+  generatedAt: "2026-04-15T12:00:00+00:00",
+  totals: { attemptCount: 0, attemptedQuestions: 0, correctQuestions: 0, incorrectQuestions: 0, ambiguousQuestions: 0, quizAccuracy: null, completedStudySessions: 0, activeStudySessions: 0, overdueReviews: 0 },
+  topics: [], dailyActivity: [], recentActivity: [], reviewHistory: [], activeSessions: [],
+  methodology: { mastery: "Recency weighted latest scored outcomes.", recencyHalfLifeDays: 30, weakTopicThreshold: 0.6, reviewIntervalsDays: { correct: 7, incorrect: 1, ambiguous: 1 }, reviewDueBoundary: "dueAt <= current UTC time" },
+};
+
 function installFetchMock(configured = true) {
   let progressResult = emptyProgress;
+  let analyticsResult = analyticsFixture;
   let graphRelationshipStatus: "candidate" | "human_verified" = "candidate";
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -122,6 +140,17 @@ function installFetchMock(configured = true) {
       return jsonResponse({ configured, modelId: configured ? "local-model" : null });
     }
     if (url === "/api/v1/progress") return jsonResponse(progressResult);
+    if (url === "/api/v1/learning-analytics") return jsonResponse(analyticsResult);
+    if (url === "/api/v1/study-sessions" && init?.method === "POST") {
+      const session = { sessionId: "session-1", topicId: "topic-1", topic: "Photosynthesis", startedAt: "2026-04-15T10:00:00+00:00", completedAt: null };
+      analyticsResult = { ...analyticsFixture, totals: { ...analyticsFixture.totals, activeStudySessions: 1 }, activeSessions: [session] };
+      return jsonResponse(session);
+    }
+    if (url === "/api/v1/study-sessions/session-1/complete" && init?.method === "POST") {
+      const session = { sessionId: "session-1", topicId: "topic-1", topic: "Photosynthesis", startedAt: "2026-04-15T10:00:00+00:00", completedAt: "2026-04-15T10:30:00+00:00" };
+      analyticsResult = { ...analyticsFixture, totals: { ...analyticsFixture.totals, completedStudySessions: 1 }, recentActivity: [{ activityId: "session-1", kind: "study_session", topic: session.topic, outcome: null, occurredAt: session.completedAt ?? "", prompt: null }] };
+      return jsonResponse(session);
+    }
     if (url === "/api/v1/knowledge-graph") return jsonResponse({ concepts: [{ conceptId: "kg_photo", name: "Photosynthesis", aliases: ["plant process"], evidenceCount: 1, relationshipCount: 1 }] });
     if (url === "/api/v1/knowledge-graph/concepts/kg_photo") return jsonResponse({
       conceptId: "kg_photo", name: "Photosynthesis", aliases: ["plant process"],
@@ -323,5 +352,22 @@ describe("camera selection evidence flow", () => {
     await user.click(screen.getByRole("button", { name: "Ask tutor" }));
     const tutorCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/tutor/answers");
     expect(tutorCall?.[1]).toMatchObject({ body: JSON.stringify({ question: "Explain Photosynthesis using my study materials.", graphConceptId: "kg_photo" }) });
+  });
+
+  it("keeps an empty dashboard honest and records learner-completed sessions", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Learning analytics" });
+    expect(screen.getByText("No scored answers")).not.toBeNull();
+    expect(screen.getByText(/No quiz attempts or completed study sessions are recorded yet/)).not.toBeNull();
+    await user.type(screen.getByLabelText("Study session topic"), "Photosynthesis");
+    await user.click(screen.getByRole("button", { name: "Start session" }));
+    expect(await screen.findByText("Photosynthesis", { selector: ".active-session strong" })).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Mark session complete" }));
+    expect(await screen.findByText("Completed study sessions")).not.toBeNull();
+    const analyticsCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/learning-analytics");
+    expect(analyticsCall).toBeDefined();
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/v1/study-sessions/session-1/complete")).toBe(true);
   });
 });

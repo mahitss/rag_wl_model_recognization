@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
@@ -180,6 +180,42 @@ def initialize_storage(database_path: Path) -> None:
                            supporting_text)
                 )
                 """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS study_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    topic_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_study_sessions_completed "
+                "ON study_sessions(completed_at DESC)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS topic_review_items (
+                    question_id TEXT PRIMARY KEY REFERENCES quiz_questions(question_id)
+                        ON DELETE CASCADE,
+                    topic_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    last_attempt_id TEXT NOT NULL REFERENCES quiz_attempts(attempt_id)
+                        ON DELETE CASCADE,
+                    last_outcome TEXT NOT NULL CHECK (last_outcome IN (
+                        'correct', 'incorrect', 'ambiguous'
+                    )),
+                    attempted_at TEXT NOT NULL,
+                    due_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_topic_review_due "
+                "ON topic_review_items(due_at, topic_id)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_knowledge_relationship_source "
@@ -730,6 +766,174 @@ def record_quiz_attempt(
                 """,
                 (attempt_id, question_id, outcome, created_at),
             )
+            question = connection.execute(
+                """SELECT s.topic_id, s.topic FROM quiz_questions q
+                   JOIN quiz_sets s ON s.quiz_id=q.quiz_id WHERE q.question_id=?""",
+                (question_id,),
+            ).fetchone()
+            if question is not None:
+                from datetime import UTC, datetime, timedelta
+
+                interval_days = {"incorrect": 1, "ambiguous": 1, "correct": 7}[outcome]
+                attempted_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                if attempted_at.tzinfo is None:
+                    attempted_at = attempted_at.replace(tzinfo=UTC)
+                due_at = (attempted_at + timedelta(days=interval_days)).astimezone(UTC).isoformat()
+                connection.execute(
+                    """INSERT INTO topic_review_items(
+                           question_id, topic_id, topic, last_attempt_id, last_outcome,
+                           attempted_at, due_at
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(question_id) DO UPDATE SET
+                           topic_id=excluded.topic_id, topic=excluded.topic,
+                           last_attempt_id=excluded.last_attempt_id,
+                           last_outcome=excluded.last_outcome,
+                           attempted_at=excluded.attempted_at, due_at=excluded.due_at""",
+                    (
+                        question_id,
+                        question["topic_id"],
+                        question["topic"],
+                        attempt_id,
+                        outcome,
+                        created_at,
+                        due_at,
+                    ),
+                )
+
+
+def start_study_session(
+    database_path: Path, *, session_id: str, topic_id: str, topic: str, started_at: str
+) -> dict[str, Any]:
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "INSERT INTO study_sessions("
+                "session_id, topic_id, topic, started_at) VALUES (?, ?, ?, ?)",
+                (session_id, topic_id, topic, started_at),
+            )
+    return {
+        "sessionId": session_id,
+        "topicId": topic_id,
+        "topic": topic,
+        "startedAt": started_at,
+        "completedAt": None,
+    }
+
+
+def complete_study_session(
+    database_path: Path, *, session_id: str, completed_at: str
+) -> dict[str, Any] | None:
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "UPDATE study_sessions SET completed_at=? "
+                "WHERE session_id=? AND completed_at IS NULL",
+                (completed_at, session_id),
+            )
+            row = connection.execute(
+                "SELECT session_id, topic_id, topic, started_at, completed_at "
+                "FROM study_sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+    if row is None:
+        return None
+    return {
+        "sessionId": row["session_id"],
+        "topicId": row["topic_id"],
+        "topic": row["topic"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def get_learning_analytics_data(database_path: Path) -> dict[str, Any]:
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        attempts = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT a.rowid AS sequence, a.attempt_id AS attemptId,
+                          a.question_id AS questionId,
+                          a.outcome, a.created_at AS createdAt, q.prompt,
+                          s.topic_id AS topicId, s.topic
+                   FROM quiz_attempts a JOIN quiz_questions q ON q.question_id=a.question_id
+                   JOIN quiz_sets s ON s.quiz_id=q.quiz_id
+                   ORDER BY a.created_at DESC, a.rowid DESC"""
+            )
+        ]
+        sessions = [
+            {
+                "sessionId": row["session_id"],
+                "topicId": row["topic_id"],
+                "topic": row["topic"],
+                "startedAt": row["started_at"],
+                "completedAt": row["completed_at"],
+            }
+            for row in connection.execute(
+                "SELECT * FROM study_sessions ORDER BY started_at DESC, rowid DESC"
+            )
+        ]
+        reviews = [
+            {
+                "questionId": row["question_id"],
+                "topicId": row["topic_id"],
+                "topic": row["topic"],
+                "outcome": row["last_outcome"],
+                "attemptedAt": row["attempted_at"],
+                "dueAt": row["due_at"],
+            }
+            for row in connection.execute(
+                "SELECT * FROM topic_review_items ORDER BY due_at, question_id"
+            )
+        ]
+        source_rows = connection.execute(
+            """SELECT s.topic_id, qc.citation_id AS chunk_id,
+                      MIN(qc.retrieval_json) AS retrieval_json, c.document_id,
+                      d.display_name, c.page_number, c.chunk_index, c.char_start,
+                      c.char_end, c.text
+               FROM quiz_sets s JOIN quiz_questions q ON q.quiz_id=s.quiz_id
+               JOIN quiz_citations qc ON qc.question_id=q.question_id
+               JOIN chunks c ON c.chunk_id=qc.citation_id
+               JOIN documents d ON d.document_id=c.document_id
+               GROUP BY s.topic_id, qc.citation_id
+               ORDER BY s.topic_id, c.document_id, c.page_number, c.chunk_index"""
+        ).fetchall()
+        concepts = [
+            {
+                "conceptId": row["concept_id"],
+                "name": row["canonical_name"],
+                "aliases": json.loads(row["aliases_json"]),
+            }
+            for row in connection.execute(
+                "SELECT concept_id, canonical_name, aliases_json FROM knowledge_concepts"
+            )
+        ]
+    topic_sources: dict[str, list[dict[str, Any]]] = {}
+    for row in source_rows:
+        citations = topic_sources.setdefault(row["topic_id"], [])
+        if len(citations) >= 5:
+            continue
+        citations.append(
+            {
+                "citationId": row["chunk_id"],
+                "documentId": row["document_id"],
+                "displayFilename": row["display_name"],
+                "pageNumber": row["page_number"],
+                "chunkIndex": row["chunk_index"],
+                "charStart": row["char_start"],
+                "charEnd": row["char_end"],
+                "text": row["text"],
+                "retrieval": json.loads(row["retrieval_json"]),
+            }
+        )
+    return {
+        "attempts": attempts,
+        "sessions": sessions,
+        "reviews": reviews,
+        "topicSources": topic_sources,
+        "concepts": concepts,
+    }
 
 
 def get_learning_progress(database_path: Path) -> dict[str, Any]:

@@ -88,6 +88,27 @@ type LearningProgress = {
   }[];
 };
 
+type AnalyticsTopic = {
+  topicId: string; topic: string; attemptCount: number; attemptedQuestions: number;
+  correctQuestions: number; incorrectQuestions: number; ambiguousQuestions: number;
+  accuracy: number | null; mastery: number | null; weak: boolean; overdueReviewCount: number;
+  nextReviewAt: string | null; graphConceptId: string | null; citations: Citation[];
+};
+type LearningAnalytics = {
+  generatedAt: string;
+  totals: {
+    attemptCount: number; attemptedQuestions: number; correctQuestions: number;
+    incorrectQuestions: number; ambiguousQuestions: number; quizAccuracy: number | null;
+    completedStudySessions: number; activeStudySessions: number; overdueReviews: number;
+  };
+  topics: AnalyticsTopic[];
+  dailyActivity: { date: string; attempts: number; correct: number; completedStudySessions: number }[];
+  recentActivity: { activityId: string; kind: "quiz_attempt" | "study_session"; topic: string; outcome: string | null; occurredAt: string; prompt: string | null }[];
+  reviewHistory: { questionId: string; topicId: string; topic: string; outcome: string; attemptedAt: string; dueAt: string; status: "overdue" | "upcoming" }[];
+  activeSessions: { sessionId: string; topicId: string; topic: string; startedAt: string; completedAt: string | null }[];
+  methodology: { mastery: string; recencyHalfLifeDays: number; weakTopicThreshold: number; reviewIntervalsDays: Record<string, number>; reviewDueBoundary: string };
+};
+
 type Evidence = {
   status: "evidence_found" | "insufficient_evidence";
   concept: { conceptId: string; displayName: string; aliases: string[] };
@@ -138,6 +159,10 @@ export function App() {
   const [quizLoading, setQuizLoading] = useState(false);
   const [quizError, setQuizError] = useState<string | null>(null);
   const [progress, setProgress] = useState<LearningProgress | null>(null);
+  const [analytics, setAnalytics] = useState<LearningAnalytics | null>(null);
+  const [analyticsError, setAnalyticsError] = useState<string | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [sessionTopic, setSessionTopic] = useState("");
   const [graphConcepts, setGraphConcepts] = useState<GraphConcept[]>([]);
   const [selectedGraphConcept, setSelectedGraphConcept] = useState<GraphDetail | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -195,6 +220,12 @@ export function App() {
       })
       .catch(() => {
         if (active) setQuizError("Could not load local learning progress.");
+      });
+    fetch("/api/v1/learning-analytics")
+      .then((response) => readJson<LearningAnalytics>(response))
+      .then((result) => { if (active) setAnalytics(result); })
+      .catch((error: unknown) => {
+        if (active) setAnalyticsError(error instanceof Error ? error.message : "Could not load learning analytics.");
       });
     fetch("/api/v1/knowledge-graph")
       .then((response) => readJson<{ concepts: GraphConcept[] }>(response))
@@ -335,6 +366,50 @@ export function App() {
   async function refreshProgress() {
     const response = await fetch("/api/v1/progress");
     setProgress(await readJson<LearningProgress>(response));
+    await refreshAnalytics();
+  }
+
+  async function refreshAnalytics() {
+    const response = await fetch("/api/v1/learning-analytics");
+    setAnalytics(await readJson<LearningAnalytics>(response));
+  }
+
+  async function beginStudySession(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAnalyticsLoading(true);
+    setAnalyticsError(null);
+    try {
+      const response = await fetch("/api/v1/study-sessions", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ topic: sessionTopic.trim() }),
+      });
+      await readJson<{ sessionId: string }>(response);
+      await refreshAnalytics();
+    } catch (error) {
+      setAnalyticsError(error instanceof Error ? error.message : "Could not start a study session.");
+    } finally { setAnalyticsLoading(false); }
+  }
+
+  async function completeStudySession(sessionId: string) {
+    setAnalyticsLoading(true);
+    setAnalyticsError(null);
+    try {
+      const response = await fetch(`/api/v1/study-sessions/${encodeURIComponent(sessionId)}/complete`, { method: "POST" });
+      await readJson<{ sessionId: string }>(response);
+      await refreshAnalytics();
+    } catch (error) {
+      setAnalyticsError(error instanceof Error ? error.message : "Could not complete the study session.");
+    } finally { setAnalyticsLoading(false); }
+  }
+
+  async function practiceAnalyticsTopic(topic: AnalyticsTopic) {
+    if (topic.graphConceptId) {
+      await loadGraphConcept(topic.graphConceptId);
+      setTutorQuestion(`Help me review ${topic.topic} using my study materials.`);
+      document.getElementById("tutor-question")?.focus();
+    } else {
+      await generateQuiz(topic.topic);
+    }
   }
 
   async function generateQuiz(topic = quizTopic) {
@@ -777,6 +852,76 @@ export function App() {
           </section>
         </section>
       )}
+      <section className="analytics-panel" aria-labelledby="analytics-title">
+        <div className="analytics-heading">
+          <div>
+            <p className="eyebrow">Your saved learning activity</p>
+            <h2 id="analytics-title">Learning analytics</h2>
+            <p className="muted">These summaries use persisted quiz attempts, explicit study-session completions, and due-review records.</p>
+          </div>
+        </div>
+        {analyticsError && <p className="notice notice--error" role="alert">{analyticsError}</p>}
+        {analyticsLoading && <p className="muted" role="status">Updating learning activity…</p>}
+        {!analytics && !analyticsError && <p className="muted" role="status">Loading saved learning activity…</p>}
+        {analytics && <>
+          <dl className="analytics-stats">
+            <div><dt>Quiz accuracy</dt><dd>{analytics.totals.quizAccuracy === null ? "No scored answers" : `${Math.round(analytics.totals.quizAccuracy * 100)}%`}</dd></div>
+            <div><dt>Questions attempted</dt><dd>{analytics.totals.attemptedQuestions}</dd></div>
+            <div><dt>Completed study sessions</dt><dd>{analytics.totals.completedStudySessions}</dd></div>
+            <div><dt>Reviews overdue</dt><dd>{analytics.totals.overdueReviews}</dd></div>
+          </dl>
+          <form className="session-form" onSubmit={(event) => void beginStudySession(event)}>
+            <label className="document-control" htmlFor="session-topic">Study session topic
+              <input id="session-topic" value={sessionTopic} minLength={2} maxLength={160} required onChange={(event) => setSessionTopic(event.currentTarget.value)} placeholder="What are you studying?" />
+            </label>
+            <button type="submit" className="camera-action camera-action--primary" disabled={analyticsLoading}>Start session</button>
+          </form>
+          {analytics.activeSessions.map((session) => <div className="active-session" key={session.sessionId}>
+            <span>In progress: <strong>{session.topic}</strong> · started {new Date(session.startedAt).toLocaleString()}</span>
+            <button type="button" className="camera-action" disabled={analyticsLoading} onClick={() => void completeStudySession(session.sessionId)}>Mark session complete</button>
+          </div>)}
+          {analytics.totals.attemptCount === 0 && analytics.totals.completedStudySessions === 0 ? (
+            <p className="notice" role="status">No quiz attempts or completed study sessions are recorded yet. Statistics will appear after you complete learning activities.</p>
+          ) : <>
+            {analytics.topics.length > 0 && <section aria-labelledby="topic-comparison-title" className="analytics-subsection">
+              <h3 id="topic-comparison-title">Topic mastery and review</h3>
+              <p className="muted">Mastery is a recency-weighted summary of each question’s latest scored result; ambiguous answers are unscored. “Weak” is an operational threshold, not a psychological diagnosis.</p>
+              <div className="analytics-topic-list">
+                {analytics.topics.map((topic) => <article className="analytics-topic" key={topic.topicId}>
+                  <div className="analytics-topic-heading"><h4>{topic.topic}</h4><span>{topic.attemptCount} attempts · {topic.attemptedQuestions} questions</span></div>
+                  <p className="analytics-topic-metrics">Accuracy {topic.accuracy === null ? "not scored" : `${Math.round(topic.accuracy * 100)}%`} · mastery {topic.mastery === null ? "not scored" : `${Math.round(topic.mastery * 100)}%`} · {topic.overdueReviewCount} overdue review{topic.overdueReviewCount === 1 ? "" : "s"}</p>
+                  {topic.mastery !== null && <div className="mastery-track" role="progressbar" aria-label={`${topic.topic} mastery`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(topic.mastery * 100)}><span style={{ width: `${Math.round(topic.mastery * 100)}%` }} /></div>}
+                  {topic.weak && <div className="weak-topic-actions">
+                    <strong>Review suggested</strong>
+                    {topic.graphConceptId && <button type="button" className="text-action" onClick={() => void loadGraphConcept(topic.graphConceptId!)}>Open linked graph concept and sources</button>}
+                    <button type="button" className="text-action" disabled={quizLoading || tutorLoading} onClick={() => void practiceAnalyticsTopic(topic)}>{topic.graphConceptId ? "Practice with grounded tutor" : "Practice with an evidence-backed quiz"}</button>
+                  </div>}
+                  {topic.citations.length > 0 && <details className="topic-citations"><summary>Source passages ({topic.citations.length})</summary>
+                    <ul>{topic.citations.map((citation) => <li key={citation.citationId}><blockquote>{citation.text}</blockquote><span><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · chunk <code>{citation.citationId}</code></span></li>)}</ul>
+                  </details>}
+                </article>)}
+              </div>
+            </section>}
+            {analytics.dailyActivity.some((day) => day.attempts > 0 || day.completedStudySessions > 0) && <figure className="activity-chart" aria-labelledby="activity-chart-title">
+              <figcaption id="activity-chart-title"><h3>Activity over the last 14 days</h3><p className="muted">Bars show stored quiz attempts and completed sessions by UTC date.</p></figcaption>
+              <ol>{analytics.dailyActivity.map((day) => <li key={day.date} aria-label={`${day.date}: ${day.attempts} attempts, ${day.completedStudySessions} completed sessions`}>
+                <span className="activity-bar" style={{ height: `${Math.max(4, Math.round((day.attempts + day.completedStudySessions) / Math.max(1, ...analytics.dailyActivity.map((item) => item.attempts + item.completedStudySessions)) * 100))}%` }} />
+                <span className="activity-bar-value">{day.attempts + day.completedStudySessions || ""}</span>
+                <time dateTime={day.date}>{new Date(`${day.date}T00:00:00Z`).toLocaleDateString(undefined, { month: "numeric", day: "numeric", timeZone: "UTC" })}</time>
+              </li>)}</ol>
+            </figure>}
+            <section className="analytics-subsection" aria-labelledby="review-history-title">
+              <h3 id="review-history-title">Review schedule and activity history</h3>
+              {analytics.reviewHistory.length === 0 && <p className="muted">No review dates are scheduled yet. Quiz attempts create a local reminder: correct answers in 7 days; incorrect or uncertain answers in 1 day.</p>}
+              {analytics.reviewHistory.length > 0 && <ul className="review-schedule">{analytics.reviewHistory.slice(0, 20).map((item) => <li key={item.questionId}><strong>{item.topic}</strong><span>{item.status === "overdue" ? "Overdue since" : "Due"} {new Date(item.dueAt).toLocaleString()} · after {item.outcome} attempt</span></li>)}</ul>}
+              {analytics.recentActivity.length === 0 ? <p className="muted">No recent activity is recorded.</p> : <ol className="analytics-history">{analytics.recentActivity.map((item) => <li key={item.activityId}><span>{item.kind === "study_session" ? "Completed study session" : `Quiz ${item.outcome ?? "attempt"}`} · {item.topic}{item.prompt ? ` — ${item.prompt}` : ""}</span><time dateTime={item.occurredAt}>{new Date(item.occurredAt).toLocaleString()}</time></li>)}</ol>}
+            </section>
+          </>}
+          <details className="analytics-methodology"><summary>How these analytics are calculated</summary>
+            <p>{analytics.methodology.mastery} The weak-topic flag is below {Math.round(analytics.methodology.weakTopicThreshold * 100)}% mastery. Review reminders use a local deterministic interval of {analytics.methodology.reviewIntervalsDays.correct} days after a correct result and {analytics.methodology.reviewIntervalsDays.incorrect} day after an incorrect or ambiguous result; a review is overdue at the displayed due time. These are scheduling rules, not validated learning-science claims.</p>
+          </details>
+        </>}
+      </section>
       <section className="knowledge-graph" aria-labelledby="knowledge-graph-title">
         <div className="graph-heading">
           <div>

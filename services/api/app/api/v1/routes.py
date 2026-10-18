@@ -17,6 +17,7 @@ from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
 from app.ingestion.pdf import ingest_pdf
 from app.knowledge_graph import extract_chunk
+from app.learning_analytics import build_analytics
 from app.quiz import evaluate_answer, generate_quiz_questions
 from app.retrieval.service import answer_from_evidence, retrieve_with_mode
 from app.schemas import (
@@ -38,6 +39,7 @@ from app.schemas import (
     KnowledgeGraphConceptList,
     KnowledgeGraphExtractRequest,
     KnowledgeGraphExtractResponse,
+    LearningAnalyticsResponse,
     LearningProgressResponse,
     QuizAttemptRequest,
     QuizAttemptResponse,
@@ -48,15 +50,19 @@ from app.schemas import (
     RebuildEmbeddingsResponse,
     RetrievalRequest,
     RetrievalResponse,
+    StudySessionRequest,
+    StudySessionResponse,
     TutorAnswerRequest,
     TutorAnswerResponse,
     TutorStatusResponse,
 )
 from app.storage import (
+    complete_study_session,
     create_quiz_set,
     delete_document,
     get_document,
     get_knowledge_concept,
+    get_learning_analytics_data,
     get_learning_progress,
     get_quiz_question,
     get_quiz_set,
@@ -64,6 +70,7 @@ from app.storage import (
     list_documents,
     list_knowledge_concepts,
     record_quiz_attempt,
+    start_study_session,
     store_knowledge_extraction,
     verify_knowledge_relationship,
 )
@@ -560,6 +567,59 @@ def submit_quiz_answer(
 @router.get("/progress", response_model=LearningProgressResponse, tags=["learning"])
 def learning_progress(request: Request) -> dict[str, Any]:
     return _database_call(get_learning_progress, _database_path(request))
+
+
+@router.get(
+    "/learning-analytics",
+    response_model=LearningAnalyticsResponse,
+    tags=["learning"],
+)
+def learning_analytics(request: Request) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    data = _database_call(get_learning_analytics_data, _database_path(request))
+    return build_analytics(
+        **{
+            "attempts": data["attempts"],
+            "sessions": data["sessions"],
+            "reviews": data["reviews"],
+            "topic_sources": data["topicSources"],
+            "concepts": data["concepts"],
+            "now": now,
+        }
+    )
+
+
+@router.post(
+    "/study-sessions", response_model=StudySessionResponse, status_code=201, tags=["learning"]
+)
+def begin_study_session(request: Request, payload: StudySessionRequest) -> dict[str, Any]:
+    topic = " ".join(payload.topic.split())
+    topic_id = hashlib.sha256(topic.casefold().encode("utf-8")).hexdigest()[:20]
+    return _database_call(
+        start_study_session,
+        _database_path(request),
+        session_id=uuid.uuid4().hex,
+        topic_id=topic_id,
+        topic=topic,
+        started_at=datetime.now(UTC).isoformat(),
+    )
+
+
+@router.post(
+    "/study-sessions/{session_id}/complete",
+    response_model=StudySessionResponse,
+    tags=["learning"],
+)
+def finish_study_session(request: Request, session_id: str) -> dict[str, Any]:
+    session = _database_call(
+        complete_study_session,
+        _database_path(request),
+        session_id=session_id,
+        completed_at=datetime.now(UTC).isoformat(),
+    )
+    if session is None:
+        raise ApiError(404, "STUDY_SESSION_NOT_FOUND", "The study session was not found.")
+    return session
 
 
 @router.get("/diagrams", response_model=DiagramsResponse, tags=["diagrams"])

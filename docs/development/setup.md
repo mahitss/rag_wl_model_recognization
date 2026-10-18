@@ -1,6 +1,6 @@
 # Local setup (Windows PowerShell)
 
-The local application includes M1 PDF ingestion and FTS5 retrieval, optional M2 semantic retrieval, and one M2 authored photosynthesis diagram with curated region selection and evidence lookup. It does **not** implement OCR, generated model inference, open-world diagram recognition, or camera processing. Nothing downloads a dataset/model automatically or calls a paid service.
+The local application includes PDF ingestion and FTS5 retrieval, optional semantic retrieval, curated photosynthesis diagram selection, local camera tracking, and an optional evidence-grounded tutor. The tutor is disabled unless a loopback model server is configured. Nothing downloads a dataset/model automatically or calls a paid service.
 
 ## Verified toolchain and pinned packages
 
@@ -82,6 +82,27 @@ Settings use the `WL_` prefix and load `.env` from the current working directory
 - `WL_SEMANTIC_MIN_SIMILARITY`: cosine cutoff used to abstain from weak semantic matches. Default: 0.60; this initial cutoff is based on a small synthetic set and is not a factual-confidence score.
 
 Lexical retrieval works with the default setup. To install optional semantic runtime support and explicitly cache its model, follow the [semantic retrieval guide](semantic-retrieval.md). No model is downloaded by normal setup or API startup.
+
+## Optional local AI tutor
+
+The tutor is disabled by default and adds no Python or Node dependency. It connects only to `localhost`, `127.0.0.1`, or `::1` over HTTP using the OpenAI-compatible chat-completions API. The API sends the question and retrieved local passages to that loopback endpoint; camera frames are not involved. The model is instructed to answer only from evidence and use inline `[E1]` citation labels. The API maps labels to retrieved passage records and rejects unknown or malformed citations. Existing `/api/v1/answers` remains extractive.
+
+To enable it, install/run a free local inference server such as `llama.cpp`'s `llama-server` and choose a GGUF instruct model whose license you have reviewed. Model downloads are manual and user initiated. Example PowerShell command (adjust the local model path and alias):
+
+```powershell
+llama-server -m C:\models\your-instruct-model.gguf --host 127.0.0.1 --port 8080 --alias local-model
+```
+
+Set these values in `.env`, then restart the API:
+
+```dotenv
+WL_TUTOR_BASE_URL=http://127.0.0.1:8080/v1
+WL_TUTOR_MODEL_ID=local-model
+WL_TUTOR_TIMEOUT_SECONDS=90
+WL_TUTOR_MAX_TOKENS=700
+```
+
+The API validates that the URL is loopback-only; it does not send study material to remote hosts. `GET /api/v1/tutor/status` reports configuration without exposing paths or secrets. With a small 1Bâ€“3B quantized GGUF, plan for roughly 1â€“3 GB of model storage and several additional GB of RAM depending on context and runtime; speed and answer quality depend heavily on hardware and model. No model is bundled, downloaded, or trained by this project. Verify upstream model licenses before use. With no server configured or reachable, the UI reports the tutor as unavailable while retrieval and citation browsing remain usable.
 
 ## M1 local PDF workflow
 

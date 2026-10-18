@@ -25,8 +25,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="WonderLearn API",
         version="0.1.0",
         description=(
-            "Local PDF ingestion with SQLite FTS5 and optional CPU embedding retrieval. "
-            "Answers remain extractive; no generated model inference is included."
+            "Local PDF ingestion, citation-preserving retrieval, and an optional grounded tutor "
+            "connected only to a loopback OpenAI-compatible model server."
         ),
         lifespan=lifespan,
     )

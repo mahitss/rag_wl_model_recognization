@@ -1,6 +1,8 @@
 import asyncio
 import io
+import json
 import sqlite3
+from io import BytesIO
 
 import httpx
 import pytest
@@ -237,3 +239,105 @@ def test_failed_chunk_transaction_leaves_no_document_or_fts_rows(tmp_path):
 
 def test_filename_paths_are_reduced_to_safe_display_name():
     assert safe_display_filename(r"..\..\secret\lesson.pdf") == "lesson.pdf"
+
+
+def test_grounded_tutor_returns_only_real_retrieved_citations(tmp_path, monkeypatch):
+    uploaded = post_pdf(tmp_path, make_pdf("Chlorophyll absorbs light energy in leaves."))
+    document_id = uploaded.json()["documentId"]
+    settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
+    app = create_app(settings)
+
+    class FakeResponse(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    def fake_urlopen(request, timeout):
+        provider_result = {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "answer": "Chlorophyll absorbs light energy [E1].",
+                                "citations": ["E1"],
+                                "abstain": False,
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+        return FakeResponse(json.dumps(provider_result).encode())
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            return fake_urlopen(request, timeout)
+
+    monkeypatch.setattr("app.tutor.build_opener", lambda *_: FakeOpener())
+    result = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/tutor/answers",
+            json={
+                "question": "What does chlorophyll do?",
+                "diagramId": "photosynthesis-cycle",
+                "conceptId": "biology.photosynthesis.chlorophyll",
+                "documentIds": [document_id],
+            },
+        )
+    )
+    body = result.json()
+    assert result.status_code == 200
+    assert body["status"] == "answered"
+    assert body["citations"][0]["documentId"] == document_id
+    assert body["citations"][0]["displayFilename"] == "lesson.pdf"
+    assert body["citations"][0]["pageNumber"] == 1
+    assert body["citations"][0]["citationId"].startswith("chk_")
+
+    unknown_concept = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/tutor/answers",
+            json={
+                "question": "What happens?",
+                "diagramId": "photosynthesis-cycle",
+                "conceptId": "client.forged.concept",
+            },
+        )
+    )
+    assert unknown_concept.status_code == 404
+    assert unknown_concept.json()["error"]["code"] == "CONCEPT_NOT_FOUND"
+
+
+def test_tutor_empty_evidence_abstains_and_configured_model_failure_is_safe(tmp_path):
+    settings = make_settings(tmp_path)
+    app = create_app(settings)
+    empty = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/tutor/answers",
+            json={"question": "Explain evaporation."},
+        )
+    )
+    assert empty.status_code == 200
+    assert empty.json()["status"] == "insufficient_evidence"
+    assert empty.json()["answer"] is None
+    assert empty.json()["citations"] == []
+
+    post_pdf(tmp_path, make_pdf("Evaporation changes liquid water into water vapor."))
+    unavailable = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/tutor/answers",
+            json={"question": "What is evaporation?"},
+        )
+    )
+    assert unavailable.status_code == 503
+    assert unavailable.json()["error"]["code"] == "TUTOR_MODEL_UNAVAILABLE"

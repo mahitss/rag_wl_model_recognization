@@ -1,5 +1,6 @@
 """Versioned system, document, retrieval, and evidence-only answer routes."""
 
+import asyncio
 import sqlite3
 import uuid
 from pathlib import Path
@@ -34,8 +35,12 @@ from app.schemas import (
     RebuildEmbeddingsResponse,
     RetrievalRequest,
     RetrievalResponse,
+    TutorAnswerRequest,
+    TutorAnswerResponse,
+    TutorStatusResponse,
 )
 from app.storage import delete_document, get_document, list_documents
+from app.tutor import InvalidTutorResponse, TutorUnavailable, generate_grounded_answer
 
 router = APIRouter(prefix="/api/v1")
 
@@ -76,14 +81,14 @@ def _database_call(callable_, *args):
 
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
-def health() -> dict[str, Any]:
+def health(request: Request) -> dict[str, Any]:
     return {
         "status": "ok",
         "service": "wonderlearn-api",
         "capabilities": {
             "document_ingestion": True,
             "retrieval": True,
-            "model_inference": False,
+            "model_inference": _settings(request).tutor_configured,
         },
     }
 
@@ -188,6 +193,88 @@ def answer(request: Request, payload: AnswerRequest) -> dict[str, Any]:
     response["retrievalMode"] = search["retrievalMode"]
     response["fallbackReason"] = search["fallbackReason"]
     return response
+
+
+@router.get("/tutor/status", response_model=TutorStatusResponse, tags=["tutor"])
+def tutor_status(request: Request) -> dict[str, Any]:
+    settings = _settings(request)
+    return {
+        "configured": settings.tutor_configured,
+        "modelId": settings.tutor_model_id if settings.tutor_configured else None,
+    }
+
+
+@router.post("/tutor/answers", response_model=TutorAnswerResponse, tags=["tutor"])
+async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[str, Any]:
+    settings = _settings(request)
+    if payload.limit > settings.max_retrieval_results:
+        raise ApiError(
+            422,
+            "INVALID_REQUEST",
+            f"The result limit cannot exceed {settings.max_retrieval_results}.",
+        )
+
+    concept = None
+    query = payload.question
+    if payload.diagram_id is not None and payload.concept_id is not None:
+        diagram = get_diagram(payload.diagram_id)
+        if diagram is None:
+            raise ApiError(404, "DIAGRAM_NOT_FOUND", "The requested diagram is not supported.")
+        concept = next(
+            (item for item in diagram.concepts if item.concept_id == payload.concept_id), None
+        )
+        if concept is None:
+            raise ApiError(404, "CONCEPT_NOT_FOUND", "The selected concept is not supported.")
+        query = f"{payload.question} {concept.retrieval_query}"
+
+    search = retrieve_with_mode(
+        settings.database_path,
+        query=query,
+        document_ids=payload.document_ids,
+        limit=payload.limit,
+        mode=payload.mode or settings.retrieval_mode,
+        settings=settings,
+        embeddings=_embedding_service(request),
+    )
+    if not search["results"]:
+        return {
+            "question": payload.question,
+            "status": "insufficient_evidence",
+            "answer": None,
+            "citations": [],
+            "retrievalMode": search["retrievalMode"],
+            "fallbackReason": search["fallbackReason"],
+        }
+
+    try:
+        generated = await asyncio.to_thread(
+            generate_grounded_answer,
+            settings,
+            question=payload.question,
+            concept=concept.display_name if concept else None,
+            evidence=search["results"],
+        )
+    except TutorUnavailable as exc:
+        raise ApiError(
+            503,
+            "TUTOR_MODEL_UNAVAILABLE",
+            "The optional local tutor is not configured or could not be reached.",
+        ) from exc
+    except InvalidTutorResponse as exc:
+        raise ApiError(
+            502,
+            "TUTOR_INVALID_RESPONSE",
+            "The local tutor returned an invalid response. Try again or check its status.",
+        ) from exc
+
+    return {
+        "question": payload.question,
+        "status": "answered" if generated["answer"] is not None else "insufficient_evidence",
+        "answer": generated["answer"],
+        "citations": generated["citations"],
+        "retrievalMode": search["retrievalMode"],
+        "fallbackReason": search["fallbackReason"],
+    }
 
 
 @router.get("/diagrams", response_model=DiagramsResponse, tags=["diagrams"])

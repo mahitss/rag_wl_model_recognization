@@ -2,7 +2,7 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic.alias_generators import to_camel
 
 
@@ -155,6 +155,35 @@ class AnswerResponse(ApiModel):
     citations: list[CitationResponse]
     retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"] = "lexical"
     fallback_reason: str | None = None
+
+
+class TutorAnswerRequest(ApiModel):
+    question: str = Field(min_length=1, max_length=2_000)
+    diagram_id: str | None = Field(default=None, min_length=1, max_length=80)
+    concept_id: str | None = Field(default=None, min_length=1, max_length=80)
+    document_ids: list[str] | None = Field(default=None, max_length=50)
+    limit: int = Field(default=5, ge=1, le=10)
+    mode: Literal["lexical", "semantic", "hybrid"] | None = None
+
+    @model_validator(mode="after")
+    def concept_requires_diagram(self):
+        if (self.diagram_id is None) != (self.concept_id is None):
+            raise ValueError("diagramId and conceptId must be supplied together")
+        return self
+
+
+class TutorAnswerResponse(ApiModel):
+    question: str
+    status: Literal["answered", "insufficient_evidence"]
+    answer: str | None
+    citations: list[CitationResponse]
+    retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"]
+    fallback_reason: str | None = None
+
+
+class TutorStatusResponse(ApiModel):
+    configured: bool
+    model_id: str | None
 
 
 class EmbeddingIndexCounts(ApiModel):

@@ -31,6 +31,16 @@ type Citation = {
   retrieval: { method: string; rank: number; similarity?: number; rrfScore?: number };
 };
 
+type IndexedDocument = { documentId: string; displayFilename: string };
+
+type TutorResult = {
+  status: "answered" | "insufficient_evidence";
+  answer: string | null;
+  citations: Citation[];
+  retrievalMode: string;
+  fallbackReason: string | null;
+};
+
 type Evidence = {
   status: "evidence_found" | "insufficient_evidence";
   concept: { conceptId: string; displayName: string; aliases: string[] };
@@ -54,6 +64,16 @@ export function App() {
   const [selectedRegion, setSelectedRegion] = useState<DiagramRegion | null>(null);
   const [evidence, setEvidence] = useState<Evidence | null>(null);
   const [loading, setLoading] = useState(false);
+  const [documents, setDocuments] = useState<IndexedDocument[]>([]);
+  const [selectedDocumentId, setSelectedDocumentId] = useState("");
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [tutorConfigured, setTutorConfigured] = useState<boolean | null>(null);
+  const [tutorModelId, setTutorModelId] = useState<string | null>(null);
+  const [tutorQuestion, setTutorQuestion] = useState("");
+  const [tutorResult, setTutorResult] = useState<TutorResult | null>(null);
+  const [tutorError, setTutorError] = useState<string | null>(null);
+  const [tutorLoading, setTutorLoading] = useState(false);
   const requestNumber = useRef(0);
 
   useEffect(() => {
@@ -70,6 +90,32 @@ export function App() {
         if (active) {
           setPageError(error instanceof Error ? error.message : "Could not load the diagram.");
         }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/v1/documents")
+      .then((response) => readJson<{ documents: IndexedDocument[] }>(response))
+      .then((result) => {
+        if (active) setDocuments(result.documents);
+      })
+      .catch(() => {
+        if (active) setUploadError("Could not load the indexed document list.");
+      });
+    fetch("/api/v1/tutor/status")
+      .then((response) => readJson<{ configured: boolean; modelId: string | null }>(response))
+      .then((result) => {
+        if (active) {
+          setTutorConfigured(result.configured);
+          setTutorModelId(result.modelId);
+        }
+      })
+      .catch(() => {
+        if (active) setTutorConfigured(false);
       });
     return () => {
       active = false;
@@ -100,6 +146,50 @@ export function App() {
       }
     } finally {
       if (currentRequest === requestNumber.current) setLoading(false);
+    }
+  }
+
+  async function uploadDocument(file: File | undefined) {
+    if (!file) return;
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch("/api/v1/documents", { method: "POST", body });
+      const document = await readJson<IndexedDocument>(response);
+      setDocuments((current) => [document, ...current.filter((item) => item.documentId !== document.documentId)]);
+      setSelectedDocumentId(document.documentId);
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : "Could not upload the PDF.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function askTutor(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setTutorLoading(true);
+    setTutorError(null);
+    setTutorResult(null);
+    try {
+      const payload = {
+        question: tutorQuestion,
+        ...(selectedRegion && diagram
+          ? { diagramId: diagram.diagramId, conceptId: selectedRegion.conceptId }
+          : {}),
+        ...(selectedDocumentId ? { documentIds: [selectedDocumentId] } : {}),
+      };
+      const response = await fetch("/api/v1/tutor/answers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setTutorResult(await readJson<TutorResult>(response));
+    } catch (error) {
+      setTutorError(error instanceof Error ? error.message : "The tutor could not answer right now.");
+    } finally {
+      setTutorLoading(false);
     }
   }
 
@@ -180,6 +270,38 @@ export function App() {
 
           <section className="evidence-card" aria-labelledby="evidence-title" aria-live="polite">
             <p className="eyebrow">Your study materials</p>
+            <div className="document-controls">
+              <label className="document-control" htmlFor="study-document">
+                Search material
+                <select
+                  id="study-document"
+                  value={selectedDocumentId}
+                  onChange={(event) => setSelectedDocumentId(event.currentTarget.value)}
+                >
+                  <option value="">All indexed documents</option>
+                  {documents.map((document) => (
+                    <option key={document.documentId} value={document.documentId}>
+                      {document.displayFilename}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="document-control" htmlFor="pdf-upload">
+                Add a learning PDF
+                <input
+                  id="pdf-upload"
+                  type="file"
+                  accept="application/pdf,.pdf"
+                  disabled={uploading}
+                  onChange={(event) => {
+                    void uploadDocument(event.currentTarget.files?.[0]);
+                    event.currentTarget.value = "";
+                  }}
+                />
+              </label>
+              {uploading && <p className="muted" role="status">Indexing PDF locallyâ€¦</p>}
+              {uploadError && <p className="notice notice--error" role="alert">{uploadError}</p>}
+            </div>
             <h2 id="evidence-title">{selectedRegion?.displayName ?? "Select a region"}</h2>
             {!selectedRegion && (
               <p className="muted">Evidence is searched only after you choose a diagram region.</p>
@@ -226,6 +348,56 @@ export function App() {
                 </ol>
               </>
             )}
+            <section className="tutor-section" aria-labelledby="tutor-title">
+              <p className="eyebrow">Optional local model</p>
+              <h2 id="tutor-title">Ask the grounded tutor</h2>
+              {tutorConfigured === false && (
+                <p className="notice" role="status">
+                  Local tutor unavailable. Follow the optional tutor setup guide to configure a
+                  loopback model server. Evidence search continues to work without it.
+                </p>
+              )}
+              {tutorConfigured && (
+                <p className="muted">Configured local model: {tutorModelId}</p>
+              )}
+              <form className="tutor-form" onSubmit={(event) => void askTutor(event)}>
+                <label className="document-control" htmlFor="tutor-question">
+                  {selectedRegion ? `Question about ${selectedRegion.displayName}` : "Question about your materials"}
+                  <textarea
+                    id="tutor-question"
+                    value={tutorQuestion}
+                    maxLength={2_000}
+                    required
+                    rows={3}
+                    onChange={(event) => setTutorQuestion(event.currentTarget.value)}
+                    placeholder="Ask a question grounded in your indexed passages"
+                  />
+                </label>
+                <button className="camera-action camera-action--primary" type="submit" disabled={tutorLoading}>
+                  {tutorLoading ? "Retrieving and askingâ€¦" : "Ask tutor"}
+                </button>
+              </form>
+              {tutorLoading && <p className="muted" role="status">Finding evidence and generating a grounded explanationâ€¦</p>}
+              {tutorError && <p className="notice notice--error" role="alert">{tutorError}</p>}
+              {tutorResult?.status === "insufficient_evidence" && (
+                <p className="notice" role="status">No supporting passages were found, or the tutor abstained because the evidence did not support an answer.</p>
+              )}
+              {tutorResult?.status === "answered" && tutorResult.answer && (
+                <div className="tutor-answer" aria-live="polite">
+                  <p>{tutorResult.answer}</p>
+                  <p className="retrieval-note">Sources from {tutorResult.retrievalMode} retrieval</p>
+                  <ol className="evidence-list">
+                    {tutorResult.citations.map((citation) => (
+                      <li className="evidence-item" key={citation.citationId}>
+                        <blockquote>{citation.text}</blockquote>
+                        <p className="citation-meta"><strong>{citation.displayFilename}</strong> Â· page {citation.pageNumber}</p>
+                        <p className="citation-id">Citation / chunk ID: <code>{citation.citationId}</code></p>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+            </section>
           </section>
         </section>
       )}

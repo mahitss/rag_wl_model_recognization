@@ -18,6 +18,8 @@
 
 **Reason:** avoids paid dependency and hardware assumption, makes citation behavior verifiable, validates retrieval value independently.
 
+**Implementation update (M6):** An optional loopback-only local chat-completion adapter now generates explanations after retrieval. Retrieved evidence remains the sole supplied source, model citation labels are allow-listed against the retrieved set, and empty evidence produces explicit abstention before model invocation. This is an implementation of the optional adapter, not a change to the evidence-first decision. The adapter is not required for API operation; human review of answer quality and citations remains outstanding, so the tutor is an experiment rather than a validated learning capability.
+
 ### ADR-003: Curated diagram component selection first
 
 **Decision:** begin with configured regions and pointer selection on one supported diagram family; advance to detection only after licensed annotated data exists.

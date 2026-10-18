@@ -206,6 +206,84 @@ h2 {
   margin-bottom: 1rem;
 }
 
+.document-controls,
+.tutor-section {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.document-controls {
+  margin: 0 0 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid #e2e7df;
+}
+
+.document-control {
+  display: grid;
+  gap: 0.4rem;
+  color: #334b41;
+  font-size: 0.85rem;
+  font-weight: 650;
+}
+
+.document-control select,
+.document-control input,
+.document-control textarea {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #cad5ca;
+  border-radius: 0.55rem;
+  background: #fffefa;
+  color: #18332d;
+  font: inherit;
+  font-weight: 400;
+}
+
+.document-control textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.document-control :focus-visible {
+  outline: 3px solid #a85f15;
+  outline-offset: 2px;
+}
+
+.tutor-section {
+  margin-top: 1.5rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid #e2e7df;
+}
+
+.tutor-section .eyebrow,
+.tutor-section h2 {
+  margin-bottom: 0;
+}
+
+.tutor-form {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.tutor-form .camera-action {
+  width: fit-content;
+  margin-bottom: 0;
+}
+
+.camera-action:disabled {
+  cursor: progress;
+  opacity: 0.65;
+}
+
+.tutor-answer > p:first-child {
+  padding: 0.9rem 1rem;
+  border-left: 3px solid #36815b;
+  background: #f3f7f1;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
 .muted,
 .retrieval-note {
   color: #61746b;

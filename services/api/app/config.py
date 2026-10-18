@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     rrf_k: int = 60
     semantic_min_similarity: float = 0.60
     embedding_cache_path: Path = Path("artifacts/embedding-models")
+    tutor_base_url: str | None = None
+    tutor_model_id: str = "local-model"
+    tutor_timeout_seconds: float = 90.0
+    tutor_max_tokens: int = 700
 
     @field_validator("database_path")
     @classmethod
@@ -63,6 +67,24 @@ class Settings(BaseSettings):
                 raise ValueError("M0 CORS origins must use localhost or 127.0.0.1 over HTTP")
         return ",".join(origins)
 
+    @field_validator("tutor_base_url")
+    @classmethod
+    def tutor_url_must_be_loopback(cls, value: str | None) -> str | None:
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip().rstrip("/")
+        parsed = urlsplit(normalized)
+        if (
+            parsed.scheme != "http"
+            or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}
+            or parsed.username
+            or parsed.password
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("WL_TUTOR_BASE_URL must use HTTP on a loopback host")
+        return normalized
+
     @field_validator(
         "max_upload_bytes",
         "max_pdf_pages",
@@ -79,6 +101,20 @@ class Settings(BaseSettings):
     def positive_limits(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("Configured limits must be positive")
+        return value
+
+    @field_validator("tutor_max_tokens")
+    @classmethod
+    def tutor_token_limit_is_bounded(cls, value: int) -> int:
+        if not 1 <= value <= 4_096:
+            raise ValueError("WL_TUTOR_MAX_TOKENS must be between 1 and 4096")
+        return value
+
+    @field_validator("tutor_timeout_seconds")
+    @classmethod
+    def tutor_timeout_is_bounded(cls, value: float) -> float:
+        if not 1 <= value <= 600:
+            raise ValueError("WL_TUTOR_TIMEOUT_SECONDS must be between 1 and 600")
         return value
 
     @field_validator(
@@ -109,6 +145,13 @@ class Settings(BaseSettings):
             raise ValueError("Embedding model identifier and revision cannot be empty")
         return value.strip()
 
+    @field_validator("tutor_model_id")
+    @classmethod
+    def tutor_model_id_must_be_nonempty(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("WL_TUTOR_MODEL_ID cannot be empty")
+        return value.strip()
+
     @field_validator("chunk_overlap_chars")
     @classmethod
     def overlap_must_be_smaller_than_chunk_size(cls, value: int, info) -> int:
@@ -122,6 +165,10 @@ class Settings(BaseSettings):
     @property
     def allowed_origins(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",")]
+
+    @property
+    def tutor_configured(self) -> bool:
+        return self.tutor_base_url is not None
 
 
 @lru_cache

@@ -65,9 +65,6 @@ def generate_grounded_answer(
     concept: str | None,
     evidence: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    if not settings.tutor_configured:
-        raise TutorUnavailable
-
     evidence_payload = [
         {"label": f"E{index}", "text": item["text"]} for index, item in enumerate(evidence, start=1)
     ]
@@ -83,16 +80,29 @@ def generate_grounded_answer(
         "the supplied labels exactly, such as [E1], and include those same labels in citations. "
         "For abstention, set answer to an empty string, citations to [], and abstain to true."
     )
-    user_prompt = json.dumps(
-        {"concept": concept, "question": question, "evidence": evidence_payload},
-        ensure_ascii=False,
+    content = local_chat_completion(
+        settings,
+        system_prompt=system_prompt,
+        user_payload={"concept": concept, "question": question, "evidence": evidence_payload},
     )
+    return _parse_model_content(content, evidence)
+
+
+def local_chat_completion(
+    settings: Settings,
+    *,
+    system_prompt: str,
+    user_payload: dict[str, Any],
+) -> str:
+    """Call the configured loopback OpenAI-compatible server and return its message text."""
+    if not settings.tutor_configured:
+        raise TutorUnavailable
     request_body = json.dumps(
         {
             "model": settings.tutor_model_id,
             "messages": [
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
             ],
             "temperature": 0.1,
             "max_tokens": settings.tutor_max_tokens,
@@ -119,4 +129,6 @@ def generate_grounded_answer(
         content = provider_body["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise InvalidTutorResponse from exc
-    return _parse_model_content(content, evidence)
+    if not isinstance(content, str):
+        raise InvalidTutorResponse
+    return content

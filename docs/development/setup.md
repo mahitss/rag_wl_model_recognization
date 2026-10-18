@@ -104,6 +104,12 @@ WL_TUTOR_MAX_TOKENS=700
 
 The API validates that the URL is loopback-only; it does not send study material to remote hosts. `GET /api/v1/tutor/status` reports configuration without exposing paths or secrets. With a small 1Bâ€“3B quantized GGUF, plan for roughly 1â€“3 GB of model storage and several additional GB of RAM depending on context and runtime; speed and answer quality depend heavily on hardware and model. No model is bundled, downloaded, or trained by this project. Verify upstream model licenses before use. With no server configured or reachable, the UI reports the tutor as unavailable while retrieval and citation browsing remain usable.
 
+## Evidence-backed quiz and local progress
+
+The quiz panel retrieves passages for a topic (and optionally the selected diagram concept or one indexed document), then asks the configured local tutor for multiple-choice and short-answer items. If retrieval finds no passages, it returns an explicit insufficient-evidence state and generates no questions. Model output must pass schema, citation-label, and lexical-support checks before it is stored. Each stored citation points to an indexed chunk; removing its source PDF also removes related quiz questions and attempt history.
+
+Multiple-choice answers are judged by exact option ID. Short answers are normalized with Unicode NFKC, lowercased, tokenized, and compared with the expected answer and accepted alternatives using token-set F1. Scores at least 0.80 count as correct, scores at most 0.20 as incorrect, and intermediate scores are marked ambiguous. Synonyms and meaning-equivalent wording can be ambiguous or incorrect; this is not a semantic grader. Progress remains in the local SQLite database, with no account, name, or remote analytics. Local model setup and hardware requirements are the same as the tutor above.
+
 ## M1 local PDF workflow
 
 Start the API and use another PowerShell window. Replace `C:\path\to\lesson.pdf` with a local PDF path:

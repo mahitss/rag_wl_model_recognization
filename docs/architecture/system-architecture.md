@@ -2,7 +2,7 @@
 
 ## Context and topology
 
-Initial deployment is one local web client and one local FastAPI process on the learner's computer. SQLite stores document metadata, extracted chunks, FTS5 lexical index, and optional session records. Optional model files live outside source control in a documented local model directory. There is no cloud dependency, hosted inference, telemetry service, or separate microservice.
+Initial deployment is one local web client and one local FastAPI process on the learner's computer. SQLite stores document metadata, extracted chunks, FTS5 lexical index, and quiz/review progress. Optional model files live outside source control in a documented local model directory. There is no cloud dependency, hosted inference, telemetry service, or separate microservice.
 
 ```mermaid
 flowchart LR
@@ -27,6 +27,7 @@ flowchart LR
 - **Ingestion:** file validation, text extraction, page-aware segmentation, content hashes, incremental indexing and deletion.
 - **Retrieval:** SQLite FTS5 BM25 first; optional local embedding model and vector index; reciprocal-rank fusion; provenance-preserving results.
 - **Tutor:** optional local OpenAI-compatible chat-completion adapter, called only after evidence retrieval. It receives retrieved passages as untrusted context, must abstain when evidence is insufficient, and can cite only server-issued evidence labels. The adapter is disabled unless configured for a loopback URL; no hosted model or paid API is required. Without a configured local model, the tutor reports unavailable while the existing extractive evidence-answer endpoint remains available.
+- **Quiz and progress:** quiz questions are generated from the same retrieved evidence pack and local model adapter. Strict schemas, evidence-label allow-lists, and a lexical support check reject malformed or weakly grounded output. SQLite stores quizzes, chunk foreign-key citations, attempts, and topic-level latest outcomes. Short answers use conservative deterministic token overlap with an ambiguous band; this is not semantic grading.
 - **Training/evaluation workspace:** separate scripts/notebooks and versioned manifests; candidate artifacts are evaluated before any inference adapter changes.
 
 ## Data flow
@@ -38,6 +39,8 @@ flowchart LR
 5. Answer policy returns answer, evidence IDs, uncertainty/abstention, and next question. Server validates evidence IDs against retrieved set before response.
 
 6. For tutor requests, the optional local model returns a structured answer and evidence labels. The API validates that each inline citation label exactly matches the returned label list, then maps labels back to stored citation records containing the real document, filename, page, chunk, and citation IDs. Model-generated citation metadata is never trusted.
+
+7. For quizzes, retrieved chunk references are stored with each validated question. Answer submission is evaluated deterministically and persisted in SQLite; feedback resolves citations again from source chunks, so provenance remains authoritative. Removing a source document removes dependent quiz citations and attempt records through foreign-key cascades.
 
 ## Vision and spatial behavior
 

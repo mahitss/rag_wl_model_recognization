@@ -78,8 +78,40 @@ function tutorAnswerResponse(): Response {
   });
 }
 
+const quizQuestionResponse = {
+  questionId: "quiz-question-001",
+  questionType: "multiple_choice",
+  prompt: "What does chlorophyll absorb?",
+  options: [
+    { id: "A", text: "Light energy" },
+    { id: "B", text: "Sound energy" },
+    { id: "C", text: "Soil" },
+    { id: "D", text: "Oxygen" },
+  ],
+  explanation: null,
+  citations: [],
+  latestOutcome: null,
+  attemptCount: 0,
+};
+
+const emptyProgress: {
+  topics: {
+    topicId: string;
+    topic: string;
+    attemptedQuestions: number;
+    correctQuestions: number;
+    incorrectQuestions: number;
+    ambiguousQuestions: number;
+    accuracy: number;
+    needsReview: boolean;
+  }[];
+  totalAttempts: number;
+  recentAttempts: unknown[];
+} = { topics: [], totalAttempts: 0, recentAttempts: [] };
+
 function installFetchMock(configured = true) {
-  const mock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+  let progressResult = emptyProgress;
+  const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/v1/diagrams") return jsonResponse(diagramResponse);
     if (url === "/api/v1/documents") {
@@ -87,6 +119,40 @@ function installFetchMock(configured = true) {
     }
     if (url === "/api/v1/tutor/status") {
       return jsonResponse({ configured, modelId: configured ? "local-model" : null });
+    }
+    if (url === "/api/v1/progress") return jsonResponse(progressResult);
+    if (url === "/api/v1/quizzes") {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { topic?: string };
+      if (payload.topic === "unsupported subject") {
+        return jsonResponse({ status: "insufficient_evidence", quizId: null, topicId: null, topic: payload.topic, createdAt: null, questions: [] });
+      }
+      return jsonResponse({
+        status: "ready",
+        quizId: "quiz-001",
+        topicId: "topic-001",
+        topic: "chlorophyll",
+        questions: [quizQuestionResponse],
+      });
+    }
+    if (url.endsWith("/attempts")) {
+      progressResult = {
+        topics: [{ topicId: "topic-001", topic: "chlorophyll", attemptedQuestions: 1, correctQuestions: 1, incorrectQuestions: 0, ambiguousQuestions: 0, accuracy: 1, needsReview: false }],
+        totalAttempts: 1,
+        recentAttempts: [],
+      };
+      return jsonResponse({
+        attemptId: "attempt-001",
+        questionId: "quiz-question-001",
+        outcome: "correct",
+        isCorrect: true,
+        expectedAnswer: "Light energy",
+        explanation: "The cited passage says chlorophyll absorbs light energy.",
+        citations: evidenceResponse.results,
+        attemptCount: 1,
+      });
+    }
+    if (url.includes("/quizzes/") && url.includes("review_incorrect=true")) {
+      return jsonResponse({ status: "ready", quizId: "quiz-001", topicId: "topic-001", topic: "chlorophyll", questions: [] });
     }
     if (url.includes("/regions/")) return jsonResponse(evidenceResponse);
     if (url === "/api/v1/tutor/answers") {
@@ -191,5 +257,43 @@ describe("camera selection evidence flow", () => {
     await user.type(screen.getByLabelText("Question about your materials"), "Explain photosynthesis");
     await user.click(screen.getByRole("button", { name: "Ask tutor" }));
     expect(await screen.findByRole("alert")).not.toBeNull();
+  });
+
+  it("generates an evidence-backed quiz, records an answer, and shows its citation", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+    await user.type(screen.getByLabelText("Topic to practice"), "chlorophyll");
+    await user.click(screen.getByRole("button", { name: "Generate quiz from evidence" }));
+    await screen.findByRole("heading", { name: /What does chlorophyll absorb/ });
+    expect(screen.queryByText(/Chlorophyll in leaves absorbs energy from light during photosynthesis/)).toBeNull();
+
+    await user.click(screen.getByLabelText("A. Light energy"));
+    await user.click(screen.getByRole("button", { name: "Check answer" }));
+
+    expect(await screen.findByText(/Correct · Expected answer: Light energy/)).not.toBeNull();
+    expect(screen.getByText("The cited passage says chlorophyll absorbs light energy.")).not.toBeNull();
+    expect(screen.getAllByText("biology-notes.pdf").length).toBeGreaterThan(1);
+    expect(await screen.findByText("Local progress · 1 attempts")).not.toBeNull();
+    expect(screen.getByText("chk_stored_007")).not.toBeNull();
+    const quizCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/quizzes");
+    expect(quizCall?.[1]).toMatchObject({
+      method: "POST",
+      body: JSON.stringify({ topic: "chlorophyll", questionCount: 5 }),
+    });
+  });
+
+  it("shows an empty-evidence state instead of creating unsupported questions", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+    await user.type(screen.getByLabelText("Topic to practice"), "unsupported subject");
+    await user.click(screen.getByRole("button", { name: "Generate quiz from evidence" }));
+    expect(await screen.findByText("No supporting passages were found, so no quiz was generated.")).not.toBeNull();
+    const quizCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/quizzes");
+    expect(quizCall).toBeDefined();
   });
 });

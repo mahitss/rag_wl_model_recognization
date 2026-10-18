@@ -1,8 +1,10 @@
 """Versioned system, document, retrieval, and evidence-only answer routes."""
 
 import asyncio
+import hashlib
 import sqlite3
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -14,6 +16,7 @@ from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
 from app.ingestion.pdf import ingest_pdf
+from app.quiz import evaluate_answer, generate_quiz_questions
 from app.retrieval.service import answer_from_evidence, retrieve_with_mode
 from app.schemas import (
     AnswerRequest,
@@ -30,6 +33,11 @@ from app.schemas import (
     DocumentsResponse,
     EmbeddingStatusResponse,
     HealthResponse,
+    LearningProgressResponse,
+    QuizAttemptRequest,
+    QuizAttemptResponse,
+    QuizGenerateRequest,
+    QuizSetResponse,
     ReadinessResponse,
     RebuildEmbeddingsRequest,
     RebuildEmbeddingsResponse,
@@ -39,7 +47,16 @@ from app.schemas import (
     TutorAnswerResponse,
     TutorStatusResponse,
 )
-from app.storage import delete_document, get_document, list_documents
+from app.storage import (
+    create_quiz_set,
+    delete_document,
+    get_document,
+    get_learning_progress,
+    get_quiz_question,
+    get_quiz_set,
+    list_documents,
+    record_quiz_attempt,
+)
 from app.tutor import InvalidTutorResponse, TutorUnavailable, generate_grounded_answer
 
 router = APIRouter(prefix="/api/v1")
@@ -71,9 +88,9 @@ def _safe_document(document: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _database_call(callable_, *args):
+def _database_call(callable_, *args, **kwargs):
     try:
-        return callable_(*args)
+        return callable_(*args, **kwargs)
     except ApiError:
         raise
     except (OSError, sqlite3.Error) as exc:
@@ -275,6 +292,173 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
         "retrievalMode": search["retrievalMode"],
         "fallbackReason": search["fallbackReason"],
     }
+
+
+@router.post("/quizzes", response_model=QuizSetResponse, tags=["learning"])
+async def create_quiz(request: Request, payload: QuizGenerateRequest) -> dict[str, Any]:
+    settings = _settings(request)
+    if payload.limit > settings.max_retrieval_results:
+        raise ApiError(
+            422,
+            "INVALID_REQUEST",
+            f"The evidence limit cannot exceed {settings.max_retrieval_results}.",
+        )
+    topic = " ".join(payload.topic.split())
+    topic_id = hashlib.sha256(topic.casefold().encode("utf-8")).hexdigest()[:20]
+    query = topic
+    if payload.diagram_id is not None and payload.concept_id is not None:
+        diagram = get_diagram(payload.diagram_id)
+        if diagram is None:
+            raise ApiError(404, "DIAGRAM_NOT_FOUND", "The requested diagram is not supported.")
+        concept = next(
+            (item for item in diagram.concepts if item.concept_id == payload.concept_id), None
+        )
+        if concept is None:
+            raise ApiError(404, "CONCEPT_NOT_FOUND", "The selected concept is not supported.")
+        query = f"{topic} {concept.retrieval_query}"
+
+    search = retrieve_with_mode(
+        settings.database_path,
+        query=query,
+        document_ids=payload.document_ids,
+        limit=payload.limit,
+        mode=payload.mode or settings.retrieval_mode,
+        settings=settings,
+        embeddings=_embedding_service(request),
+    )
+    if not search["results"]:
+        return {
+            "status": "insufficient_evidence",
+            "quizId": None,
+            "topicId": None,
+            "topic": topic,
+            "createdAt": None,
+            "questions": [],
+        }
+
+    try:
+        generated = await asyncio.to_thread(
+            generate_quiz_questions,
+            settings,
+            topic=topic,
+            count=payload.question_count,
+            evidence=search["results"],
+        )
+    except TutorUnavailable as exc:
+        raise ApiError(
+            503,
+            "TUTOR_MODEL_UNAVAILABLE",
+            "The optional local tutor is not configured or could not be reached.",
+        ) from exc
+    except InvalidTutorResponse as exc:
+        raise ApiError(
+            502,
+            "QUIZ_INVALID_RESPONSE",
+            "The local model returned malformed or unsupported quiz questions.",
+        ) from exc
+    if not generated:
+        return {
+            "status": "insufficient_evidence",
+            "quizId": None,
+            "topicId": None,
+            "topic": topic,
+            "createdAt": None,
+            "questions": [],
+        }
+
+    quiz_id = uuid.uuid4().hex
+    created_at = datetime.now(UTC).isoformat()
+    try:
+        create_quiz_set(
+            settings.database_path,
+            {
+                "quiz_id": quiz_id,
+                "topic_id": topic_id,
+                "topic": topic,
+                "created_at": created_at,
+                "questions": [
+                    {
+                        "question_id": item["questionId"],
+                        "question_type": item["questionType"],
+                        "prompt": item["prompt"],
+                        "options": item["options"],
+                        "answer_key": item["answerKey"],
+                        "accepted_answers": item["acceptedAnswers"],
+                        "explanation": item["explanation"],
+                        "citations": item["citations"],
+                    }
+                    for item in generated
+                ],
+            },
+        )
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(
+            503, "STORAGE_UNAVAILABLE", "Local learning storage is unavailable."
+        ) from exc
+    quiz = _database_call(get_quiz_set, settings.database_path, quiz_id)
+    return {"status": "ready", **quiz}
+
+
+@router.get("/quizzes/{quiz_id}", response_model=QuizSetResponse, tags=["learning"])
+def read_quiz(request: Request, quiz_id: str, review_incorrect: bool = False) -> dict[str, Any]:
+    quiz = _database_call(
+        get_quiz_set,
+        _database_path(request),
+        quiz_id,
+        review_incorrect=review_incorrect,
+    )
+    if quiz is None:
+        raise ApiError(404, "QUIZ_NOT_FOUND", "The requested quiz was not found.")
+    return {"status": "ready", **quiz}
+
+
+@router.post(
+    "/quizzes/{quiz_id}/questions/{question_id}/attempts",
+    response_model=QuizAttemptResponse,
+    tags=["learning"],
+)
+def submit_quiz_answer(
+    request: Request, quiz_id: str, question_id: str, payload: QuizAttemptRequest
+) -> dict[str, Any]:
+    database_path = _database_path(request)
+    question = _database_call(get_quiz_question, database_path, question_id)
+    if question is None or question["quiz_id"] != quiz_id:
+        raise ApiError(404, "QUIZ_QUESTION_NOT_FOUND", "The requested quiz question was not found.")
+    try:
+        outcome = evaluate_answer(question, payload.answer)
+    except ValueError as exc:
+        raise ApiError(422, "INVALID_ANSWER", str(exc)) from exc
+    attempt_id = uuid.uuid4().hex
+    _database_call(
+        record_quiz_attempt,
+        database_path,
+        attempt_id=attempt_id,
+        question_id=question_id,
+        outcome=outcome,
+        created_at=datetime.now(UTC).isoformat(),
+    )
+    quiz = _database_call(get_quiz_set, database_path, quiz_id)
+    reviewed = next(item for item in quiz["questions"] if item["questionId"] == question_id)
+    expected_answer = question["answer_key"]
+    if question["question_type"] == "multiple_choice":
+        expected_answer = next(
+            item["text"] for item in question["options"] if item["id"] == expected_answer
+        )
+    return {
+        "attemptId": attempt_id,
+        "questionId": question_id,
+        "outcome": outcome,
+        "isCorrect": True if outcome == "correct" else False if outcome == "incorrect" else None,
+        "expectedAnswer": expected_answer,
+        "explanation": reviewed["explanation"],
+        "citations": reviewed["citations"],
+        "attemptCount": reviewed["attemptCount"],
+    }
+
+
+@router.get("/progress", response_model=LearningProgressResponse, tags=["learning"])
+def learning_progress(request: Request) -> dict[str, Any]:
+    return _database_call(get_learning_progress, _database_path(request))
 
 
 @router.get("/diagrams", response_model=DiagramsResponse, tags=["diagrams"])

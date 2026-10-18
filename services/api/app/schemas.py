@@ -186,6 +186,88 @@ class TutorStatusResponse(ApiModel):
     model_id: str | None
 
 
+class QuizGenerateRequest(ApiModel):
+    topic: str = Field(min_length=2, max_length=160)
+    question_count: int = Field(default=5, ge=1, le=10)
+    document_ids: list[str] | None = Field(default=None, max_length=50)
+    limit: int = Field(default=5, ge=1, le=10)
+    mode: Literal["lexical", "semantic", "hybrid"] | None = None
+    diagram_id: str | None = Field(default=None, min_length=1, max_length=80)
+    concept_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def concept_requires_diagram(self):
+        if (self.diagram_id is None) != (self.concept_id is None):
+            raise ValueError("diagramId and conceptId must be supplied together")
+        return self
+
+
+class QuizOption(ApiModel):
+    id: Literal["A", "B", "C", "D"]
+    text: str
+
+
+class QuizQuestionResponse(ApiModel):
+    question_id: str
+    question_type: Literal["multiple_choice", "short_answer"]
+    prompt: str
+    options: list[QuizOption]
+    explanation: str | None = None
+    citations: list[CitationResponse] = Field(default_factory=list)
+    latest_outcome: Literal["correct", "incorrect", "ambiguous"] | None = None
+    attempt_count: int = 0
+
+
+class QuizSetResponse(ApiModel):
+    status: Literal["ready", "insufficient_evidence"]
+    quiz_id: str | None
+    topic_id: str | None
+    topic: str
+    created_at: str | None
+    questions: list[QuizQuestionResponse]
+
+
+class QuizAttemptRequest(ApiModel):
+    answer: str = Field(min_length=1, max_length=2_000)
+
+
+class QuizAttemptResponse(ApiModel):
+    attempt_id: str
+    question_id: str
+    outcome: Literal["correct", "incorrect", "ambiguous"]
+    is_correct: bool | None
+    expected_answer: str
+    explanation: str
+    citations: list[CitationResponse]
+    attempt_count: int
+
+
+class TopicProgress(ApiModel):
+    topic_id: str
+    topic: str
+    attempted_questions: int
+    correct_questions: int
+    incorrect_questions: int
+    ambiguous_questions: int
+    accuracy: float
+    needs_review: bool
+
+
+class RecentQuizAttempt(ApiModel):
+    attempt_id: str
+    outcome: Literal["correct", "incorrect", "ambiguous"]
+    created_at: str
+    prompt: str
+    topic_id: str
+    topic: str
+
+
+class LearningProgressResponse(ApiModel):
+    topics: list[TopicProgress]
+    total_attempts: int
+    recent_attempts: list[RecentQuizAttempt]
+
+
 class EmbeddingIndexCounts(ApiModel):
     total_chunks: int
     indexed_chunks: int

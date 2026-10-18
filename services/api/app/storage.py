@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
@@ -86,6 +86,80 @@ def initialize_storage(database_path: Path) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_chunk_embeddings_config "
                 "ON chunk_embeddings(config_hash, chunk_id)"
+            )
+
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quiz_sets (
+                    quiz_id TEXT PRIMARY KEY,
+                    topic_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quiz_questions (
+                    question_id TEXT PRIMARY KEY,
+                    quiz_id TEXT NOT NULL REFERENCES quiz_sets(quiz_id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL CHECK (position >= 0),
+                    question_type TEXT NOT NULL CHECK (question_type IN (
+                        'multiple_choice', 'short_answer'
+                    )),
+                    prompt TEXT NOT NULL,
+                    options_json TEXT NOT NULL,
+                    answer_key TEXT NOT NULL,
+                    accepted_answers_json TEXT NOT NULL,
+                    explanation TEXT NOT NULL,
+                    UNIQUE (quiz_id, position)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quiz_citations (
+                    question_id TEXT NOT NULL REFERENCES quiz_questions(
+                        question_id
+                    ) ON DELETE CASCADE,
+                    citation_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL CHECK (position >= 0),
+                    retrieval_json TEXT NOT NULL,
+                    PRIMARY KEY (question_id, citation_id)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS quiz_attempts (
+                    attempt_id TEXT PRIMARY KEY,
+                    question_id TEXT NOT NULL REFERENCES quiz_questions(
+                        question_id
+                    ) ON DELETE CASCADE,
+                    outcome TEXT NOT NULL CHECK (outcome IN ('correct', 'incorrect', 'ambiguous')),
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_quiz_questions_quiz_position "
+                "ON quiz_questions(quiz_id, position)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_question_time "
+                "ON quiz_attempts(question_id, created_at DESC)"
+            )
+            connection.execute(
+                """
+                CREATE TRIGGER IF NOT EXISTS remove_quiz_question_without_citations
+                AFTER DELETE ON quiz_citations
+                WHEN NOT EXISTS (
+                    SELECT 1 FROM quiz_citations WHERE question_id = OLD.question_id
+                )
+                BEGIN
+                    DELETE FROM quiz_questions WHERE question_id = OLD.question_id;
+                END
+                """
             )
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -232,6 +306,236 @@ def search_chunks(
     with closing(connect_database(database_path)) as connection:
         rows = connection.execute(sql, parameters).fetchall()
     return [dict(row) for row in rows]
+
+
+def create_quiz_set(database_path: Path, quiz: dict[str, Any]) -> None:
+    """Persist generated questions and foreign-key citations atomically."""
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "INSERT INTO quiz_sets(quiz_id, topic_id, topic, created_at) VALUES (?, ?, ?, ?)",
+                (quiz["quiz_id"], quiz["topic_id"], quiz["topic"], quiz["created_at"]),
+            )
+            for position, question in enumerate(quiz["questions"]):
+                connection.execute(
+                    """
+                    INSERT INTO quiz_questions(
+                        question_id, quiz_id, position, question_type, prompt,
+                        options_json, answer_key, accepted_answers_json, explanation
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        question["question_id"],
+                        quiz["quiz_id"],
+                        position,
+                        question["question_type"],
+                        question["prompt"],
+                        json.dumps(question["options"]),
+                        question["answer_key"],
+                        json.dumps(question["accepted_answers"]),
+                        question["explanation"],
+                    ),
+                )
+                for citation_position, citation in enumerate(question["citations"]):
+                    connection.execute(
+                        """
+                        INSERT INTO quiz_citations(
+                            question_id, citation_id, position, retrieval_json
+                        )
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (
+                            question["question_id"],
+                            citation["citationId"],
+                            citation_position,
+                            json.dumps(citation["retrieval"]),
+                        ),
+                    )
+
+
+def get_quiz_set(
+    database_path: Path, quiz_id: str, *, review_incorrect: bool = False
+) -> dict[str, Any] | None:
+    """Load a quiz with current source provenance and latest attempt outcomes."""
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        quiz = connection.execute(
+            "SELECT quiz_id, topic_id, topic, created_at FROM quiz_sets WHERE quiz_id = ?",
+            (quiz_id,),
+        ).fetchone()
+        if quiz is None:
+            return None
+        rows = connection.execute(
+            """
+            SELECT q.*, latest.outcome AS latest_outcome,
+                   (SELECT count(*) FROM quiz_attempts a
+                    WHERE a.question_id=q.question_id) AS attempt_count
+            FROM quiz_questions q
+            LEFT JOIN (
+                SELECT question_id, outcome,
+                       row_number() OVER (
+                           PARTITION BY question_id
+                           ORDER BY created_at DESC, rowid DESC
+                       ) AS rn
+                FROM quiz_attempts
+            ) latest ON latest.question_id=q.question_id AND latest.rn=1
+            WHERE q.quiz_id=?
+            ORDER BY q.position
+            """,
+            (quiz_id,),
+        ).fetchall()
+        questions = []
+        for row in rows:
+            if review_incorrect and row["latest_outcome"] not in {"incorrect", "ambiguous"}:
+                continue
+            citation_rows = connection.execute(
+                """
+                SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
+                       c.chunk_index, c.char_start, c.char_end, c.text, qc.retrieval_json
+                FROM quiz_citations qc
+                JOIN chunks c ON c.chunk_id=qc.citation_id
+                JOIN documents d ON d.document_id=c.document_id
+                WHERE qc.question_id=? ORDER BY qc.position
+                """,
+                (row["question_id"],),
+            ).fetchall()
+            citations = [
+                {
+                    "citationId": citation["chunk_id"],
+                    "documentId": citation["document_id"],
+                    "displayFilename": citation["display_name"],
+                    "pageNumber": citation["page_number"],
+                    "chunkIndex": citation["chunk_index"],
+                    "charStart": citation["char_start"],
+                    "charEnd": citation["char_end"],
+                    "text": citation["text"],
+                    "retrieval": json.loads(citation["retrieval_json"]),
+                }
+                for citation in citation_rows
+            ]
+            if not citations:
+                continue
+            has_attempt = row["latest_outcome"] is not None
+            questions.append(
+                {
+                    "questionId": row["question_id"],
+                    "questionType": row["question_type"],
+                    "prompt": row["prompt"],
+                    "options": json.loads(row["options_json"]),
+                    "explanation": row["explanation"] if has_attempt else None,
+                    "citations": citations if has_attempt else [],
+                    "latestOutcome": row["latest_outcome"],
+                    "attemptCount": row["attempt_count"],
+                }
+            )
+        return {
+            "quizId": quiz["quiz_id"],
+            "topicId": quiz["topic_id"],
+            "topic": quiz["topic"],
+            "createdAt": quiz["created_at"],
+            "questions": questions,
+        }
+
+
+def get_quiz_question(database_path: Path, question_id: str) -> dict[str, Any] | None:
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM quiz_questions WHERE question_id=?", (question_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "question_id": row["question_id"],
+        "quiz_id": row["quiz_id"],
+        "question_type": row["question_type"],
+        "options": json.loads(row["options_json"]),
+        "answer_key": row["answer_key"],
+        "accepted_answers": json.loads(row["accepted_answers_json"]),
+        "explanation": row["explanation"],
+    }
+
+
+def record_quiz_attempt(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    question_id: str,
+    outcome: str,
+    created_at: str,
+) -> None:
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO quiz_attempts(attempt_id, question_id, outcome, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (attempt_id, question_id, outcome, created_at),
+            )
+
+
+def get_learning_progress(database_path: Path) -> dict[str, Any]:
+    """Return local topic mastery based on each question's latest attempt and recent history."""
+    with closing(connect_database(database_path)) as connection:
+        topic_rows = connection.execute(
+            """
+            WITH latest AS (
+                SELECT a.question_id, a.outcome,
+                       row_number() OVER (
+                           PARTITION BY a.question_id
+                           ORDER BY a.created_at DESC, a.rowid DESC
+                       ) AS rn
+                FROM quiz_attempts a
+            ), counts AS (
+                SELECT s.topic_id, s.topic, count(DISTINCT q.question_id) AS attempted_questions,
+                       sum(CASE WHEN latest.outcome='correct' THEN 1 ELSE 0 END)
+                           AS correct_questions,
+                       sum(CASE WHEN latest.outcome='incorrect' THEN 1 ELSE 0 END)
+                           AS incorrect_questions,
+                       sum(CASE WHEN latest.outcome='ambiguous' THEN 1 ELSE 0 END)
+                           AS ambiguous_questions
+                FROM quiz_sets s
+                JOIN quiz_questions q ON q.quiz_id=s.quiz_id
+                JOIN latest ON latest.question_id=q.question_id AND latest.rn=1
+                GROUP BY s.topic_id, s.topic
+            )
+            SELECT *, round(1.0 * correct_questions / attempted_questions, 3) AS accuracy
+            FROM counts ORDER BY accuracy ASC, topic COLLATE NOCASE
+            """
+        ).fetchall()
+        attempt_total = int(connection.execute("SELECT count(*) FROM quiz_attempts").fetchone()[0])
+        recent_rows = connection.execute(
+            """
+            SELECT a.attempt_id, a.outcome, a.created_at, q.prompt, s.topic_id, s.topic
+            FROM quiz_attempts a
+            JOIN quiz_questions q ON q.question_id=a.question_id
+            JOIN quiz_sets s ON s.quiz_id=q.quiz_id
+            ORDER BY a.created_at DESC, a.rowid DESC LIMIT 100
+            """
+        ).fetchall()
+    topics = [
+        {
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "attemptedQuestions": row["attempted_questions"],
+            "correctQuestions": row["correct_questions"],
+            "incorrectQuestions": row["incorrect_questions"],
+            "ambiguousQuestions": row["ambiguous_questions"],
+            "accuracy": row["accuracy"],
+            "needsReview": row["incorrect_questions"] > 0 or row["ambiguous_questions"] > 0,
+        }
+        for row in topic_rows
+    ]
+    return {
+        "topics": topics,
+        "totalAttempts": attempt_total,
+        "recentAttempts": [dict(row) for row in recent_rows],
+    }
 
 
 def fetch_chunk_batch(

@@ -341,3 +341,160 @@ def test_tutor_empty_evidence_abstains_and_configured_model_failure_is_safe(tmp_
     )
     assert unavailable.status_code == 503
     assert unavailable.json()["error"]["code"] == "TUTOR_MODEL_UNAVAILABLE"
+
+
+def test_quiz_attempts_persist_explain_with_real_citations_and_support_retry(tmp_path, monkeypatch):
+    uploaded = post_pdf(
+        tmp_path,
+        make_pdf(
+            "Chlorophyll absorbs light energy in leaves. Plants use this energy to make food."
+        ),
+    )
+    document_id = uploaded.json()["documentId"]
+    settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
+    app = create_app(settings)
+    generated = {
+        "questions": [
+            {
+                "type": "multiple_choice",
+                "question": "What does chlorophyll absorb?",
+                "options": [
+                    {"id": "A", "text": "Light energy"},
+                    {"id": "B", "text": "Sound energy"},
+                    {"id": "C", "text": "Soil"},
+                    {"id": "D", "text": "Oxygen"},
+                ],
+                "correctOption": "A",
+                "expectedAnswer": "",
+                "acceptedAnswers": [],
+                "explanation": "The passage says chlorophyll absorbs light energy.",
+                "citations": ["E1"],
+            },
+            {
+                "type": "short_answer",
+                "question": "What kind of energy does chlorophyll absorb?",
+                "options": [],
+                "correctOption": "",
+                "expectedAnswer": "light energy",
+                "acceptedAnswers": ["energy from light"],
+                "explanation": "Chlorophyll absorbs light energy.",
+                "citations": ["E1"],
+            },
+        ]
+    }
+
+    class FakeResponse(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            return FakeResponse(
+                json.dumps({"choices": [{"message": {"content": json.dumps(generated)}}]}).encode()
+            )
+
+    monkeypatch.setattr("app.tutor.build_opener", lambda *_: FakeOpener())
+    created = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/quizzes",
+            json={
+                "topic": "chlorophyll",
+                "questionCount": 2,
+                "documentIds": [document_id],
+            },
+        )
+    )
+    assert created.status_code == 200
+    quiz = created.json()
+    assert quiz["status"] == "ready"
+    assert len(quiz["questions"]) == 2
+    first = quiz["questions"][0]
+    assert first["citations"] == []
+    assert first["explanation"] is None
+    quiz_id = quiz["quizId"]
+
+    async def submit(question_id, answer):
+        return await request_with_lifespan(
+            app,
+            "POST",
+            f"/api/v1/quizzes/{quiz_id}/questions/{question_id}/attempts",
+            json={"answer": answer},
+        )
+
+    wrong = asyncio.run(submit(first["questionId"], "B"))
+    assert wrong.status_code == 200
+    wrong_body = wrong.json()
+    assert wrong_body["outcome"] == "incorrect"
+    assert wrong_body["isCorrect"] is False
+    assert wrong_body["expectedAnswer"] == "Light energy"
+    citation = wrong_body["citations"][0]
+    assert citation["documentId"] == document_id
+    assert citation["displayFilename"] == "lesson.pdf"
+    assert citation["pageNumber"] == 1
+    assert citation["citationId"].startswith("chk_")
+
+    review = asyncio.run(
+        request_with_lifespan(app, "GET", f"/api/v1/quizzes/{quiz_id}?review_incorrect=true")
+    )
+    assert [item["questionId"] for item in review.json()["questions"]] == [first["questionId"]]
+    retry = asyncio.run(submit(first["questionId"], "A"))
+    assert retry.json()["outcome"] == "correct"
+    assert retry.json()["attemptCount"] == 2
+
+    ambiguous = asyncio.run(submit(quiz["questions"][1]["questionId"], "chlorophyll uses energy"))
+    assert ambiguous.json()["outcome"] == "ambiguous"
+    assert ambiguous.json()["isCorrect"] is None
+
+    progress = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/progress"))
+    progress_body = progress.json()
+    assert progress_body["totalAttempts"] == 3
+    topic = progress_body["topics"][0]
+    assert topic["attemptedQuestions"] == 2
+    assert topic["correctQuestions"] == 1
+    assert topic["ambiguousQuestions"] == 1
+    assert topic["needsReview"] is True
+    assert len(progress_body["recentAttempts"]) == 3
+
+    restarted_app = create_app(settings)
+    persisted = asyncio.run(request_with_lifespan(restarted_app, "GET", "/api/v1/progress"))
+    assert persisted.json()["totalAttempts"] == 3
+
+    removed = asyncio.run(request_with_lifespan(app, "DELETE", f"/api/v1/documents/{document_id}"))
+    assert removed.status_code == 200
+    forgotten = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/progress"))
+    assert forgotten.json()["totalAttempts"] == 0
+
+
+def test_quiz_without_retrieved_evidence_does_not_call_model(tmp_path):
+    app = create_app(make_settings(tmp_path))
+    response = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/quizzes",
+            json={"topic": "unsupported subject", "questionCount": 2},
+        )
+    )
+    assert response.status_code == 200
+    assert response.json()["status"] == "insufficient_evidence"
+    assert response.json()["questions"] == []
+
+
+def test_quiz_requires_local_model_when_evidence_exists(tmp_path):
+    post_pdf(tmp_path, make_pdf("Chlorophyll absorbs light energy in leaves."))
+    app = create_app(make_settings(tmp_path))
+    response = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/quizzes",
+            json={"topic": "chlorophyll", "questionCount": 1},
+        )
+    )
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "TUTOR_MODEL_UNAVAILABLE"

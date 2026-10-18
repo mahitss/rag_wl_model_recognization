@@ -30,6 +30,8 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 
 **M6 tutor update:** The existing retrieval pipeline now feeds an optional local OpenAI-compatible chat-completions server bound to loopback. Generated citation labels are allow-listed against the retrieved evidence pack and converted to stored citation records; no evidence abstains without invoking the model. No weights are bundled or downloaded, and answer quality has not yet been evaluated or reviewed by humans. The tutor remains optional; the prior extractive answer endpoint is unchanged.
 
+**Quiz/progress sequencing update (requested as M7; originally roadmap M8):** An evidence-grounded quiz and local progress slice is now implemented early without renumbering roadmap milestones. Questions are generated from retrieved material through the same optional local tutor, schema-validated and linked to stored chunk citations. Multiple-choice is scored by exact option ID; short answers use a deterministic token-overlap rubric with an explicit ambiguous outcome. SQLite retains attempt history and topic-level latest outcomes, and source deletion cascades dependent quiz citations/history. Model-generated quiz quality and the short-answer rubric still need human review; no claim of learning effectiveness is made. The original M7 vision dataset/model pilot remains in the roadmap.
+
 | Milestone | Depends on | Estimate | Definition of done |
 |---|---|---:|---|
 | M0: Environment and repository scaffold | none | 1–2 days | verified versions, project boundaries, license/data policy, run notes |

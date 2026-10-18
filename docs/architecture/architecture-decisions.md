@@ -20,6 +20,16 @@
 
 **Implementation update (M6):** An optional loopback-only local chat-completion adapter now generates explanations after retrieval. Retrieved evidence remains the sole supplied source, model citation labels are allow-listed against the retrieved set, and empty evidence produces explicit abstention before model invocation. This is an implementation of the optional adapter, not a change to the evidence-first decision. The adapter is not required for API operation; human review of answer quality and citations remains outstanding, so the tutor is an experiment rather than a validated learning capability.
 
+### ADR-006: Local evidence-backed quiz and progress records
+
+**Decision:** generate quiz items only from retrieved local passages through the existing optional loopback tutor; validate schemas and retrieved citation IDs; score multiple-choice exactly and short answers with a conservative deterministic lexical rubric that preserves ambiguous outcomes. Store quiz questions, source chunk references, attempts, and derived topic progress in SQLite on the learner's device.
+
+**Alternatives:** hosted quiz generation, model-judged correctness, server-side learner accounts, ungrounded authored templates.
+
+**Reason:** preserve the local-first and evidence-first boundary, avoid paid services and model training, and avoid claiming certainty for semantically ambiguous short answers. Source document deletion cascades dependent quiz and attempt data. Human review of generated educational quality and the short-answer rubric remains necessary.
+
+**Sequencing note:** The request labels this work M7; the existing roadmap assigns the quiz/progress product work to M8 after the vision dataset pilot. This implementation delivers that product slice early and leaves roadmap numbering unchanged.
+
 ### ADR-003: Curated diagram component selection first
 
 **Decision:** begin with configured regions and pointer selection on one supported diagram family; advance to detection only after licensed annotated data exists.

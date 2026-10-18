@@ -41,6 +41,53 @@ type TutorResult = {
   fallbackReason: string | null;
 };
 
+type QuizCitation = Citation;
+type QuizQuestion = {
+  questionId: string;
+  questionType: "multiple_choice" | "short_answer";
+  prompt: string;
+  options: { id: string; text: string }[];
+  explanation: string | null;
+  citations: QuizCitation[];
+  latestOutcome: "correct" | "incorrect" | "ambiguous" | null;
+  attemptCount: number;
+};
+type QuizSet = {
+  status: "ready" | "insufficient_evidence";
+  quizId: string | null;
+  topicId: string | null;
+  topic: string;
+  questions: QuizQuestion[];
+};
+type QuizFeedback = {
+  outcome: "correct" | "incorrect" | "ambiguous";
+  expectedAnswer: string;
+  explanation: string;
+  citations: Citation[];
+  attemptCount: number;
+};
+type LearningProgress = {
+  topics: {
+    topicId: string;
+    topic: string;
+    attemptedQuestions: number;
+    correctQuestions: number;
+    incorrectQuestions: number;
+    ambiguousQuestions: number;
+    accuracy: number;
+    needsReview: boolean;
+  }[];
+  totalAttempts: number;
+  recentAttempts: {
+    attemptId: string;
+    outcome: "correct" | "incorrect" | "ambiguous";
+    createdAt: string;
+    prompt: string;
+    topicId: string;
+    topic: string;
+  }[];
+};
+
 type Evidence = {
   status: "evidence_found" | "insufficient_evidence";
   concept: { conceptId: string; displayName: string; aliases: string[] };
@@ -74,6 +121,13 @@ export function App() {
   const [tutorResult, setTutorResult] = useState<TutorResult | null>(null);
   const [tutorError, setTutorError] = useState<string | null>(null);
   const [tutorLoading, setTutorLoading] = useState(false);
+  const [quizTopic, setQuizTopic] = useState("");
+  const [quiz, setQuiz] = useState<QuizSet | null>(null);
+  const [quizAnswers, setQuizAnswers] = useState<Record<string, string>>({});
+  const [quizFeedback, setQuizFeedback] = useState<Record<string, QuizFeedback>>({});
+  const [quizLoading, setQuizLoading] = useState(false);
+  const [quizError, setQuizError] = useState<string | null>(null);
+  const [progress, setProgress] = useState<LearningProgress | null>(null);
   const requestNumber = useRef(0);
 
   useEffect(() => {
@@ -116,6 +170,14 @@ export function App() {
       })
       .catch(() => {
         if (active) setTutorConfigured(false);
+      });
+    fetch("/api/v1/progress")
+      .then((response) => readJson<LearningProgress>(response))
+      .then((result) => {
+        if (active) setProgress(result);
+      })
+      .catch(() => {
+        if (active) setQuizError("Could not load local learning progress.");
       });
     return () => {
       active = false;
@@ -190,6 +252,91 @@ export function App() {
       setTutorError(error instanceof Error ? error.message : "The tutor could not answer right now.");
     } finally {
       setTutorLoading(false);
+    }
+  }
+
+  async function refreshProgress() {
+    const response = await fetch("/api/v1/progress");
+    setProgress(await readJson<LearningProgress>(response));
+  }
+
+  async function generateQuiz(topic = quizTopic) {
+    const normalizedTopic = topic.trim();
+    if (!normalizedTopic) return;
+    setQuizLoading(true);
+    setQuizError(null);
+    setQuiz(null);
+    setQuizFeedback({});
+    setQuizAnswers({});
+    setQuizTopic(normalizedTopic);
+    try {
+      const payload = {
+        topic: normalizedTopic,
+        questionCount: 5,
+        ...(selectedDocumentId ? { documentIds: [selectedDocumentId] } : {}),
+        ...(selectedRegion && diagram
+          ? { diagramId: diagram.diagramId, conceptId: selectedRegion.conceptId }
+          : {}),
+      };
+      const response = await fetch("/api/v1/quizzes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setQuiz(await readJson<QuizSet>(response));
+    } catch (error) {
+      setQuizError(error instanceof Error ? error.message : "Could not generate a quiz.");
+    } finally {
+      setQuizLoading(false);
+    }
+  }
+
+  async function submitQuizAnswer(question: QuizQuestion) {
+    if (!quiz?.quizId || !quizAnswers[question.questionId]) return;
+    setQuizLoading(true);
+    setQuizError(null);
+    try {
+      const response = await fetch(
+        `/api/v1/quizzes/${encodeURIComponent(quiz.quizId)}/questions/${encodeURIComponent(question.questionId)}/attempts`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answer: quizAnswers[question.questionId] }),
+        },
+      );
+      const result = await readJson<QuizFeedback>(response);
+      setQuizFeedback((current) => ({ ...current, [question.questionId]: result }));
+      setQuiz((current) => current && ({
+        ...current,
+        questions: current.questions.map((item) => item.questionId === question.questionId
+          ? { ...item, latestOutcome: result.outcome, attemptCount: result.attemptCount, explanation: result.explanation, citations: result.citations }
+          : item),
+      }));
+      await refreshProgress();
+    } catch (error) {
+      setQuizError(error instanceof Error ? error.message : "Could not record that answer.");
+    } finally {
+      setQuizLoading(false);
+    }
+  }
+
+  async function retryMissedQuestions() {
+    if (!quiz?.quizId) return;
+    setQuizLoading(true);
+    setQuizError(null);
+    try {
+      const response = await fetch(
+        `/api/v1/quizzes/${encodeURIComponent(quiz.quizId)}?review_incorrect=true`,
+      );
+      const result = await readJson<QuizSet>(response);
+      setQuiz(result);
+      setQuizAnswers({});
+      setQuizFeedback({});
+      if (result.questions.length === 0) setQuizError("There are no missed or uncertain questions to retry.");
+    } catch (error) {
+      setQuizError(error instanceof Error ? error.message : "Could not load review questions.");
+    } finally {
+      setQuizLoading(false);
     }
   }
 
@@ -395,6 +542,158 @@ export function App() {
                       </li>
                     ))}
                   </ol>
+                </div>
+              )}
+            </section>
+            <section className="quiz-section" aria-labelledby="quiz-title">
+              <p className="eyebrow">Practice from your sources</p>
+              <h2 id="quiz-title">Quiz and progress</h2>
+              {tutorConfigured === false && (
+                <p className="notice" role="status">
+                  Quiz generation needs the optional local tutor model. Your progress remains stored locally.
+                </p>
+              )}
+              <form
+                className="quiz-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  void generateQuiz();
+                }}
+              >
+                <label className="document-control" htmlFor="quiz-topic">
+                  Topic to practice
+                  <input
+                    id="quiz-topic"
+                    value={quizTopic}
+                    maxLength={160}
+                    minLength={2}
+                    required
+                    onChange={(event) => setQuizTopic(event.currentTarget.value)}
+                    placeholder="For example, photosynthesis"
+                  />
+                </label>
+                <button
+                  className="camera-action camera-action--primary"
+                  type="submit"
+                  disabled={quizLoading || tutorConfigured === false}
+                >
+                  {quizLoading ? "Building quiz…" : "Generate quiz from evidence"}
+                </button>
+              </form>
+              {quizLoading && <p className="muted" role="status">Retrieving passages and preparing questions…</p>}
+              {quizError && <p className="notice notice--error" role="alert">{quizError}</p>}
+              {quiz?.status === "insufficient_evidence" && (
+                <p className="notice" role="status">No supporting passages were found, so no quiz was generated.</p>
+              )}
+              {quiz?.status === "ready" && (
+                <div className="quiz-questions" aria-label={`Quiz about ${quiz.topic}`}>
+                  <h3>{quiz.topic}</h3>
+                  {quiz.questions.map((question, index) => {
+                    const feedback = quizFeedback[question.questionId];
+                    const outcome = feedback?.outcome ?? question.latestOutcome;
+                    const explanation = feedback?.explanation ?? question.explanation;
+                    const citations = feedback?.citations ?? question.citations;
+                    return (
+                      <article className="quiz-question" key={question.questionId}>
+                        <h4>{index + 1}. {question.prompt}</h4>
+                        {question.questionType === "multiple_choice" ? (
+                          <fieldset className="quiz-options">
+                            <legend className="sr-only">Choose one answer</legend>
+                            {question.options.map((option) => (
+                              <label key={option.id}>
+                                <input
+                                  type="radio"
+                                  name={`answer-${question.questionId}`}
+                                  value={option.id}
+                                  checked={quizAnswers[question.questionId] === option.id}
+                                  onChange={() => setQuizAnswers((current) => ({ ...current, [question.questionId]: option.id }))}
+                                />
+                                <span><strong>{option.id}.</strong> {option.text}</span>
+                              </label>
+                            ))}
+                          </fieldset>
+                        ) : (
+                          <label className="document-control" htmlFor={`answer-${question.questionId}`}>
+                            Your short answer
+                            <input
+                              id={`answer-${question.questionId}`}
+                              value={quizAnswers[question.questionId] ?? ""}
+                              maxLength={2_000}
+                              onChange={(event) => setQuizAnswers((current) => ({ ...current, [question.questionId]: event.currentTarget.value }))}
+                            />
+                          </label>
+                        )}
+                        <button
+                          className="camera-action"
+                          type="button"
+                          disabled={quizLoading || !quizAnswers[question.questionId]?.trim()}
+                          onClick={() => void submitQuizAnswer(question)}
+                        >
+                          {question.attemptCount > 0 ? "Submit retry" : "Check answer"}
+                        </button>
+                        {outcome && (
+                          <p className={`quiz-outcome quiz-outcome--${outcome}`} role="status">
+                            {outcome === "correct" ? "Correct" : outcome === "incorrect" ? "Not correct" : "Uncertain — review the evidence"}
+                            {feedback && ` · Expected answer: ${feedback.expectedAnswer}`}
+                          </p>
+                        )}
+                        {explanation && (
+                          <div className="quiz-explanation">
+                            <p>{explanation}</p>
+                            <ol className="evidence-list">
+                              {citations.map((citation) => (
+                                <li className="evidence-item" key={citation.citationId}>
+                                  <blockquote>{citation.text}</blockquote>
+                                  <p className="citation-meta"><strong>{citation.displayFilename}</strong> · page {citation.pageNumber}</p>
+                                  <p className="citation-id">Citation / chunk ID: <code>{citation.citationId}</code></p>
+                                </li>
+                              ))}
+                            </ol>
+                          </div>
+                        )}
+                      </article>
+                    );
+                  })}
+                  {quiz.questions.some((question) => question.latestOutcome === "incorrect" || question.latestOutcome === "ambiguous") && (
+                    <button className="camera-action" type="button" disabled={quizLoading} onClick={() => void retryMissedQuestions()}>
+                      Retry missed or uncertain questions
+                    </button>
+                  )}
+                </div>
+              )}
+              {progress && (
+                <div className="progress-panel" aria-label="Learning progress">
+                  <h3>Local progress · {progress.totalAttempts} attempts</h3>
+                  {progress.topics.length === 0 ? (
+                    <p className="muted">Your topic progress will appear after your first answer.</p>
+                  ) : (
+                    <ul className="progress-topics">
+                      {progress.topics.map((topic) => (
+                        <li key={topic.topicId}>
+                          <span><strong>{topic.topic}</strong> · {topic.correctQuestions}/{topic.attemptedQuestions} latest answers correct</span>
+                          <span>{Math.round(topic.accuracy * 100)}%{topic.needsReview ? " · review suggested" : ""}</span>
+                          {topic.needsReview && (
+                            <button type="button" className="text-action" disabled={quizLoading} onClick={() => void generateQuiz(topic.topic)}>
+                              Practice this topic
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {progress.recentAttempts.length > 0 && (
+                    <details>
+                      <summary>Review history</summary>
+                      <ol className="attempt-history">
+                        {progress.recentAttempts.map((attempt) => (
+                          <li key={attempt.attemptId}>
+                            <span>{attempt.topic}: {attempt.prompt}</span>
+                            <span>{attempt.outcome} · {new Date(attempt.createdAt).toLocaleString()}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    </details>
+                  )}
                 </div>
               )}
             </section>

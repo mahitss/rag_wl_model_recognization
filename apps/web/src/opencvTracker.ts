@@ -1,4 +1,8 @@
-import { isPlausibleDetection } from "./tracking";
+import {
+  areCorrespondencesValid,
+  hasReliableInlierSupport,
+  isPlausibleDetection,
+} from "./tracking";
 
 type CvObject = { delete: () => void; [key: string]: any };
 type CvConstructor = new (...args: any[]) => CvObject;
@@ -151,14 +155,26 @@ export async function createDiagramTracker(imageUrl: string): Promise<DiagramTra
             pair.delete();
           }
         }
-        if (sourcePoints.length < 16) return null;
+        if (
+          !areCorrespondencesValid(
+            sourcePoints,
+            destinationPoints,
+            image.naturalWidth,
+            image.naturalHeight,
+            frameCanvas.width,
+            frameCanvas.height,
+          )
+        ) return null;
 
         source = cv.matFromArray(sourcePoints.length / 2, 1, cv.CV_32FC2, sourcePoints);
         destination = cv.matFromArray(destinationPoints.length / 2, 1, cv.CV_32FC2, destinationPoints);
         inlierMask = new cv.Mat();
         homography = cv.findHomography(source, destination, cv.RANSAC, 4, inlierMask, 1200, 0.995);
         const inliers = cv.countNonZero(inlierMask);
-        if (homography.empty() || inliers < 8 || inliers / (sourcePoints.length / 2) < 0.24) return null;
+        if (
+          homography.empty() ||
+          !hasReliableInlierSupport(inliers, sourcePoints.length / 2)
+        ) return null;
 
         const matrix = Array.from(homography.data64F as Float64Array).slice(0, 9);
         if (

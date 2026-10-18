@@ -96,6 +96,16 @@ type Evidence = {
   fallbackReason: string | null;
 };
 
+type GraphConcept = { conceptId: string; name: string; aliases: string[]; evidenceCount: number; relationshipCount: number };
+type GraphDetail = GraphConcept & {
+  evidence: { chunkId: string; documentId: string; displayFilename: string; pageNumber: number; supportingText: string }[];
+  relationships: {
+    relationshipId: string; sourceConceptId: string; sourceName: string; targetConceptId: string;
+    targetName: string; relation: string; chunkId: string; documentId: string;
+    displayFilename: string; pageNumber: number; supportingText: string; status: "candidate" | "human_verified";
+  }[];
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T | { error?: { message?: string } };
   if (!response.ok) {
@@ -128,6 +138,13 @@ export function App() {
   const [quizLoading, setQuizLoading] = useState(false);
   const [quizError, setQuizError] = useState<string | null>(null);
   const [progress, setProgress] = useState<LearningProgress | null>(null);
+  const [graphConcepts, setGraphConcepts] = useState<GraphConcept[]>([]);
+  const [selectedGraphConcept, setSelectedGraphConcept] = useState<GraphDetail | null>(null);
+  const [graphLoading, setGraphLoading] = useState(false);
+  const [graphError, setGraphError] = useState<string | null>(null);
+  const [graphCursor, setGraphCursor] = useState<string | null>(null);
+  const [graphCursorScope, setGraphCursorScope] = useState<string | null>(null);
+  const [graphDoneScope, setGraphDoneScope] = useState<string | null>(null);
   const requestNumber = useRef(0);
 
   useEffect(() => {
@@ -179,6 +196,10 @@ export function App() {
       .catch(() => {
         if (active) setQuizError("Could not load local learning progress.");
       });
+    fetch("/api/v1/knowledge-graph")
+      .then((response) => readJson<{ concepts: GraphConcept[] }>(response))
+      .then((result) => { if (active) setGraphConcepts(result.concepts); })
+      .catch(() => { if (active) setGraphError("Could not load the local knowledge graph."); });
     return () => {
       active = false;
     };
@@ -237,7 +258,9 @@ export function App() {
     try {
       const payload = {
         question: tutorQuestion,
-        ...(selectedRegion && diagram
+        ...(selectedGraphConcept
+          ? { graphConceptId: selectedGraphConcept.conceptId }
+          : selectedRegion && diagram
           ? { diagramId: diagram.diagramId, conceptId: selectedRegion.conceptId }
           : {}),
         ...(selectedDocumentId ? { documentIds: [selectedDocumentId] } : {}),
@@ -252,6 +275,60 @@ export function App() {
       setTutorError(error instanceof Error ? error.message : "The tutor could not answer right now.");
     } finally {
       setTutorLoading(false);
+    }
+  }
+
+  async function loadGraphConcept(conceptId: string) {
+    setGraphLoading(true);
+    setGraphError(null);
+    try {
+      const response = await fetch(`/api/v1/knowledge-graph/concepts/${encodeURIComponent(conceptId)}`);
+      setSelectedGraphConcept(await readJson<GraphDetail>(response));
+    } catch (error) {
+      setGraphError(error instanceof Error ? error.message : "Could not load this graph concept.");
+    } finally {
+      setGraphLoading(false);
+    }
+  }
+
+  async function extractGraph() {
+    setGraphLoading(true);
+    setGraphError(null);
+    try {
+      const response = await fetch("/api/v1/knowledge-graph/extract", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(selectedDocumentId ? { documentIds: [selectedDocumentId] } : {}),
+          ...(graphCursor && graphCursorScope === selectedDocumentId ? { afterChunkId: graphCursor } : {}),
+          chunkLimit: 10,
+        }),
+      });
+      const result = await readJson<{ concepts: GraphConcept[]; nextAfterChunkId: string | null; chunksProcessed: number }>(response);
+      setGraphConcepts(result.concepts);
+      setGraphCursorScope(selectedDocumentId);
+      setGraphCursor(result.nextAfterChunkId);
+      if (result.nextAfterChunkId === null) setGraphDoneScope(selectedDocumentId);
+      if (result.concepts.length === 0 && result.nextAfterChunkId === null) setGraphError("No evidence-backed concepts were extracted from the selected material.");
+    } catch (error) {
+      setGraphError(error instanceof Error ? error.message : "Could not extract graph candidates.");
+    } finally {
+      setGraphLoading(false);
+    }
+  }
+
+  async function verifyGraphRelationship(relationshipId: string) {
+    if (!selectedGraphConcept) return;
+    setGraphLoading(true);
+    setGraphError(null);
+    try {
+      const response = await fetch(`/api/v1/knowledge-graph/relationships/${encodeURIComponent(relationshipId)}/verify`, { method: "POST" });
+      await readJson<{ relationshipId: string; status: string }>(response);
+      await loadGraphConcept(selectedGraphConcept.conceptId);
+    } catch (error) {
+      setGraphError(error instanceof Error ? error.message : "Could not verify this relationship.");
+    } finally {
+      setGraphLoading(false);
     }
   }
 
@@ -700,6 +777,48 @@ export function App() {
           </section>
         </section>
       )}
+      <section className="knowledge-graph" aria-labelledby="knowledge-graph-title">
+        <div className="graph-heading">
+          <div>
+            <p className="eyebrow">Evidence-linked candidates</p>
+            <h2 id="knowledge-graph-title">Knowledge graph</h2>
+            <p className="muted">Relationships remain model-extracted candidates until a person verifies them. Extraction runs locally through the optional tutor model.</p>
+          </div>
+          <button className="camera-action camera-action--primary" type="button" disabled={graphLoading || tutorConfigured !== true || documents.length === 0 || graphDoneScope === selectedDocumentId} onClick={() => void extractGraph()}>
+            {graphLoading ? "Working…" : graphCursor && graphCursorScope === selectedDocumentId ? "Extract next batch" : "Extract from study materials"}
+          </button>
+        </div>
+        {tutorConfigured === false && <p className="notice" role="status">Graph extraction needs the optional local tutor. Existing graph data and citations remain available.</p>}
+        {graphError && <p className="notice notice--error" role="alert">{graphError}</p>}
+        {graphConcepts.length === 0 ? <p className="muted">No graph concepts yet. Index a PDF, configure the local tutor, then extract candidates.</p> : (
+          <div className="graph-layout">
+            <nav className="graph-nodes" aria-label="Knowledge graph concepts">
+              {graphConcepts.map((concept) => <button type="button" key={concept.conceptId} aria-pressed={selectedGraphConcept?.conceptId === concept.conceptId} onClick={() => void loadGraphConcept(concept.conceptId)}>{concept.name}<small>{concept.relationshipCount} connected relations</small></button>)}
+            </nav>
+            {selectedGraphConcept && <article className="graph-detail" aria-live="polite">
+              <h3>{selectedGraphConcept.name}</h3>
+              {!!selectedGraphConcept.aliases.length && <p className="muted">Aliases: {selectedGraphConcept.aliases.join(", ")}</p>}
+              <button type="button" className="text-action" onClick={() => { setTutorQuestion(`Explain ${selectedGraphConcept.name} using my study materials.`); document.getElementById("tutor-question")?.focus(); }}>Ask tutor about this concept</button>
+              <h4>Connected concepts and evidence</h4>
+              {selectedGraphConcept.relationships.length === 0 && <p className="muted">No relationships have been extracted for this concept.</p>}
+              <ul className="graph-relations">{selectedGraphConcept.relationships.map((relation) => {
+                const otherId = relation.sourceConceptId === selectedGraphConcept.conceptId ? relation.targetConceptId : relation.sourceConceptId;
+                const otherName = relation.sourceConceptId === selectedGraphConcept.conceptId ? relation.targetName : relation.sourceName;
+                return <li key={relation.relationshipId}>
+                  <button type="button" className="text-action" onClick={() => void loadGraphConcept(otherId)}>{otherName}</button>
+                  <span> · {relation.relation} ({relation.sourceConceptId === selectedGraphConcept.conceptId ? "outgoing" : "incoming"})</span>
+                  <p><strong>{relation.status === "human_verified" ? "Human verified" : "Candidate — needs review"}</strong></p>
+                  {relation.status === "candidate" && <button type="button" className="text-action" disabled={graphLoading} onClick={() => void verifyGraphRelationship(relation.relationshipId)}>Mark as human-verified</button>}
+                  <blockquote>{relation.supportingText}</blockquote>
+                  <p className="citation-meta"><strong>{relation.displayFilename}</strong> · page {relation.pageNumber} · chunk <code>{relation.chunkId}</code> · document <code>{relation.documentId}</code></p>
+                </li>;
+              })}</ul>
+              <h4>Concept evidence</h4>
+              <ul className="graph-relations">{selectedGraphConcept.evidence.map((item) => <li key={`${item.chunkId}-${item.supportingText}`}><blockquote>{item.supportingText}</blockquote><p className="citation-meta"><strong>{item.displayFilename}</strong> · page {item.pageNumber} · chunk <code>{item.chunkId}</code> · document <code>{item.documentId}</code></p></li>)}</ul>
+            </article>}
+          </div>
+        )}
+      </section>
     </main>
   );
 }

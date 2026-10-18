@@ -16,6 +16,7 @@ from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
 from app.ingestion.pdf import ingest_pdf
+from app.knowledge_graph import extract_chunk
 from app.quiz import evaluate_answer, generate_quiz_questions
 from app.retrieval.service import answer_from_evidence, retrieve_with_mode
 from app.schemas import (
@@ -33,6 +34,10 @@ from app.schemas import (
     DocumentsResponse,
     EmbeddingStatusResponse,
     HealthResponse,
+    KnowledgeGraphConceptDetail,
+    KnowledgeGraphConceptList,
+    KnowledgeGraphExtractRequest,
+    KnowledgeGraphExtractResponse,
     LearningProgressResponse,
     QuizAttemptRequest,
     QuizAttemptResponse,
@@ -51,11 +56,16 @@ from app.storage import (
     create_quiz_set,
     delete_document,
     get_document,
+    get_knowledge_concept,
     get_learning_progress,
     get_quiz_question,
     get_quiz_set,
+    knowledge_graph_chunks,
     list_documents,
+    list_knowledge_concepts,
     record_quiz_attempt,
+    store_knowledge_extraction,
+    verify_knowledge_relationship,
 )
 from app.tutor import InvalidTutorResponse, TutorUnavailable, generate_grounded_answer
 
@@ -232,6 +242,7 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
         )
 
     concept = None
+    concept_name = None
     query = payload.question
     if payload.diagram_id is not None and payload.concept_id is not None:
         diagram = get_diagram(payload.diagram_id)
@@ -242,7 +253,17 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
         )
         if concept is None:
             raise ApiError(404, "CONCEPT_NOT_FOUND", "The selected concept is not supported.")
+        concept_name = concept.display_name
         query = f"{payload.question} {concept.retrieval_query}"
+    elif payload.graph_concept_id is not None:
+        graph_concept = _database_call(
+            get_knowledge_concept, settings.database_path, payload.graph_concept_id
+        )
+        if graph_concept is None:
+            raise ApiError(404, "CONCEPT_NOT_FOUND", "The requested graph concept was not found.")
+        concept_name = graph_concept["name"]
+        retrieval_query = " ".join([graph_concept["name"], *graph_concept["aliases"]])
+        query = f"{payload.question} {retrieval_query}"
 
     search = retrieve_with_mode(
         settings.database_path,
@@ -268,7 +289,7 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
             generate_grounded_answer,
             settings,
             question=payload.question,
-            concept=concept.display_name if concept else None,
+            concept=concept_name,
             evidence=search["results"],
         )
     except TutorUnavailable as exc:
@@ -292,6 +313,86 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
         "retrievalMode": search["retrievalMode"],
         "fallbackReason": search["fallbackReason"],
     }
+
+
+@router.get("/knowledge-graph", response_model=KnowledgeGraphConceptList, tags=["knowledge graph"])
+def knowledge_graph(request: Request) -> dict[str, Any]:
+    return {"concepts": _database_call(list_knowledge_concepts, _database_path(request))}
+
+
+@router.post(
+    "/knowledge-graph/extract",
+    response_model=KnowledgeGraphExtractResponse,
+    tags=["knowledge graph"],
+)
+async def extract_knowledge_graph(
+    request: Request, payload: KnowledgeGraphExtractRequest
+) -> dict[str, Any]:
+    settings = _settings(request)
+    try:
+        chunks = knowledge_graph_chunks(
+            settings.database_path,
+            document_ids=payload.document_ids,
+            limit=payload.chunk_limit + 1,
+            after_chunk_id=payload.after_chunk_id,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(503, "STORAGE_UNAVAILABLE", "Local storage is unavailable.") from exc
+    if not chunks:
+        return {"chunksProcessed": 0, "nextAfterChunkId": None, "concepts": []}
+    has_more = len(chunks) > payload.chunk_limit
+    chunks = chunks[: payload.chunk_limit]
+    parsed: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    try:
+        for chunk in chunks:
+            result = await asyncio.to_thread(extract_chunk, settings, chunk)
+            parsed.append((chunk, result))
+        for chunk, result in parsed:
+            store_knowledge_extraction(settings.database_path, chunk, result)
+    except TutorUnavailable as exc:
+        raise ApiError(
+            503,
+            "TUTOR_MODEL_UNAVAILABLE",
+            "Configure the optional local tutor to extract graph candidates.",
+        ) from exc
+    except InvalidTutorResponse as exc:
+        raise ApiError(
+            502,
+            "GRAPH_INVALID_EXTRACTION",
+            "The local model returned malformed or unsupported graph data.",
+        ) from exc
+    except (OSError, sqlite3.Error) as exc:
+        raise ApiError(503, "STORAGE_UNAVAILABLE", "Local graph storage is unavailable.") from exc
+    return {
+        "chunksProcessed": len(chunks),
+        "nextAfterChunkId": chunks[-1]["chunk_id"] if has_more else None,
+        "concepts": _database_call(list_knowledge_concepts, settings.database_path),
+    }
+
+
+@router.get(
+    "/knowledge-graph/concepts/{concept_id}",
+    response_model=KnowledgeGraphConceptDetail,
+    tags=["knowledge graph"],
+)
+def knowledge_graph_concept(request: Request, concept_id: str) -> dict[str, Any]:
+    result = _database_call(get_knowledge_concept, _database_path(request), concept_id)
+    if result is None:
+        raise ApiError(404, "CONCEPT_NOT_FOUND", "The requested graph concept was not found.")
+    return result
+
+
+@router.post(
+    "/knowledge-graph/relationships/{relationship_id}/verify",
+    tags=["knowledge graph"],
+)
+def verify_knowledge_graph_relationship(request: Request, relationship_id: str) -> dict[str, Any]:
+    verified = _database_call(
+        verify_knowledge_relationship, _database_path(request), relationship_id
+    )
+    if not verified:
+        raise ApiError(404, "RELATIONSHIP_NOT_FOUND", "The candidate relationship was not found.")
+    return {"relationshipId": relationship_id, "status": "human_verified"}
 
 
 @router.post("/quizzes", response_model=QuizSetResponse, tags=["learning"])

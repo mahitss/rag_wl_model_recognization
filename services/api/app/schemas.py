@@ -161,6 +161,7 @@ class TutorAnswerRequest(ApiModel):
     question: str = Field(min_length=1, max_length=2_000)
     diagram_id: str | None = Field(default=None, min_length=1, max_length=80)
     concept_id: str | None = Field(default=None, min_length=1, max_length=80)
+    graph_concept_id: str | None = Field(default=None, min_length=1, max_length=80)
     document_ids: list[str] | None = Field(default=None, max_length=50)
     limit: int = Field(default=5, ge=1, le=10)
     mode: Literal["lexical", "semantic", "hybrid"] | None = None
@@ -169,6 +170,8 @@ class TutorAnswerRequest(ApiModel):
     def concept_requires_diagram(self):
         if (self.diagram_id is None) != (self.concept_id is None):
             raise ValueError("diagramId and conceptId must be supplied together")
+        if self.graph_concept_id is not None and self.diagram_id is not None:
+            raise ValueError("Use either a diagram concept or a graph concept")
         return self
 
 
@@ -184,6 +187,61 @@ class TutorAnswerResponse(ApiModel):
 class TutorStatusResponse(ApiModel):
     configured: bool
     model_id: str | None
+
+
+class KnowledgeGraphExtractRequest(ApiModel):
+    document_ids: list[str] | None = Field(default=None, max_length=50)
+    chunk_limit: int = Field(default=10, ge=1, le=20)
+    after_chunk_id: str | None = Field(default=None, min_length=1, max_length=120)
+
+
+class KnowledgeGraphConcept(ApiModel):
+    concept_id: str
+    name: str
+    aliases: list[str]
+    evidence_count: int
+    relationship_count: int
+
+
+class KnowledgeGraphConceptList(ApiModel):
+    concepts: list[KnowledgeGraphConcept]
+
+
+class KnowledgeGraphEvidence(ApiModel):
+    chunk_id: str
+    document_id: str
+    display_filename: str
+    page_number: int
+    supporting_text: str
+
+
+class KnowledgeGraphRelationship(ApiModel):
+    relationship_id: str
+    source_concept_id: str
+    source_name: str
+    target_concept_id: str
+    target_name: str
+    relation: str
+    chunk_id: str
+    document_id: str
+    display_filename: str
+    page_number: int
+    supporting_text: str
+    status: Literal["candidate", "human_verified"]
+
+
+class KnowledgeGraphConceptDetail(ApiModel):
+    concept_id: str
+    name: str
+    aliases: list[str]
+    evidence: list[KnowledgeGraphEvidence]
+    relationships: list[KnowledgeGraphRelationship]
+
+
+class KnowledgeGraphExtractResponse(ApiModel):
+    chunks_processed: int
+    next_after_chunk_id: str | None
+    concepts: list[KnowledgeGraphConcept]
 
 
 class QuizGenerateRequest(ApiModel):

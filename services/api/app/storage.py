@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 
 def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
@@ -140,6 +140,50 @@ def initialize_storage(database_path: Path) -> None:
                     created_at TEXT NOT NULL
                 )
                 """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS knowledge_concepts (
+                    concept_id TEXT PRIMARY KEY,
+                    canonical_name TEXT NOT NULL,
+                    normalized_name TEXT NOT NULL UNIQUE,
+                    aliases_json TEXT NOT NULL DEFAULT '[]'
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS knowledge_concept_evidence (
+                    concept_id TEXT NOT NULL REFERENCES knowledge_concepts(concept_id)
+                        ON DELETE CASCADE,
+                    chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                    page_number INTEGER NOT NULL CHECK (page_number > 0),
+                    supporting_text TEXT NOT NULL CHECK (length(supporting_text) > 0),
+                    PRIMARY KEY (concept_id, chunk_id, supporting_text)
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS knowledge_relationships (
+                    relationship_id TEXT PRIMARY KEY,
+                    source_concept_id TEXT NOT NULL REFERENCES knowledge_concepts(concept_id)
+                        ON DELETE CASCADE,
+                    target_concept_id TEXT NOT NULL REFERENCES knowledge_concepts(concept_id)
+                        ON DELETE CASCADE,
+                    relation TEXT NOT NULL,
+                    chunk_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                    page_number INTEGER NOT NULL CHECK (page_number > 0),
+                    supporting_text TEXT NOT NULL CHECK (length(supporting_text) > 0),
+                    status TEXT NOT NULL CHECK (status IN ('candidate', 'human_verified')),
+                    UNIQUE(source_concept_id, target_concept_id, relation, chunk_id,
+                           supporting_text)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_knowledge_relationship_source "
+                "ON knowledge_relationships(source_concept_id, target_concept_id)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quiz_questions_quiz_position "
@@ -277,7 +321,216 @@ def delete_document(database_path: Path, document_id: str) -> bool:
                 "DELETE FROM chunks_fts WHERE chunk_id = ?",
                 [(row["chunk_id"],) for row in chunk_ids],
             )
+            connection.execute(
+                "DELETE FROM knowledge_concepts WHERE NOT EXISTS ("
+                "SELECT 1 FROM knowledge_concept_evidence e "
+                "WHERE e.concept_id=knowledge_concepts.concept_id"
+                ") AND NOT EXISTS (SELECT 1 FROM knowledge_relationships r "
+                "WHERE r.source_concept_id=knowledge_concepts.concept_id "
+                "OR r.target_concept_id=knowledge_concepts.concept_id)"
+            )
             return True
+
+
+def knowledge_graph_chunks(
+    database_path: Path,
+    *,
+    document_ids: list[str] | None,
+    limit: int,
+    after_chunk_id: str | None = None,
+) -> list[dict[str, Any]]:
+    sql = """SELECT c.chunk_id, c.document_id, d.display_name, c.page_number, c.text
+             FROM chunks c JOIN documents d ON d.document_id=c.document_id"""
+    parameters: list[Any] = []
+    if after_chunk_id is not None:
+        sql += " WHERE c.chunk_id > ?"
+        parameters.append(after_chunk_id)
+    if document_ids is not None:
+        if not document_ids:
+            return []
+        sql += " AND " if after_chunk_id is not None else " WHERE "
+        sql += "c.document_id IN (" + ",".join("?" for _ in document_ids) + ")"
+        parameters.extend(document_ids)
+    sql += " ORDER BY c.chunk_id LIMIT ?"
+    parameters.append(limit)
+    with closing(connect_database(database_path)) as connection:
+        return [dict(row) for row in connection.execute(sql, parameters)]
+
+
+def store_knowledge_extraction(
+    database_path: Path, chunk: dict[str, Any], extraction: dict[str, Any]
+) -> None:
+    """Atomically store concepts and evidence-backed candidate relations for one chunk."""
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            resolved: dict[str, str] = {}
+            for concept in extraction["concepts"]:
+                row = connection.execute(
+                    "SELECT concept_id, aliases_json FROM knowledge_concepts "
+                    "WHERE normalized_name=?",
+                    (concept["normalized_name"],),
+                ).fetchone()
+                if row is None:
+                    connection.execute(
+                        "INSERT INTO knowledge_concepts("
+                        "concept_id, canonical_name, normalized_name, aliases_json) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            concept["concept_id"],
+                            concept["name"],
+                            concept["normalized_name"],
+                            json.dumps(concept["aliases"]),
+                        ),
+                    )
+                    concept_id = concept["concept_id"]
+                else:
+                    concept_id = row["concept_id"]
+                    aliases = list(
+                        dict.fromkeys(json.loads(row["aliases_json"]) + concept["aliases"])
+                    )
+                    connection.execute(
+                        "UPDATE knowledge_concepts SET aliases_json=? WHERE concept_id=?",
+                        (json.dumps(aliases), concept_id),
+                    )
+                resolved[concept["normalized_name"]] = concept_id
+                connection.execute(
+                    "INSERT OR IGNORE INTO knowledge_concept_evidence("
+                    "concept_id, chunk_id, page_number, supporting_text) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        concept_id,
+                        chunk["chunk_id"],
+                        chunk["page_number"],
+                        concept["supporting_text"],
+                    ),
+                )
+            for relation in extraction["relationships"]:
+                source_id = resolved[relation["source_normalized"]]
+                target_id = resolved[relation["target_normalized"]]
+                relationship_id = relation["relationship_id"]
+                connection.execute(
+                    """INSERT OR IGNORE INTO knowledge_relationships(
+                       relationship_id, source_concept_id, target_concept_id, relation,
+                       chunk_id, page_number, supporting_text, status
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'candidate')""",
+                    (
+                        relationship_id,
+                        source_id,
+                        target_id,
+                        relation["relation"],
+                        chunk["chunk_id"],
+                        chunk["page_number"],
+                        relation["supporting_text"],
+                    ),
+                )
+
+
+def list_knowledge_concepts(database_path: Path) -> list[dict[str, Any]]:
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """SELECT c.concept_id, c.canonical_name, c.aliases_json,
+                      count(DISTINCT e.chunk_id) AS evidence_count,
+                      count(DISTINCT r.relationship_id) AS relationship_count
+               FROM knowledge_concepts c
+               LEFT JOIN knowledge_concept_evidence e ON e.concept_id=c.concept_id
+               LEFT JOIN knowledge_relationships r ON r.source_concept_id=c.concept_id
+                    OR r.target_concept_id=c.concept_id
+               GROUP BY c.concept_id ORDER BY c.canonical_name COLLATE NOCASE"""
+        ).fetchall()
+    import json
+
+    return [
+        {
+            "conceptId": row["concept_id"],
+            "name": row["canonical_name"],
+            "aliases": json.loads(row["aliases_json"]),
+            "evidenceCount": row["evidence_count"],
+            "relationshipCount": row["relationship_count"],
+        }
+        for row in rows
+    ]
+
+
+def get_knowledge_concept(database_path: Path, concept_id: str) -> dict[str, Any] | None:
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        concept = connection.execute(
+            "SELECT * FROM knowledge_concepts WHERE concept_id=?", (concept_id,)
+        ).fetchone()
+        if concept is None:
+            return None
+        evidence = connection.execute(
+            """SELECT e.chunk_id, c.document_id, d.display_name, e.page_number,
+                      e.supporting_text
+               FROM knowledge_concept_evidence e JOIN chunks c ON c.chunk_id=e.chunk_id
+               JOIN documents d ON d.document_id=c.document_id
+               WHERE e.concept_id=? ORDER BY c.document_id, e.page_number, e.chunk_id""",
+            (concept_id,),
+        ).fetchall()
+        relationships = connection.execute(
+            """SELECT r.relationship_id, r.source_concept_id, s.canonical_name AS source_name,
+                      r.target_concept_id, t.canonical_name AS target_name, r.relation,
+                      r.chunk_id, c.document_id, d.display_name, r.page_number,
+                      r.supporting_text, r.status
+               FROM knowledge_relationships r
+               JOIN knowledge_concepts s ON s.concept_id=r.source_concept_id
+               JOIN knowledge_concepts t ON t.concept_id=r.target_concept_id
+               JOIN chunks c ON c.chunk_id=r.chunk_id
+               JOIN documents d ON d.document_id=c.document_id
+               WHERE r.source_concept_id=? OR r.target_concept_id=?
+               ORDER BY r.source_concept_id, r.target_concept_id, r.relation, r.relationship_id""",
+            (concept_id, concept_id),
+        ).fetchall()
+    return {
+        "conceptId": concept["concept_id"],
+        "name": concept["canonical_name"],
+        "aliases": json.loads(concept["aliases_json"]),
+        "evidence": [
+            {
+                "chunkId": row["chunk_id"],
+                "documentId": row["document_id"],
+                "displayFilename": row["display_name"],
+                "pageNumber": row["page_number"],
+                "supportingText": row["supporting_text"],
+            }
+            for row in evidence
+        ],
+        "relationships": [
+            {
+                "relationshipId": row["relationship_id"],
+                "sourceConceptId": row["source_concept_id"],
+                "sourceName": row["source_name"],
+                "targetConceptId": row["target_concept_id"],
+                "targetName": row["target_name"],
+                "relation": row["relation"],
+                "chunkId": row["chunk_id"],
+                "documentId": row["document_id"],
+                "displayFilename": row["display_name"],
+                "pageNumber": row["page_number"],
+                "supportingText": row["supporting_text"],
+                "status": row["status"],
+            }
+            for row in relationships
+        ],
+    }
+
+
+def verify_knowledge_relationship(database_path: Path, relationship_id: str) -> bool:
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "UPDATE knowledge_relationships SET status='human_verified' "
+                "WHERE relationship_id=? AND status='candidate'",
+                (relationship_id,),
+            )
+            row = connection.execute(
+                "SELECT status FROM knowledge_relationships WHERE relationship_id=?",
+                (relationship_id,),
+            ).fetchone()
+    return row is not None and row["status"] == "human_verified"
 
 
 def search_chunks(

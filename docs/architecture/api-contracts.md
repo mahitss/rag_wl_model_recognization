@@ -20,6 +20,10 @@ Base path `/api/v1`; JSON camelCase in browser and explicit Pydantic mapping at 
 | `GET /quizzes/{quizId}` | Load a persisted local quiz; `review_incorrect=true` filters to latest incorrect or ambiguous questions |
 | `POST /quizzes/{quizId}/questions/{questionId}/attempts` | Deterministically score and persist a response, then return explanation and stored citations |
 | `GET /progress` | Return topic-level latest outcomes and recent local review history |
+| `GET /knowledge-graph` | List locally stored evidence-backed concepts |
+| `POST /knowledge-graph/extract` | Extract bounded candidate concepts/relationships from selected stored chunks with the optional loopback tutor model |
+| `GET /knowledge-graph/concepts/{conceptId}` | Return a concept, connected concepts, exact supporting passages, and document/chunk/page provenance |
+| `POST /knowledge-graph/relationships/{relationshipId}/verify` | Mark a candidate relationship human-verified after explicit review |
 | `GET /diagrams` | List the authored photosynthesis diagram, normalized selectable regions, concepts, and aliases |
 | `POST /diagrams/{diagramId}/regions/{regionId}/evidence` | Resolve a curated region server-side and retrieve cited evidence for its configured concept |
 | `GET /concepts/{conceptId}` | Resolve supported concept metadata/aliases |
@@ -41,6 +45,10 @@ No WebSocket is justified for the MVP: camera work stays in browser, upload and 
 `POST /api/v1/quizzes` accepts a topic, question count, and optional document/concept scope. It uses the same retrieval service and optional loopback model adapter as the tutor. Empty retrieval returns `insufficient_evidence` and never calls the model. Generated questions must match the strict multiple-choice/short-answer schema, cite only retrieved evidence labels, and pass a conservative lexical support check for the question, expected answer, and explanation. The API persists questions and foreign-key citations to actual chunks. Correct answers are withheld from quiz responses until submission.
 
 `POST /api/v1/quizzes/{quizId}/questions/{questionId}/attempts` accepts an answer and records it locally. Multiple-choice answers use exact option IDs. Short answers are compared with the expected answer and accepted alternatives after Unicode normalization, case-folding, and tokenization; token-set F1 >= 0.80 is correct, <= 0.20 is incorrect, and intermediate scores are ambiguous. This is a conservative lexical heuristic, not semantic grading. The response returns the explanation and citations resolved from current stored chunks. `GET /api/v1/progress` summarizes each question's latest outcome by topic and returns up to 100 recent attempts. Deleting a source document cascades its cited quiz questions and related attempt history so deleted source passages are not retained as stale citations.
+
+## Knowledge graph
+
+Graph extraction is an optional local-model operation over stored chunks, bounded to at most 20 chunks per request. `nextAfterChunkId` provides a stable cursor for processing larger libraries in repeated batches. Extracted output is schema-checked, and every concept and relationship must quote text that occurs verbatim in its source chunk. The server derives stable concept IDs from normalized canonical names; explicit aliases are stored for display but do not trigger merges. Potentially ambiguous alias matches remain separate concepts. Relationships are persisted as `candidate` and carry the originating document ID, chunk ID, page number, and supporting text. A human can explicitly mark a candidate `human_verified`; extraction itself never does so. Source deletion cascades evidence and relationships, then removes concepts with no remaining provenance. Graph concept IDs can scope the existing tutor endpoint through `graphConceptId`; retrieval and citation construction remain server-controlled.
 
 ## Representative schemas
 

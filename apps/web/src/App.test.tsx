@@ -111,6 +111,7 @@ const emptyProgress: {
 
 function installFetchMock(configured = true) {
   let progressResult = emptyProgress;
+  let graphRelationshipStatus: "candidate" | "human_verified" = "candidate";
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url === "/api/v1/diagrams") return jsonResponse(diagramResponse);
@@ -121,6 +122,16 @@ function installFetchMock(configured = true) {
       return jsonResponse({ configured, modelId: configured ? "local-model" : null });
     }
     if (url === "/api/v1/progress") return jsonResponse(progressResult);
+    if (url === "/api/v1/knowledge-graph") return jsonResponse({ concepts: [{ conceptId: "kg_photo", name: "Photosynthesis", aliases: ["plant process"], evidenceCount: 1, relationshipCount: 1 }] });
+    if (url === "/api/v1/knowledge-graph/concepts/kg_photo") return jsonResponse({
+      conceptId: "kg_photo", name: "Photosynthesis", aliases: ["plant process"],
+      evidence: [{ chunkId: "chunk-real", documentId: "doc_stored_003", displayFilename: "biology-notes.pdf", pageNumber: 4, supportingText: "Photosynthesis uses chlorophyll." }],
+      relationships: [{ relationshipId: "rel-1", sourceConceptId: "kg_photo", sourceName: "Photosynthesis", targetConceptId: "kg_chloro", targetName: "Chlorophyll", relation: "uses", chunkId: "chunk-real", documentId: "doc_stored_003", displayFilename: "biology-notes.pdf", pageNumber: 4, supportingText: "Photosynthesis uses chlorophyll.", status: graphRelationshipStatus }],
+    });
+    if (url === "/api/v1/knowledge-graph/relationships/rel-1/verify" && init?.method === "POST") {
+      graphRelationshipStatus = "human_verified";
+      return jsonResponse({ relationshipId: "rel-1", status: graphRelationshipStatus });
+    }
     if (url === "/api/v1/quizzes") {
       const payload = JSON.parse(String(init?.body ?? "{}")) as { topic?: string };
       if (payload.topic === "unsupported subject") {
@@ -295,5 +306,22 @@ describe("camera selection evidence flow", () => {
     expect(await screen.findByText("No supporting passages were found, so no quiz was generated.")).not.toBeNull();
     const quizCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/quizzes");
     expect(quizCall).toBeDefined();
+  });
+
+  it("shows evidence-backed graph links and connects the selected node to the tutor", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+    await user.click(screen.getByRole("button", { name: /Photosynthesis.*connected relations/ }));
+    expect(await screen.findByText("Candidate — needs review")).not.toBeNull();
+    expect(screen.getAllByText("Photosynthesis uses chlorophyll.")).toHaveLength(2);
+    expect(screen.getAllByText("chunk-real")).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "Mark as human-verified" }));
+    expect(await screen.findByText("Human verified")).not.toBeNull();
+    await user.click(screen.getByRole("button", { name: "Ask tutor about this concept" }));
+    await user.click(screen.getByRole("button", { name: "Ask tutor" }));
+    const tutorCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/tutor/answers");
+    expect(tutorCall?.[1]).toMatchObject({ body: JSON.stringify({ question: "Explain Photosynthesis using my study materials.", graphConceptId: "kg_photo" }) });
   });
 });

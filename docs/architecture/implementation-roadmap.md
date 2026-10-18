@@ -32,6 +32,8 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 
 **Quiz/progress sequencing update (requested as M7; originally roadmap M8):** An evidence-grounded quiz and local progress slice is now implemented early without renumbering roadmap milestones. Questions are generated from retrieved material through the same optional local tutor, schema-validated and linked to stored chunk citations. Multiple-choice is scored by exact option ID; short answers use a deterministic token-overlap rubric with an explicit ambiguous outcome. SQLite retains attempt history and topic-level latest outcomes, and source deletion cascades dependent quiz citations/history. Model-generated quiz quality and the short-answer rubric still need human review; no claim of learning effectiveness is made. The original M7 vision dataset/model pilot remains in the roadmap.
 
+**Knowledge graph sequencing update (requested as M9):** A local, evidence-backed candidate knowledge graph is implemented early as an optional capability. It extracts from stored chunks using the configured optional loopback model, stores stable canonical concepts and exact source provenance in SQLite, and labels relationships as candidates until a person explicitly verifies them. Aliases do not automatically merge concepts. Graph nodes can scope existing retrieval and tutor flows. This is a sequencing update, not completion of the roadmap's original M9 multimodal figure retrieval milestone; multimodal retrieval and the separate study-planner experience remain outstanding.
+
 | Milestone | Depends on | Estimate | Definition of done |
 |---|---|---:|---|
 | M0: Environment and repository scaffold | none | 1–2 days | verified versions, project boundaries, license/data policy, run notes |
@@ -43,7 +45,7 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 | M6: Dense hybrid retrieval + local tutor experiment (dense retrieval delivered early; tutor prototype implemented) | M1 | 2–4 weeks | evaluate local tutor quality, human review of answers and citations, optional fallback |
 | M7: Vision dataset/model pilot | M2 | 3–6 weeks | dataset card, group split, baseline, candidate model report, no promotion without criteria |
 | M8: Teaching mode and progress | M1/M6 | 2–4 weeks | authored quiz rubric, response evaluation, opt-in local progress/deletion, learning task evaluation |
-| M9: Multimodal retrieval | M7 | 4–8+ weeks | figure assets and captions provenance, evaluated visual retrieval, clear text/image capability boundary |
+| M9: Multimodal retrieval (still outstanding; knowledge graph delivered early as an optional capability) | M7 | 4–8+ weeks | figure assets and captions provenance, evaluated visual retrieval, clear text/image capability boundary |
 
 ## Risks and sequencing
 

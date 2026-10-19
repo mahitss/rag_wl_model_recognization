@@ -77,6 +77,11 @@ def main() -> int:
         action="store_true",
         help="Explicitly enable tests marked integration that require a locally cached model.",
     )
+    parser.add_argument(
+        "--quality",
+        action="store_true",
+        help="Also run the M18 real-world quality evaluation (lexical-only by default; use --with-model for semantic/hybrid).",
+    )
     args = parser.parse_args()
     env = os.environ.copy()
     env.pop("WL_RUN_MODEL_INTEGRATION", None)
@@ -99,6 +104,24 @@ def main() -> int:
         except json.JSONDecodeError:
             retrieval["exitCode"] = 1
             retrieval["stderr"] += "\nRetrieval evaluator did not emit valid JSON."
+
+    quality_report = None
+    if args.quality:
+        quality_command = [
+            sys.executable,
+            str(ROOT / "evaluations" / "realworld" / "evaluate_quality.py"),
+        ]
+        if not args.with_model:
+            quality_command.append("--lexical-only")
+        quality = run(quality_command, env=env)
+        if quality["exitCode"] == 0:
+            try:
+                quality_report = json.loads(quality["stdout"])
+            except json.JSONDecodeError:
+                quality["exitCode"] = 1
+                quality["stderr"] += "\nQuality evaluator did not emit valid JSON."
+    else:
+        quality = None
 
     try:
         from app.config import get_settings
@@ -196,6 +219,16 @@ def main() -> int:
                 "report": retrieval_report,
                 "stderr": retrieval["stderr"][-4000:],
             },
+            "quality": (
+                {
+                    "command": quality["command"],
+                    "exitCode": quality["exitCode"],
+                    "report": quality_report,
+                    "stderr": quality["stderr"][-4000:],
+                }
+                if quality is not None
+                else None
+            ),
         },
         "workflowRegression": {
             "coverage": "The backend suite includes an API journey for PDF ingestion, retrieval, diagram evidence, tutor-backed quiz generation, answer submission, study session, study coach, analytics, and source deletion.",

@@ -146,10 +146,14 @@ class Settings(BaseSettings):
             raise ValueError("WL_RATE_LIMIT_REQUESTS_PER_MINUTE must be positive")
         return value
 
-    @field_validator("max_request_body_bytes")
+    @field_validator("max_request_body_bytes", mode="before")
     @classmethod
     def max_request_body_bytes_is_positive(cls, value: int | None) -> int | None:
-        if value is not None and value <= 0:
+        if value == "" or value is None:
+            return None
+        if isinstance(value, str):
+            value = int(value)
+        if value <= 0:
             raise ValueError("WL_MAX_REQUEST_BODY_BYTES must be positive or unset")
         return value
 

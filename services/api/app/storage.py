@@ -15,10 +15,17 @@ def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
 
 
 def connect_database(database_path: Path) -> sqlite3.Connection:
-    """Open the existing database without creating it and enable referential integrity."""
+    """Open the existing database without creating it and enable referential integrity.
+
+    WAL mode allows concurrent readers and a single writer without blocking,
+    and `normal` synchronous mode trades a small durability window for much
+    faster writes.  Both are safe for the single-file SQLite deployment model.
+    """
     connection = sqlite3.connect(_database_uri(database_path), uri=True, timeout=5)
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
+    connection.execute("PRAGMA journal_mode = WAL")
+    connection.execute("PRAGMA synchronous = NORMAL")
     return connection
 
 
@@ -311,6 +318,10 @@ def initialize_storage(database_path: Path) -> None:
                 "ON quiz_attempts(question_id, created_at DESC)"
             )
             connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_documents_created_at "
+                "ON documents(created_at DESC, document_id ASC)"
+            )
+            connection.execute(
                 """
                 CREATE TRIGGER IF NOT EXISTS remove_quiz_question_without_citations
                 AFTER DELETE ON quiz_citations
@@ -373,27 +384,30 @@ def store_document(
                     metadata["parser_version"],
                 ),
             )
-            for chunk in chunks:
-                connection.execute(
+            if chunks:
+                connection.executemany(
                     """
                     INSERT INTO chunks (
                         chunk_id, document_id, page_number, chunk_index,
                         char_start, char_end, text
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (
-                        chunk["chunk_id"],
-                        metadata["document_id"],
-                        chunk["page_number"],
-                        chunk["chunk_index"],
-                        chunk["char_start"],
-                        chunk["char_end"],
-                        chunk["text"],
-                    ),
+                    [
+                        (
+                            chunk["chunk_id"],
+                            metadata["document_id"],
+                            chunk["page_number"],
+                            chunk["chunk_index"],
+                            chunk["char_start"],
+                            chunk["char_end"],
+                            chunk["text"],
+                        )
+                        for chunk in chunks
+                    ],
                 )
-                connection.execute(
+                connection.executemany(
                     "INSERT INTO chunks_fts(chunk_id, text) VALUES (?, ?)",
-                    (chunk["chunk_id"], chunk["text"]),
+                    [(chunk["chunk_id"], chunk["text"]) for chunk in chunks],
                 )
     return None
 
@@ -1514,37 +1528,67 @@ def search_semantic_chunks(
     limit: int,
     document_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Exact cosine search over normalized vectors, bounded in memory by the result limit."""
+    """Exact cosine search over normalized vectors.
+
+    Two-phase execution: phase 1 fetches only chunk ids and vectors and keeps a
+    bounded heap of the top-k candidates.  Phase 2 fetches full chunk details
+    only for the selected candidates, avoiding materializing every row's text
+    and vector in Python for large indexes.
+    """
     import heapq
 
-    sql = """
+    detail_sql = """
         SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
-               c.chunk_index, c.char_start, c.char_end, c.text, e.vector
-        FROM chunk_embeddings AS e
-        JOIN chunks AS c ON c.chunk_id = e.chunk_id
+               c.chunk_index, c.char_start, c.char_end, c.text
+        FROM chunks AS c
         JOIN documents AS d ON d.document_id = c.document_id
-        WHERE e.config_hash = ? AND e.dimensions = ? AND length(e.vector) = ?
+        WHERE c.chunk_id IN ({placeholders})
     """
-    parameters: list[Any] = [config_hash, dimensions, dimensions * 4]
-    if document_ids is not None:
-        if not document_ids:
-            return []
-        placeholders = ",".join("?" for _ in document_ids)
-        sql += f" AND c.document_id IN ({placeholders})"
-        parameters.extend(document_ids)
 
-    heap: list[tuple[float, str, dict[str, Any]]] = []
     with closing(connect_database(database_path)) as connection:
-        for row in connection.execute(sql, parameters):
-            vector_bytes = row["vector"]
+        # Phase 1: compute top-k similarities over id+vector pairs only.
+        heap: list[tuple[float, str]] = []
+        params = [config_hash, dimensions, dimensions * 4]
+        vector_sql = """
+            SELECT e.chunk_id, e.vector
+            FROM chunk_embeddings AS e
+            JOIN chunks AS c ON c.chunk_id = e.chunk_id
+            WHERE e.config_hash = ? AND e.dimensions = ? AND length(e.vector) = ?
+        """
+        if document_ids is not None:
+            if not document_ids:
+                return []
+            placeholders = ",".join("?" for _ in document_ids)
+            vector_sql += f" AND c.document_id IN ({placeholders})"
+            params.extend(document_ids)
+
+        for chunk_id, vector_bytes in connection.execute(vector_sql, params):
             if not is_valid_normalized_vector_blob(vector_bytes, dimensions):
                 continue
             vector = struct.unpack(f"<{dimensions}f", vector_bytes)
-            similarity = math.fsum(a * b for a, b in zip(query_vector, vector, strict=True))
-            item = {key: row[key] for key in row.keys() if key != "vector"}
-            item["similarity"] = similarity
-            key = str(row["chunk_id"])
-            heapq.heappush(heap, (similarity, key, item))
+            similarity = math.fsum(
+                a * b for a, b in zip(query_vector, vector, strict=True)
+            )
+            key = str(chunk_id)
+            heapq.heappush(heap, (similarity, key))
             if len(heap) > limit:
                 heapq.heappop(heap)
-    return [item for _, _, item in sorted(heap, key=lambda value: (-value[0], value[1]))]
+
+        top_ids = [key for _, key in sorted(heap, key=lambda v: (-v[0], v[1]))]
+        if not top_ids:
+            return []
+
+        # Phase 2: fetch full details only for the selected chunk ids.
+        placeholders = ",".join("?" for _ in top_ids)
+        detail_sql = detail_sql.format(placeholders=placeholders)
+        rows = connection.execute(detail_sql, top_ids).fetchall()
+
+    # Attach similarities and return in ranked order.
+    similarity_by_id = {key: sim for sim, key in heap}
+    results = []
+    for row in rows:
+        item = {key: row[key] for key in row.keys()}
+        item["similarity"] = similarity_by_id[str(item["chunk_id"])]
+        results.append(item)
+    results.sort(key=lambda value: (-value["similarity"], str(value["chunk_id"])))
+    return results

@@ -164,8 +164,6 @@ class EmbeddingService:
         }
 
     def rebuild(self, database_path: Path, *, force: bool = False) -> dict[str, Any]:
-        model = self.load_model()
-        del model
         config_hash = embedding_config_hash(self.settings)
         cursor: str | None = None
         indexed = 0

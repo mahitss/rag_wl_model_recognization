@@ -1,10 +1,10 @@
 # Local setup (Windows PowerShell)
 
-The local application includes PDF ingestion and FTS5 retrieval, optional semantic retrieval, curated photosynthesis diagram selection, local camera tracking, and an optional evidence-grounded tutor. The tutor is disabled unless a loopback model server is configured. Nothing downloads a dataset/model automatically or calls a paid service.
+The local application includes PDF ingestion and FTS5 retrieval, optional semantic retrieval, curated diagram selection, local camera tracking, an optional evidence-grounded tutor, and local educational-image region retrieval. Image OCR is optional and requires the Python `ocr` extra plus a local Tesseract executable on `PATH`. The tutor is disabled unless a loopback model server is configured. Nothing downloads a dataset/model automatically or calls a paid service.
 
 ## Verified toolchain and pinned packages
 
-The host reports Python 3.13.5, Node.js 24.11.0, npm 11.6.0, Git 2.52.0, and uv 0.12.15. `uv` selected Python 3.12.13 for the locked project environment. The backend declares Python `>=3.11,<3.14`, FastAPI 0.143.3, pydantic-settings 2.16.0, Uvicorn 0.54.0, pypdf 6.21.1 (BSD-3-Clause), and python-multipart 0.0.32. The optional semantic extra pins FastEmbed 0.9.0 (Apache-2.0); it uses CPU ONNX Runtime and does not install PyTorch. Development tools are pytest 9.1.1, HTTPX 0.28.1, and Ruff 0.17.1. Frontend dependencies are pinned exactly in `apps/web/package.json` and `package-lock.json` (React 19.3.1, Vite 8.3.4, TypeScript 7.0.2). `uv.lock` and `package-lock.json` capture resolved dependency trees.
+The host reports Python 3.13.5, Node.js 24.11.0, npm 11.6.0, Git 2.52.0, and uv 0.12.15. `uv` selected Python 3.12.13 for the locked project environment. The backend declares Python `>=3.11,<3.14`, FastAPI 0.143.3, pydantic-settings 2.16.0, Uvicorn 0.54.0, pypdf 6.21.1 (BSD-3-Clause), Pillow 11.3.0, and python-multipart 0.0.32. The optional OCR extra pins pytesseract 0.3.13 and requires a separate local Tesseract executable. The optional semantic extra pins FastEmbed 0.9.0 (Apache-2.0); it uses CPU ONNX Runtime and does not install PyTorch. Development tools are pytest 9.1.1, HTTPX 0.28.1, and Ruff 0.17.1. Frontend dependencies are pinned exactly in `apps/web/package.json` and `package-lock.json` (React 19.3.1, Vite 8.3.4, TypeScript 7.0.2). `uv.lock` and `package-lock.json` capture resolved dependency trees.
 
 Vite 8 requires a supported modern Node runtime; use an even-numbered Node LTS release compatible with Vite 8. This workspace was built with Node 24. Official release references: [FastAPI release notes](https://fastapi.tiangolo.com/release-notes/), [React versions](https://react.dev/versions), and [Vite supported versions](https://vite.dev/releases/).
 
@@ -14,11 +14,13 @@ Run these commands from the repository root:
 
 ```powershell
 Copy-Item .env.example .env
-uv sync --project services/api --extra dev
+uv sync --project services/api --extra dev --extra ocr
 npm ci --prefix apps/web
 ```
 
 The `.env` file contains local path/origin configuration only. Do not put secrets in it or commit it.
+
+OCR additionally needs the free Tesseract OCR executable installed locally and discoverable as `tesseract` on `PATH`. Check availability with `tesseract --version`, then restart the API after installing. If either the optional Python extra or the executable is missing, image upload and region selection still work and the API explicitly reports OCR as unavailable. No OCR engine, language data, image, or model is downloaded automatically by WonderLearn.
 
 ## Run locally
 
@@ -67,6 +69,9 @@ Settings use the `WL_` prefix and load `.env` from the current working directory
 - `WL_DATABASE_PATH`: SQLite file path. Default: `data/local/wonderlearn.sqlite3`.
 - `WL_CORS_ORIGINS`: comma-separated local HTTP origins. Default allows Vite at localhost and 127.0.0.1 port 5173. Non-local origins are rejected.
 - `WL_MAX_UPLOAD_BYTES`: maximum PDF upload size. Default: 10485760 (10 MiB).
+- `WL_MAX_IMAGE_UPLOAD_BYTES`: maximum PNG/JPEG upload size. Default: 10485760 (10 MiB).
+- `WL_MAX_IMAGE_DIMENSION`: maximum width or height after EXIF orientation. Default: 4096 pixels.
+- `WL_MAX_IMAGE_PIXELS`: maximum total decoded image pixels. Default: 16000000.
 - `WL_MAX_PDF_PAGES`: maximum page count. Default: 250.
 - `WL_MAX_EXTRACTED_CHARS`: maximum extracted text characters per PDF. Default: 5000000.
 - `WL_CHUNK_SIZE_CHARS`: maximum chunk length. Default: 2000 characters.

@@ -127,6 +127,120 @@ class DiagramsResponse(ApiModel):
     diagrams: list[DiagramResponse]
 
 
+class NormalizedImageRegion(ApiModel):
+    x: float = Field(ge=0, lt=1, allow_inf_nan=False)
+    y: float = Field(ge=0, lt=1, allow_inf_nan=False)
+    width: float = Field(gt=0, le=1, allow_inf_nan=False)
+    height: float = Field(gt=0, le=1, allow_inf_nan=False)
+
+    @field_validator("x", "y", "width", "height", mode="before")
+    @classmethod
+    def reject_boolean_coordinates(cls, value):
+        if isinstance(value, bool):
+            raise ValueError("Region coordinates must be numbers")
+        return value
+
+    @model_validator(mode="after")
+    def region_must_fit_image(self):
+        if self.x + self.width > 1 or self.y + self.height > 1:
+            raise ValueError("The selected region must fit within normalized image bounds")
+        return self
+
+
+class ImageRegionCreateRequest(ApiModel):
+    geometry: NormalizedImageRegion
+    diagram_id: str | None = Field(default=None, min_length=1, max_length=80)
+    concept_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+    @model_validator(mode="after")
+    def concept_requires_diagram(self):
+        if (self.diagram_id is None) != (self.concept_id is None):
+            raise ValueError("diagramId and conceptId must be supplied together")
+        return self
+
+
+class LearningImageResponse(ApiModel):
+    image_id: str
+    display_filename: str
+    content_type: Literal["image/png", "image/jpeg"]
+    width: int
+    height: int
+    byte_size: int
+    sha256: str
+    created_at: str
+    ocr_status: Literal["available", "empty", "unavailable", "failed"]
+    extracted_text: str | None
+
+
+class LearningImageSummaryResponse(ApiModel):
+    image_id: str
+    display_filename: str
+    content_type: Literal["image/png", "image/jpeg"]
+    width: int
+    height: int
+    byte_size: int
+    sha256: str
+    created_at: str
+    ocr_status: Literal["available", "empty", "unavailable", "failed"]
+
+
+class LearningImageListResponse(ApiModel):
+    images: list[LearningImageSummaryResponse]
+
+
+class LearningImageRegionResponse(ApiModel):
+    region_id: str
+    geometry: NormalizedImageRegion
+    ocr_status: Literal["available", "empty", "unavailable", "failed"]
+    extracted_text: str | None
+    diagram_id: str | None
+    concept_id: str | None
+    concept_name: str | None
+    citations: list[CitationResponse]
+
+
+class LearningImageDetailResponse(LearningImageResponse):
+    regions: list[LearningImageRegionResponse]
+
+
+class ImageRegionCreateResponse(LearningImageRegionResponse):
+    pass
+
+
+class ImageEvidenceResponse(ApiModel):
+    status: Literal["evidence_found", "insufficient_evidence"]
+    image_id: str
+    region_id: str
+    geometry: NormalizedImageRegion
+    extracted_text: str | None
+    ocr_status: Literal["available", "empty", "unavailable", "failed"]
+    concept_name: str | None
+    results: list[CitationResponse]
+    retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"]
+    fallback_reason: str | None
+
+
+class ImageTutorRequest(ApiModel):
+    question: str = Field(min_length=1, max_length=2_000)
+    limit: int = Field(default=5, ge=1, le=10)
+    mode: Literal["lexical", "semantic", "hybrid"] | None = None
+
+
+class ImageTutorResponse(ApiModel):
+    question: str
+    status: Literal["answered", "insufficient_evidence"]
+    answer: str | None
+    image_id: str
+    region_id: str
+    geometry: NormalizedImageRegion
+    extracted_text: str | None
+    ocr_status: Literal["available", "empty", "unavailable", "failed"]
+    concept_name: str | None
+    citations: list[CitationResponse]
+    retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"]
+    fallback_reason: str | None
+
+
 class DiagramEvidenceRequest(ApiModel):
     limit: int = Field(default=5, ge=1, le=10)
 

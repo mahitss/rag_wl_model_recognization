@@ -126,9 +126,21 @@ const analyticsFixture: TestAnalytics = {
   methodology: { mastery: "Recency weighted latest scored outcomes.", recencyHalfLifeDays: 30, weakTopicThreshold: 0.6, reviewIntervalsDays: { correct: 7, incorrect: 1, ambiguous: 1 }, reviewDueBoundary: "dueAt <= current UTC time" },
 };
 
+const uploadedImageFixture = {
+  imageId: "img_test_001", displayFilename: "biology-diagram.png", contentType: "image/png" as const,
+  width: 100, height: 80, byteSize: 120, sha256: "a".repeat(64), createdAt: "2026-05-01T10:00:00Z",
+  ocrStatus: "available" as const, extractedText: "chlorophyll absorbs light", regions: [] as {
+    regionId: string; geometry: { x: number; y: number; width: number; height: number };
+    ocrStatus: "available" | "empty" | "unavailable" | "failed"; extractedText: string | null;
+    diagramId: string | null; conceptId: string | null; conceptName: string | null; citations: typeof evidenceResponse.results;
+  }[],
+};
+
 function installFetchMock(configured = true) {
   let progressResult = emptyProgress;
   let analyticsResult = analyticsFixture;
+  let imageResult = { ...uploadedImageFixture, regions: [...uploadedImageFixture.regions] };
+  let imageExists = false;
   let graphRelationshipStatus: "candidate" | "human_verified" = "candidate";
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -141,6 +153,35 @@ function installFetchMock(configured = true) {
     }
     if (url === "/api/v1/progress") return jsonResponse(progressResult);
     if (url === "/api/v1/learning-analytics") return jsonResponse(analyticsResult);
+    if (url === "/api/v1/images" && init?.method === "POST") {
+      imageExists = true;
+      return jsonResponse(imageResult);
+    }
+    if (url === "/api/v1/images") return jsonResponse({ images: imageExists ? [{ ...imageResult, regions: undefined }] : [] });
+    if (url === "/api/v1/images/img_test_001" && init?.method === "DELETE") {
+      imageExists = false;
+      imageResult = { ...uploadedImageFixture, regions: [] };
+      return jsonResponse({ imageId: "img_test_001", deleted: true });
+    }
+    if (url === "/api/v1/images/img_test_001" && init?.method !== "DELETE") {
+      return jsonResponse(imageExists ? imageResult : { error: { message: "Image not found." } });
+    }
+    if (url === "/api/v1/images/img_test_001/regions" && init?.method === "POST") {
+      const body = JSON.parse(String(init.body)) as { geometry: { x: number; y: number; width: number; height: number }; diagramId?: string; conceptId?: string };
+      const region = {
+        regionId: "imr_test_001", geometry: body.geometry, ocrStatus: "available" as const,
+        extractedText: "chlorophyll", diagramId: body.diagramId ?? null, conceptId: body.conceptId ?? null,
+        conceptName: body.conceptId ? "Chlorophyll in leaves" : null, citations: [],
+      };
+      imageResult = { ...imageResult, regions: [region] };
+      return jsonResponse(region);
+    }
+    if (url === "/api/v1/images/img_test_001/regions/imr_test_001/evidence" && init?.method === "POST") {
+      return jsonResponse({ status: "evidence_found", imageId: "img_test_001", regionId: "imr_test_001", geometry: imageResult.regions[0]?.geometry, extractedText: "chlorophyll", ocrStatus: "available", conceptName: "Chlorophyll in leaves", results: evidenceResponse.results, retrievalMode: "lexical", fallbackReason: null });
+    }
+    if (url === "/api/v1/images/img_test_001/regions/imr_test_001/tutor" && init?.method === "POST") {
+      return jsonResponse({ question: "What does this part do?", status: "answered", answer: "The passage says chlorophyll absorbs light.", imageId: "img_test_001", regionId: "imr_test_001", geometry: imageResult.regions[0]?.geometry, extractedText: "chlorophyll", ocrStatus: "available", conceptName: "Chlorophyll in leaves", citations: evidenceResponse.results, retrievalMode: "lexical", fallbackReason: null });
+    }
     if (url === "/api/v1/study-sessions" && init?.method === "POST") {
       const session = { sessionId: "session-1", topicId: "topic-1", topic: "Photosynthesis", startedAt: "2026-04-15T10:00:00+00:00", completedAt: null };
       analyticsResult = { ...analyticsFixture, totals: { ...analyticsFixture.totals, activeStudySessions: 1 }, activeSessions: [session] };
@@ -369,5 +410,29 @@ describe("camera selection evidence flow", () => {
     const analyticsCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/learning-analytics");
     expect(analyticsCall).toBeDefined();
     expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/v1/study-sessions/session-1/complete")).toBe(true);
+  });
+
+  it("uploads a local image, creates an accessible region, and shows grounded citations", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock();
+    render(<App />);
+    const file = new File(["test image bytes"], "biology-diagram.png", { type: "image/png" });
+    await user.upload(screen.getByLabelText("Upload an educational image"), file);
+    expect(await screen.findByText(/Local OCR extracted text from this image/)).not.toBeNull();
+
+    await user.selectOptions(
+      screen.getByLabelText("Optional curated concept"),
+      "photosynthesis-cycle|biology.photosynthesis.chlorophyll",
+    );
+    await user.click(screen.getByRole("button", { name: "Save region and search evidence" }));
+    expect(await screen.findByText("biology-notes.pdf", { selector: ".citation-meta strong" })).not.toBeNull();
+
+    await user.type(screen.getByLabelText("Ask about the selected region"), "What does this part do?");
+    await user.click(screen.getByRole("button", { name: "Ask grounded tutor" }));
+    expect(await screen.findByText("The passage says chlorophyll absorbs light.")).not.toBeNull();
+    expect(fetchMock.mock.calls.some(([url]) => String(url).endsWith("/regions/imr_test_001/tutor"))).toBe(true);
+
+    await user.click(screen.getByRole("button", { name: "Delete uploaded image" }));
+    expect(await screen.findByText(/Upload a PNG or JPEG image/)).not.toBeNull();
   });
 });

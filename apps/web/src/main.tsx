@@ -109,6 +109,50 @@ type LearningAnalytics = {
   methodology: { mastery: string; recencyHalfLifeDays: number; weakTopicThreshold: number; reviewIntervalsDays: Record<string, number>; reviewDueBoundary: string };
 };
 
+type NormalizedRegion = { x: number; y: number; width: number; height: number };
+type LearningImageRegion = {
+  regionId: string;
+  geometry: NormalizedRegion;
+  ocrStatus: "available" | "empty" | "unavailable" | "failed";
+  extractedText: string | null;
+  diagramId: string | null;
+  conceptId: string | null;
+  conceptName: string | null;
+  citations: Citation[];
+};
+type LearningImage = {
+  imageId: string;
+  displayFilename: string;
+  contentType: "image/png" | "image/jpeg";
+  width: number;
+  height: number;
+  byteSize: number;
+  sha256: string;
+  createdAt: string;
+  ocrStatus: LearningImageRegion["ocrStatus"];
+  extractedText: string | null;
+  regions: LearningImageRegion[];
+};
+type LearningImageSummary = Omit<LearningImage, "regions" | "extractedText">;
+type ImageEvidenceResult = {
+  status: "evidence_found" | "insufficient_evidence";
+  imageId: string;
+  regionId: string;
+  geometry: NormalizedRegion;
+  extractedText: string | null;
+  ocrStatus: LearningImageRegion["ocrStatus"];
+  conceptName: string | null;
+  results: Citation[];
+  retrievalMode: string;
+  fallbackReason: string | null;
+};
+type ImageTutorResult = Omit<ImageEvidenceResult, "status"> & {
+  question: string;
+  status: "answered" | "insufficient_evidence";
+  answer: string | null;
+  citations: Citation[];
+};
+
 type Evidence = {
   status: "evidence_found" | "insufficient_evidence";
   concept: { conceptId: string; displayName: string; aliases: string[] };
@@ -163,6 +207,17 @@ export function App() {
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [sessionTopic, setSessionTopic] = useState("");
+  const [learningImages, setLearningImages] = useState<LearningImageSummary[]>([]);
+  const [selectedLearningImage, setSelectedLearningImage] = useState<LearningImage | null>(null);
+  const [selectedImageRegionId, setSelectedImageRegionId] = useState<string | null>(null);
+  const [imageConcept, setImageConcept] = useState("");
+  const [imageQuestion, setImageQuestion] = useState("");
+  const [imageEvidence, setImageEvidence] = useState<ImageEvidenceResult | null>(null);
+  const [imageTutorResult, setImageTutorResult] = useState<ImageTutorResult | null>(null);
+  const [imageLoading, setImageLoading] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [regionDraft, setRegionDraft] = useState<NormalizedRegion>({ x: 0.1, y: 0.1, width: 0.4, height: 0.4 });
+  const imageDragStart = useRef<{ x: number; y: number } | null>(null);
   const [graphConcepts, setGraphConcepts] = useState<GraphConcept[]>([]);
   const [selectedGraphConcept, setSelectedGraphConcept] = useState<GraphDetail | null>(null);
   const [graphLoading, setGraphLoading] = useState(false);
@@ -231,6 +286,21 @@ export function App() {
       .then((response) => readJson<{ concepts: GraphConcept[] }>(response))
       .then((result) => { if (active) setGraphConcepts(result.concepts); })
       .catch(() => { if (active) setGraphError("Could not load the local knowledge graph."); });
+    fetch("/api/v1/images")
+      .then((response) => readJson<{ images: LearningImageSummary[] }>(response))
+      .then((result) => {
+        if (!active) return;
+        setLearningImages(result.images);
+        if (result.images[0]) {
+          void fetch(`/api/v1/images/${encodeURIComponent(result.images[0].imageId)}`)
+            .then((response) => readJson<LearningImage>(response))
+            .then((image) => { if (active) setSelectedLearningImage(image); })
+            .catch(() => { if (active) setImageError("Could not load the saved image and its regions."); });
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) setImageError(error instanceof Error ? error.message : "Could not load saved images.");
+      });
     return () => {
       active = false;
     };
@@ -278,6 +348,177 @@ export function App() {
       setUploadError(error instanceof Error ? error.message : "Could not upload the PDF.");
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function loadLearningImage(imageId: string) {
+    const response = await fetch(`/api/v1/images/${encodeURIComponent(imageId)}`);
+    const image = await readJson<LearningImage>(response);
+    setSelectedLearningImage(image);
+    setLearningImages((current) => {
+      const { regions: _regions, ...summary } = image;
+      return [summary, ...current.filter((item) => item.imageId !== imageId)];
+    });
+    return image;
+  }
+
+  async function selectLearningImage(imageId: string) {
+    setSelectedImageRegionId(null);
+    setImageEvidence(null);
+    setImageTutorResult(null);
+    setImageError(null);
+    try {
+      await loadLearningImage(imageId);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Could not load this image.");
+    }
+  }
+
+  async function uploadLearningImage(file: File | undefined) {
+    if (!file) return;
+    setImageLoading(true);
+    setImageError(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const response = await fetch("/api/v1/images", { method: "POST", body });
+      const image = await readJson<LearningImage>(response);
+      setSelectedLearningImage(image);
+      const { regions: _regions, ...summary } = image;
+      setLearningImages((current) => [summary, ...current.filter((item) => item.imageId !== image.imageId)]);
+      setSelectedImageRegionId(null);
+      setImageEvidence(null);
+      setImageTutorResult(null);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Could not upload this image.");
+    } finally {
+      setImageLoading(false);
+    }
+  }
+
+  function imagePointerPoint(event: React.PointerEvent<HTMLDivElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
+      y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+    };
+  }
+
+  function startImageRegion(event: React.PointerEvent<HTMLDivElement>) {
+    if (!selectedLearningImage || event.button !== 0) return;
+    event.preventDefault();
+    const point = imagePointerPoint(event);
+    imageDragStart.current = point;
+    setRegionDraft({ x: point.x, y: point.y, width: 0.01, height: 0.01 });
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function moveImageRegion(event: React.PointerEvent<HTMLDivElement>) {
+    const start = imageDragStart.current;
+    if (!start) return;
+    const point = imagePointerPoint(event);
+    setRegionDraft({
+      x: Math.min(start.x, point.x),
+      y: Math.min(start.y, point.y),
+      width: Math.abs(point.x - start.x),
+      height: Math.abs(point.y - start.y),
+    });
+  }
+
+  function finishImageRegion(event: React.PointerEvent<HTMLDivElement>) {
+    moveImageRegion(event);
+    imageDragStart.current = null;
+  }
+
+  async function addImageRegion(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedLearningImage) return;
+    setImageLoading(true);
+    setImageError(null);
+    try {
+      const [diagramId, conceptId] = imageConcept ? imageConcept.split("|") : [];
+      const response = await fetch(`/api/v1/images/${encodeURIComponent(selectedLearningImage.imageId)}/regions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          geometry: regionDraft,
+          ...(diagramId && conceptId ? { diagramId, conceptId } : {}),
+        }),
+      });
+      const region = await readJson<LearningImageRegion>(response);
+      await loadLearningImage(selectedLearningImage.imageId);
+      setSelectedImageRegionId(region.regionId);
+      await findImageEvidence(region.regionId);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Could not save this image region.");
+    } finally {
+      setImageLoading(false);
+    }
+  }
+
+  async function findImageEvidence(regionId = selectedImageRegionId) {
+    if (!selectedLearningImage || !regionId) return;
+    setImageLoading(true);
+    setImageError(null);
+    setImageTutorResult(null);
+    try {
+      const response = await fetch(
+        `/api/v1/images/${encodeURIComponent(selectedLearningImage.imageId)}/regions/${encodeURIComponent(regionId)}/evidence`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ limit: 5 }) },
+      );
+      const result = await readJson<ImageEvidenceResult>(response);
+      setImageEvidence(result);
+      await loadLearningImage(selectedLearningImage.imageId);
+      setSelectedImageRegionId(regionId);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Could not retrieve evidence for this region.");
+    } finally {
+      setImageLoading(false);
+    }
+  }
+
+  async function askImageTutor(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedLearningImage || !selectedImageRegionId) return;
+    setImageLoading(true);
+    setImageError(null);
+    setImageTutorResult(null);
+    try {
+      const response = await fetch(
+        `/api/v1/images/${encodeURIComponent(selectedLearningImage.imageId)}/regions/${encodeURIComponent(selectedImageRegionId)}/tutor`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ question: imageQuestion, limit: 5 }),
+        },
+      );
+      setImageTutorResult(await readJson<ImageTutorResult>(response));
+      await loadLearningImage(selectedLearningImage.imageId);
+      setSelectedImageRegionId(selectedImageRegionId);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "The tutor could not answer for this image region.");
+    } finally {
+      setImageLoading(false);
+    }
+  }
+
+  async function deleteLearningImage() {
+    if (!selectedLearningImage) return;
+    setImageLoading(true);
+    setImageError(null);
+    try {
+      await readJson(await fetch(`/api/v1/images/${encodeURIComponent(selectedLearningImage.imageId)}`, { method: "DELETE" }));
+      const remaining = learningImages.filter((image) => image.imageId !== selectedLearningImage.imageId);
+      setLearningImages(remaining);
+      setSelectedLearningImage(null);
+      setSelectedImageRegionId(null);
+      setImageEvidence(null);
+      setImageTutorResult(null);
+      if (remaining[0]) await loadLearningImage(remaining[0].imageId);
+    } catch (error) {
+      setImageError(error instanceof Error ? error.message : "Could not delete this image.");
+    } finally {
+      setImageLoading(false);
     }
   }
 
@@ -508,6 +749,127 @@ export function App() {
           {pageError} Check that the local API is running.
         </p>
       )}
+
+      <section className="image-learning" aria-labelledby="image-learning-title">
+        <div className="image-learning-heading">
+          <div>
+            <p className="eyebrow">Local image study</p>
+            <h2 id="image-learning-title">Explore an image or diagram</h2>
+            <p className="muted">PNG and JPEG uploads are validated and stored on this device. They are never sent to an external image service. Camera frames are not part of this workflow.</p>
+          </div>
+          {selectedLearningImage && <button type="button" className="camera-action" disabled={imageLoading} onClick={() => void deleteLearningImage()}>Delete uploaded image</button>}
+        </div>
+        <label className="document-control" htmlFor="learning-image-upload">
+          Upload an educational image
+          <input
+            id="learning-image-upload"
+            type="file"
+            accept="image/png,image/jpeg"
+            disabled={imageLoading}
+            onChange={(event) => void uploadLearningImage(event.currentTarget.files?.[0])}
+          />
+        </label>
+        {imageLoading && <p className="muted" role="status">Processing image locally…</p>}
+        {imageError && <p className="notice notice--error" role="alert">{imageError}</p>}
+        {learningImages.length > 0 && <nav className="image-saved-list" aria-label="Saved educational images">
+          {learningImages.map((image) => <button
+            key={image.imageId}
+            type="button"
+            aria-pressed={selectedLearningImage?.imageId === image.imageId}
+            disabled={imageLoading}
+            onClick={() => void selectLearningImage(image.imageId)}
+          >{image.displayFilename}</button>)}
+        </nav>}
+        {!selectedLearningImage && <p className="notice" role="status">Upload a PNG or JPEG image to select regions and search your indexed study materials.</p>}
+        {selectedLearningImage && <div className="image-learning-grid">
+          <div>
+            <p className="image-dimensions">{selectedLearningImage.displayFilename} · {selectedLearningImage.width} × {selectedLearningImage.height}px</p>
+            <div
+              className="image-selection-canvas"
+              role="group"
+              aria-label="Image region selection surface. Drag to select a region, or enter normalized coordinates in the form below."
+              onPointerDown={startImageRegion}
+              onPointerMove={moveImageRegion}
+              onPointerUp={finishImageRegion}
+              onPointerCancel={() => { imageDragStart.current = null; }}
+            >
+              <img src={`/api/v1/images/${encodeURIComponent(selectedLearningImage.imageId)}/content`} alt={selectedLearningImage.displayFilename} draggable={false} />
+              {selectedLearningImage.regions.map((region) => <span
+                key={region.regionId}
+                aria-hidden="true"
+                className={`image-region-box${region.regionId === selectedImageRegionId ? " image-region-box--selected" : ""}`}
+                style={{ left: `${region.geometry.x * 100}%`, top: `${region.geometry.y * 100}%`, width: `${region.geometry.width * 100}%`, height: `${region.geometry.height * 100}%` }}
+              />)}
+              {imageDragStart.current && <span aria-hidden="true" className="image-region-box image-region-box--draft" style={{ left: `${regionDraft.x * 100}%`, top: `${regionDraft.y * 100}%`, width: `${regionDraft.width * 100}%`, height: `${regionDraft.height * 100}%` }} />}
+            </div>
+            <p className="muted">Drag across the image to set a region. Keyboard users can enter normalized coordinates below (0–1).</p>
+            <p className="notice" role="status">
+              {selectedLearningImage.ocrStatus === "available"
+                ? "Local OCR extracted text from this image. Review it before using it as a retrieval query."
+                : selectedLearningImage.ocrStatus === "empty"
+                ? "Local OCR ran but found no text in this image. You can still attach a curated concept or ask a question about a selected region."
+                : selectedLearningImage.ocrStatus === "unavailable"
+                ? "OCR is unavailable. Install the optional Python OCR extra and the Tesseract executable locally (see the setup guide); no OCR result is being claimed."
+                : "Local OCR could not process this image. You can still attach a curated concept or ask a question about a selected region."}
+            </p>
+            {selectedLearningImage.extractedText && <details className="image-extracted-text"><summary>Extracted image text</summary><blockquote>{selectedLearningImage.extractedText}</blockquote></details>}
+          </div>
+          <div className="image-region-controls">
+            <form className="image-region-form" onSubmit={(event) => void addImageRegion(event)}>
+              <h3>Create a region</h3>
+              <fieldset className="image-coordinate-fields">
+                <legend>Normalized region coordinates</legend>
+                {(["x", "y", "width", "height"] as const).map((coordinate) => <label key={coordinate}>
+                  {coordinate}
+                  <input
+                    aria-label={`Region ${coordinate}`}
+                    type="number"
+                    min={coordinate === "width" || coordinate === "height" ? 0.001 : 0}
+                    max={1}
+                    step={0.001}
+                    value={regionDraft[coordinate]}
+                    onChange={(event) => setRegionDraft((current) => ({ ...current, [coordinate]: Number(event.currentTarget.value) }))}
+                  />
+                </label>)}
+              </fieldset>
+              <label className="document-control" htmlFor="image-curated-concept">Optional curated concept
+                <select id="image-curated-concept" value={imageConcept} onChange={(event) => setImageConcept(event.currentTarget.value)}>
+                  <option value="">Use extracted text or your question</option>
+                  {diagram?.regions.map((region) => <option key={region.conceptId} value={`${diagram.diagramId}|${region.conceptId}`}>{region.displayName}</option>)}
+                </select>
+              </label>
+              <button className="camera-action camera-action--primary" type="submit" disabled={imageLoading}>Save region and search evidence</button>
+            </form>
+            <h3>Selected regions</h3>
+            {selectedLearningImage.regions.length === 0
+              ? <p className="muted">No regions saved for this image yet.</p>
+              : <ul className="image-region-list">{selectedLearningImage.regions.map((region, index) => <li key={region.regionId}>
+                <button type="button" aria-pressed={region.regionId === selectedImageRegionId} onClick={() => { setSelectedImageRegionId(region.regionId); setImageEvidence(null); setImageTutorResult(null); void findImageEvidence(region.regionId); }}>Region {index + 1}{region.conceptName ? ` · ${region.conceptName}` : ""}</button>
+                <span>{region.geometry.x.toFixed(2)}, {region.geometry.y.toFixed(2)} · {region.geometry.width.toFixed(2)} × {region.geometry.height.toFixed(2)}</span>
+                {region.extractedText && <blockquote>{region.extractedText}</blockquote>}
+              </li>)}</ul>}
+            {selectedImageRegionId && <>
+              <button type="button" className="camera-action" disabled={imageLoading} onClick={() => void findImageEvidence()}>Find evidence for this region</button>
+              <form className="image-tutor-form" onSubmit={(event) => void askImageTutor(event)}>
+                <label className="document-control" htmlFor="image-region-question">Ask about the selected region
+                  <textarea id="image-region-question" value={imageQuestion} maxLength={2_000} minLength={1} required rows={3} onChange={(event) => setImageQuestion(event.currentTarget.value)} placeholder="Ask about what this part shows" />
+                </label>
+                <button className="camera-action camera-action--primary" type="submit" disabled={imageLoading || tutorConfigured === false}>{imageLoading ? "Searching and asking…" : "Ask grounded tutor"}</button>
+              </form>
+              {tutorConfigured === false && <p className="muted">Evidence search is available without the model. Configure the optional local tutor to generate an explanation.</p>}
+              {imageTutorResult?.status === "insufficient_evidence" && <p className="notice" role="status">No supporting passage was found, or the tutor abstained. No answer was invented.</p>}
+              {imageTutorResult?.status === "answered" && imageTutorResult.answer && <div className="image-tutor-answer" aria-live="polite"><h4>Grounded explanation</h4><p>{imageTutorResult.answer}</p></div>}
+              {imageEvidence?.status === "insufficient_evidence" && !imageTutorResult && <p className="notice" role="status">No indexed passage supports this region yet. Try a curated concept or add learning material.</p>}
+              {(imageTutorResult?.citations ?? imageEvidence?.results ?? selectedLearningImage.regions.find((item) => item.regionId === selectedImageRegionId)?.citations ?? []).length > 0 && <ol className="evidence-list image-evidence-list">
+                {(imageTutorResult?.citations ?? imageEvidence?.results ?? selectedLearningImage.regions.find((item) => item.regionId === selectedImageRegionId)?.citations ?? []).map((citation) => <li className="evidence-item" key={citation.citationId}>
+                  <blockquote>{citation.text}</blockquote>
+                  <p className="citation-meta"><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · chunk <code>{citation.citationId}</code></p>
+                </li>)}
+              </ol>}
+            </>}
+          </div>
+        </div>}
+      </section>
 
       {diagram && (
         <section className="learning-layout" aria-label="Diagram concept selection">

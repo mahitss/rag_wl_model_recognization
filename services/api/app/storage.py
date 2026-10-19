@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
@@ -222,6 +222,62 @@ def initialize_storage(database_path: Path) -> None:
                 "ON knowledge_relationships(source_concept_id, target_concept_id)"
             )
             connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS learning_images (
+                    image_id TEXT PRIMARY KEY,
+                    display_filename TEXT NOT NULL,
+                    content_type TEXT NOT NULL CHECK (content_type IN ('image/png', 'image/jpeg')),
+                    width INTEGER NOT NULL CHECK (width > 0),
+                    height INTEGER NOT NULL CHECK (height > 0),
+                    byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+                    sha256 TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    ocr_status TEXT NOT NULL CHECK (ocr_status IN (
+                        'available', 'empty', 'unavailable', 'failed'
+                    )),
+                    extracted_text TEXT,
+                    image_bytes BLOB NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS image_regions (
+                    region_id TEXT PRIMARY KEY,
+                    image_id TEXT NOT NULL REFERENCES learning_images(image_id) ON DELETE CASCADE,
+                    x REAL NOT NULL CHECK (x >= 0 AND x < 1),
+                    y REAL NOT NULL CHECK (y >= 0 AND y < 1),
+                    width REAL NOT NULL CHECK (width > 0 AND width <= 1 AND x + width <= 1),
+                    height REAL NOT NULL CHECK (height > 0 AND height <= 1 AND y + height <= 1),
+                    ocr_status TEXT NOT NULL CHECK (ocr_status IN (
+                        'available', 'empty', 'unavailable', 'failed'
+                    )),
+                    extracted_text TEXT,
+                    diagram_id TEXT,
+                    concept_id TEXT,
+                    concept_name TEXT,
+                    created_at TEXT NOT NULL,
+                    CHECK ((diagram_id IS NULL) = (concept_id IS NULL)),
+                    UNIQUE(image_id, region_id)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_image_regions_image "
+                "ON image_regions(image_id, created_at)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS image_region_citations (
+                    region_id TEXT NOT NULL REFERENCES image_regions(region_id) ON DELETE CASCADE,
+                    citation_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                    position INTEGER NOT NULL CHECK (position >= 0),
+                    retrieval_json TEXT NOT NULL,
+                    PRIMARY KEY (region_id, citation_id)
+                )
+                """
+            )
+            connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_quiz_questions_quiz_position "
                 "ON quiz_questions(quiz_id, position)"
             )
@@ -366,6 +422,200 @@ def delete_document(database_path: Path, document_id: str) -> bool:
                 "OR r.target_concept_id=knowledge_concepts.concept_id)"
             )
             return True
+
+
+def _image_metadata(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "imageId": row["image_id"],
+        "displayFilename": row["display_filename"],
+        "contentType": row["content_type"],
+        "width": row["width"],
+        "height": row["height"],
+        "byteSize": row["byte_size"],
+        "sha256": row["sha256"],
+        "createdAt": row["created_at"],
+        "ocrStatus": row["ocr_status"],
+        "extractedText": row["extracted_text"],
+    }
+
+
+def store_learning_image(database_path: Path, metadata: dict[str, Any], image_bytes: bytes) -> None:
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """INSERT INTO learning_images(
+                       image_id, display_filename, content_type, width, height, byte_size,
+                       sha256, created_at, ocr_status, extracted_text, image_bytes
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    metadata["imageId"],
+                    metadata["displayFilename"],
+                    metadata["contentType"],
+                    metadata["width"],
+                    metadata["height"],
+                    len(image_bytes),
+                    metadata["sha256"],
+                    metadata["createdAt"],
+                    metadata["ocrStatus"],
+                    metadata["extractedText"],
+                    image_bytes,
+                ),
+            )
+
+
+def list_learning_images(database_path: Path) -> list[dict[str, Any]]:
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """SELECT image_id, display_filename, content_type, width, height, byte_size,
+                      sha256, created_at, ocr_status, NULL AS extracted_text
+               FROM learning_images ORDER BY created_at DESC, image_id"""
+        ).fetchall()
+    return [_image_metadata(row) for row in rows]
+
+
+def get_learning_image(database_path: Path, image_id: str) -> dict[str, Any] | None:
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT * FROM learning_images WHERE image_id=?", (image_id,)
+        ).fetchone()
+    if row is None:
+        return None
+    return {**_image_metadata(row), "imageBytes": row["image_bytes"]}
+
+
+def create_learning_image_region(database_path: Path, region: dict[str, Any]) -> None:
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """INSERT INTO image_regions(
+                       region_id, image_id, x, y, width, height, ocr_status, extracted_text,
+                       diagram_id, concept_id, concept_name, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    region["regionId"],
+                    region["imageId"],
+                    region["geometry"]["x"],
+                    region["geometry"]["y"],
+                    region["geometry"]["width"],
+                    region["geometry"]["height"],
+                    region["ocrStatus"],
+                    region["extractedText"],
+                    region["diagramId"],
+                    region["conceptId"],
+                    region["conceptName"],
+                    region["createdAt"],
+                ),
+            )
+
+
+def get_learning_image_region(
+    database_path: Path, image_id: str, region_id: str
+) -> dict[str, Any] | None:
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """SELECT region_id, image_id, x, y, width, height, ocr_status, extracted_text,
+                      diagram_id, concept_id, concept_name, created_at
+               FROM image_regions WHERE image_id=? AND region_id=?""",
+            (image_id, region_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "regionId": row["region_id"],
+        "imageId": row["image_id"],
+        "geometry": {key: row[key] for key in ("x", "y", "width", "height")},
+        "ocrStatus": row["ocr_status"],
+        "extractedText": row["extracted_text"],
+        "diagramId": row["diagram_id"],
+        "conceptId": row["concept_id"],
+        "conceptName": row["concept_name"],
+        "createdAt": row["created_at"],
+    }
+
+
+def replace_image_region_citations(
+    database_path: Path, region_id: str, citations: list[dict[str, Any]]
+) -> None:
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute("DELETE FROM image_region_citations WHERE region_id=?", (region_id,))
+            connection.executemany(
+                """INSERT INTO image_region_citations(
+                       region_id, citation_id, position, retrieval_json
+                   ) VALUES (?, ?, ?, ?)""",
+                [
+                    (region_id, item["citationId"], index, json.dumps(item["retrieval"]))
+                    for index, item in enumerate(citations)
+                ],
+            )
+
+
+def get_learning_image_detail(database_path: Path, image_id: str) -> dict[str, Any] | None:
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        image = connection.execute(
+            """SELECT image_id, display_filename, content_type, width, height, byte_size,
+                      sha256, created_at, ocr_status, extracted_text
+               FROM learning_images WHERE image_id=?""",
+            (image_id,),
+        ).fetchone()
+        if image is None:
+            return None
+        regions = connection.execute(
+            """SELECT region_id, image_id, x, y, width, height, ocr_status, extracted_text,
+                      diagram_id, concept_id, concept_name, created_at
+               FROM image_regions WHERE image_id=? ORDER BY created_at, region_id""",
+            (image_id,),
+        ).fetchall()
+        result = _image_metadata(image)
+        result["regions"] = []
+        for row in regions:
+            citations = connection.execute(
+                """SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
+                          c.chunk_index, c.char_start, c.char_end, c.text,
+                          irc.retrieval_json
+                   FROM image_region_citations irc
+                   JOIN chunks c ON c.chunk_id=irc.citation_id
+                   JOIN documents d ON d.document_id=c.document_id
+                   WHERE irc.region_id=? ORDER BY irc.position""",
+                (row["region_id"],),
+            ).fetchall()
+            result["regions"].append(
+                {
+                    "regionId": row["region_id"],
+                    "geometry": {key: row[key] for key in ("x", "y", "width", "height")},
+                    "ocrStatus": row["ocr_status"],
+                    "extractedText": row["extracted_text"],
+                    "diagramId": row["diagram_id"],
+                    "conceptId": row["concept_id"],
+                    "conceptName": row["concept_name"],
+                    "citations": [
+                        {
+                            "citationId": item["chunk_id"],
+                            "documentId": item["document_id"],
+                            "displayFilename": item["display_name"],
+                            "pageNumber": item["page_number"],
+                            "chunkIndex": item["chunk_index"],
+                            "charStart": item["char_start"],
+                            "charEnd": item["char_end"],
+                            "text": item["text"],
+                            "retrieval": json.loads(item["retrieval_json"]),
+                        }
+                        for item in citations
+                    ],
+                }
+            )
+    return result
+
+
+def delete_learning_image(database_path: Path, image_id: str) -> bool:
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            result = connection.execute("DELETE FROM learning_images WHERE image_id=?", (image_id,))
+    return result.rowcount > 0
 
 
 def knowledge_graph_chunks(

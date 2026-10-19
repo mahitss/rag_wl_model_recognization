@@ -9,12 +9,18 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Body, File, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from app.config import Settings
 from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
+from app.ingestion.image import (
+    normalize_image,
+    recognize_region,
+    recognize_text,
+    safe_image_filename,
+)
 from app.ingestion.pdf import ingest_pdf
 from app.knowledge_graph import extract_chunk
 from app.learning_analytics import build_analytics
@@ -35,11 +41,18 @@ from app.schemas import (
     DocumentsResponse,
     EmbeddingStatusResponse,
     HealthResponse,
+    ImageEvidenceResponse,
+    ImageRegionCreateRequest,
+    ImageRegionCreateResponse,
+    ImageTutorRequest,
+    ImageTutorResponse,
     KnowledgeGraphConceptDetail,
     KnowledgeGraphConceptList,
     KnowledgeGraphExtractRequest,
     KnowledgeGraphExtractResponse,
     LearningAnalyticsResponse,
+    LearningImageDetailResponse,
+    LearningImageListResponse,
     LearningProgressResponse,
     QuizAttemptRequest,
     QuizAttemptResponse,
@@ -58,20 +71,28 @@ from app.schemas import (
 )
 from app.storage import (
     complete_study_session,
+    create_learning_image_region,
     create_quiz_set,
     delete_document,
+    delete_learning_image,
     get_document,
     get_knowledge_concept,
     get_learning_analytics_data,
+    get_learning_image,
+    get_learning_image_detail,
+    get_learning_image_region,
     get_learning_progress,
     get_quiz_question,
     get_quiz_set,
     knowledge_graph_chunks,
     list_documents,
     list_knowledge_concepts,
+    list_learning_images,
     record_quiz_attempt,
+    replace_image_region_citations,
     start_study_session,
     store_knowledge_extraction,
+    store_learning_image,
     verify_knowledge_relationship,
 )
 from app.tutor import InvalidTutorResponse, TutorUnavailable, generate_grounded_answer
@@ -112,6 +133,52 @@ def _database_call(callable_, *args, **kwargs):
         raise
     except (OSError, sqlite3.Error) as exc:
         raise ApiError(503, "STORAGE_UNAVAILABLE", "Local storage is unavailable.") from exc
+
+
+async def _grounded_tutor_response(
+    settings: Settings,
+    *,
+    question: str,
+    concept: str | None,
+    evidence: list[dict[str, Any]],
+    retrieval_mode: str,
+    fallback_reason: str | None,
+) -> dict[str, Any]:
+    if not evidence:
+        return {
+            "status": "insufficient_evidence",
+            "answer": None,
+            "citations": [],
+            "retrievalMode": retrieval_mode,
+            "fallbackReason": fallback_reason,
+        }
+    try:
+        generated = await asyncio.to_thread(
+            generate_grounded_answer,
+            settings,
+            question=question,
+            concept=concept,
+            evidence=evidence,
+        )
+    except TutorUnavailable as exc:
+        raise ApiError(
+            503,
+            "TUTOR_MODEL_UNAVAILABLE",
+            "The optional local tutor is not configured or could not be reached.",
+        ) from exc
+    except InvalidTutorResponse as exc:
+        raise ApiError(
+            502,
+            "TUTOR_INVALID_RESPONSE",
+            "The local tutor returned an invalid response. Try again or check its status.",
+        ) from exc
+    return {
+        "status": "answered" if generated["answer"] is not None else "insufficient_evidence",
+        "answer": generated["answer"],
+        "citations": generated["citations"],
+        "retrievalMode": retrieval_mode,
+        "fallbackReason": fallback_reason,
+    }
 
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
@@ -183,6 +250,258 @@ def remove_document(request: Request, document_id: str) -> dict[str, Any]:
     if not deleted:
         raise ApiError(404, "DOCUMENT_NOT_FOUND", "The requested document was not found.")
     return {"documentId": document_id, "deleted": True}
+
+
+@router.post(
+    "/images", response_model=LearningImageDetailResponse, status_code=201, tags=["images"]
+)
+async def upload_learning_image(
+    request: Request, file: Annotated[UploadFile, File()]
+) -> dict[str, Any]:
+    settings = _settings(request)
+    content = await file.read(settings.max_image_upload_bytes + 1)
+    normalized = await asyncio.to_thread(
+        normalize_image,
+        content,
+        max_bytes=settings.max_image_upload_bytes,
+        max_dimension=settings.max_image_dimension,
+        max_pixels=settings.max_image_pixels,
+    )
+    ocr_status, extracted_text = await asyncio.to_thread(recognize_text, normalized.content)
+    metadata = {
+        "imageId": f"img_{uuid.uuid4().hex}",
+        "displayFilename": safe_image_filename(file.filename),
+        "contentType": normalized.content_type,
+        "width": normalized.width,
+        "height": normalized.height,
+        "sha256": normalized.sha256,
+        "createdAt": datetime.now(UTC).isoformat(timespec="seconds"),
+        "ocrStatus": ocr_status,
+        "extractedText": extracted_text,
+    }
+    _database_call(store_learning_image, settings.database_path, metadata, normalized.content)
+    return _database_call(get_learning_image_detail, settings.database_path, metadata["imageId"])
+
+
+@router.get("/images", response_model=LearningImageListResponse, tags=["images"])
+def learning_images(request: Request) -> dict[str, Any]:
+    return {"images": _database_call(list_learning_images, _database_path(request))}
+
+
+@router.get("/images/{image_id}", response_model=LearningImageDetailResponse, tags=["images"])
+def learning_image(request: Request, image_id: str) -> dict[str, Any]:
+    result = _database_call(get_learning_image_detail, _database_path(request), image_id)
+    if result is None:
+        raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
+    return result
+
+
+@router.get("/images/{image_id}/content", tags=["images"])
+def learning_image_content(request: Request, image_id: str) -> Response:
+    image = _database_call(get_learning_image, _database_path(request), image_id)
+    if image is None:
+        raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
+    return Response(
+        image["imageBytes"],
+        media_type=image["contentType"],
+        headers={"Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@router.delete("/images/{image_id}", tags=["images"])
+def remove_learning_image(request: Request, image_id: str) -> dict[str, Any]:
+    deleted = _database_call(delete_learning_image, _database_path(request), image_id)
+    if not deleted:
+        raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
+    return {"imageId": image_id, "deleted": True}
+
+
+@router.post(
+    "/images/{image_id}/regions",
+    response_model=ImageRegionCreateResponse,
+    status_code=201,
+    tags=["images"],
+)
+def create_image_region(
+    request: Request, image_id: str, payload: ImageRegionCreateRequest
+) -> dict[str, Any]:
+    settings = _settings(request)
+    image = _database_call(get_learning_image, settings.database_path, image_id)
+    if image is None:
+        raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
+    concept = None
+    if payload.diagram_id and payload.concept_id:
+        diagram = get_diagram(payload.diagram_id)
+        if diagram is None:
+            raise ApiError(404, "DIAGRAM_NOT_FOUND", "The requested curated diagram was not found.")
+        concept = next(
+            (item for item in diagram.concepts if item.concept_id == payload.concept_id), None
+        )
+        if concept is None:
+            raise ApiError(404, "CONCEPT_NOT_FOUND", "The selected curated concept was not found.")
+    ocr_status, extracted_text = recognize_region(
+        image["imageBytes"], payload.geometry.model_dump()
+    )
+    region = {
+        "regionId": f"imr_{uuid.uuid4().hex}",
+        "imageId": image_id,
+        "geometry": payload.geometry.model_dump(),
+        "ocrStatus": ocr_status,
+        "extractedText": extracted_text,
+        "diagramId": payload.diagram_id,
+        "conceptId": payload.concept_id,
+        "conceptName": concept.display_name if concept else None,
+        "createdAt": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    _database_call(create_learning_image_region, settings.database_path, region)
+    return {
+        "regionId": region["regionId"],
+        "geometry": region["geometry"],
+        "ocrStatus": region["ocrStatus"],
+        "extractedText": region["extractedText"],
+        "diagramId": region["diagramId"],
+        "conceptId": region["conceptId"],
+        "conceptName": region["conceptName"],
+        "citations": [],
+    }
+
+
+def _image_region_context(
+    request: Request, image_id: str, region_id: str
+) -> tuple[dict[str, Any], dict[str, Any], Any | None]:
+    settings = _settings(request)
+    image = _database_call(get_learning_image, settings.database_path, image_id)
+    if image is None:
+        raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
+    region = _database_call(get_learning_image_region, settings.database_path, image_id, region_id)
+    if region is None:
+        raise ApiError(404, "IMAGE_REGION_NOT_FOUND", "The selected image region was not found.")
+    concept = None
+    if region["diagramId"] and region["conceptId"]:
+        diagram = get_diagram(region["diagramId"])
+        if diagram is not None:
+            concept = next(
+                (item for item in diagram.concepts if item.concept_id == region["conceptId"]), None
+            )
+    return image, region, concept
+
+
+def _image_region_search(
+    request: Request,
+    region: dict[str, Any],
+    *,
+    question: str | None,
+    limit: int,
+    mode: str | None,
+) -> dict[str, Any]:
+    settings = _settings(request)
+    if limit > settings.max_retrieval_results:
+        raise ApiError(422, "INVALID_REQUEST", "The result limit exceeds the configured maximum.")
+    terms = [question or "", (region["extractedText"] or "")[:1_000]]
+    concept = None
+    if region["diagramId"] and region["conceptId"]:
+        diagram = get_diagram(region["diagramId"])
+        if diagram:
+            concept = next(
+                (item for item in diagram.concepts if item.concept_id == region["conceptId"]), None
+            )
+            if concept:
+                terms.append(concept.retrieval_query)
+    query = " ".join(term for term in terms if term).strip()
+    if not query:
+        return {
+            "results": [],
+            "retrievalMode": mode or settings.retrieval_mode,
+            "fallbackReason": "no_region_text_or_question",
+        }
+    return retrieve_with_mode(
+        settings.database_path,
+        query=query[:2_000],
+        document_ids=None,
+        limit=limit,
+        mode=mode or settings.retrieval_mode,
+        settings=settings,
+        embeddings=_embedding_service(request),
+    )
+
+
+@router.post(
+    "/images/{image_id}/regions/{region_id}/evidence",
+    response_model=ImageEvidenceResponse,
+    tags=["images"],
+)
+def image_region_evidence(
+    request: Request,
+    image_id: str,
+    region_id: str,
+    payload: DiagramEvidenceRequest | None = None,
+) -> dict[str, Any]:
+    payload = payload or DiagramEvidenceRequest()
+    _, region, concept = _image_region_context(request, image_id, region_id)
+    search = _image_region_search(request, region, question=None, limit=payload.limit, mode=None)
+    _database_call(
+        replace_image_region_citations,
+        _database_path(request),
+        region_id,
+        search["results"],
+    )
+    return {
+        "status": "evidence_found" if search["results"] else "insufficient_evidence",
+        "imageId": image_id,
+        "regionId": region_id,
+        "geometry": region["geometry"],
+        "extractedText": region["extractedText"],
+        "ocrStatus": region["ocrStatus"],
+        "conceptName": concept.display_name if concept else None,
+        "results": search["results"],
+        "retrievalMode": search["retrievalMode"],
+        "fallbackReason": search["fallbackReason"],
+    }
+
+
+@router.post(
+    "/images/{image_id}/regions/{region_id}/tutor",
+    response_model=ImageTutorResponse,
+    tags=["images", "tutor"],
+)
+async def image_region_tutor(
+    request: Request,
+    image_id: str,
+    region_id: str,
+    payload: ImageTutorRequest,
+) -> dict[str, Any]:
+    _, region, concept = _image_region_context(request, image_id, region_id)
+    search = _image_region_search(
+        request,
+        region,
+        question=payload.question,
+        limit=payload.limit,
+        mode=payload.mode,
+    )
+    _database_call(
+        replace_image_region_citations,
+        _database_path(request),
+        region_id,
+        search["results"],
+    )
+    generated = await _grounded_tutor_response(
+        _settings(request),
+        question=payload.question,
+        concept=concept.display_name if concept else None,
+        evidence=search["results"],
+        retrieval_mode=search["retrievalMode"],
+        fallback_reason=search["fallbackReason"],
+    )
+    return {
+        "question": payload.question,
+        **generated,
+        "imageId": image_id,
+        "regionId": region_id,
+        "geometry": region["geometry"],
+        "extractedText": region["extractedText"],
+        "ocrStatus": region["ocrStatus"],
+        "conceptName": concept.display_name if concept else None,
+    }
 
 
 @router.post("/retrieve", response_model=RetrievalResponse, tags=["retrieval"])
@@ -281,45 +600,15 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
         settings=settings,
         embeddings=_embedding_service(request),
     )
-    if not search["results"]:
-        return {
-            "question": payload.question,
-            "status": "insufficient_evidence",
-            "answer": None,
-            "citations": [],
-            "retrievalMode": search["retrievalMode"],
-            "fallbackReason": search["fallbackReason"],
-        }
-
-    try:
-        generated = await asyncio.to_thread(
-            generate_grounded_answer,
-            settings,
-            question=payload.question,
-            concept=concept_name,
-            evidence=search["results"],
-        )
-    except TutorUnavailable as exc:
-        raise ApiError(
-            503,
-            "TUTOR_MODEL_UNAVAILABLE",
-            "The optional local tutor is not configured or could not be reached.",
-        ) from exc
-    except InvalidTutorResponse as exc:
-        raise ApiError(
-            502,
-            "TUTOR_INVALID_RESPONSE",
-            "The local tutor returned an invalid response. Try again or check its status.",
-        ) from exc
-
-    return {
-        "question": payload.question,
-        "status": "answered" if generated["answer"] is not None else "insufficient_evidence",
-        "answer": generated["answer"],
-        "citations": generated["citations"],
-        "retrievalMode": search["retrievalMode"],
-        "fallbackReason": search["fallbackReason"],
-    }
+    generated = await _grounded_tutor_response(
+        settings,
+        question=payload.question,
+        concept=concept_name,
+        evidence=search["results"],
+        retrieval_mode=search["retrievalMode"],
+        fallback_reason=search["fallbackReason"],
+    )
+    return {"question": payload.question, **generated}
 
 
 @router.get("/knowledge-graph", response_model=KnowledgeGraphConceptList, tags=["knowledge graph"])

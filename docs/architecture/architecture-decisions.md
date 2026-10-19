@@ -68,4 +68,4 @@
 
 ## Revisit triggers
 
-Revisit topology when simultaneous multi-user use is required; detector choice after annotation and benchmarks; embedding choice after retrieval judgments; local LLM after CPU latency and tutor-quality review; OCR after representative scanned PDFs; 3D only with a clear depth/camera calibration requirement and feasible hardware. Recheck all current dependency/model licenses and tool limits at implementation time.
+Revisit topology when simultaneous multi-user use is required; detector choice after annotation and benchmarks; embedding choice after retrieval judgments; local LLM after CPU latency and tutor-quality review; scanned-PDF OCR after representative PDF fixtures (M11 currently adds optional local OCR for uploaded raster images only); 3D only with a clear depth/camera calibration requirement and feasible hardware. Recheck all current dependency/model licenses and tool limits at implementation time.

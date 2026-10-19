@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     database_path: Path = Path("data/local/wonderlearn.sqlite3")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     max_upload_bytes: int = 10 * 1024 * 1024
+    max_image_upload_bytes: int = 10 * 1024 * 1024
+    max_image_dimension: int = 4096
+    max_image_pixels: int = 16_000_000
     max_pdf_pages: int = 250
     max_extracted_chars: int = 5_000_000
     chunk_size_chars: int = 2_000
@@ -87,6 +90,9 @@ class Settings(BaseSettings):
 
     @field_validator(
         "max_upload_bytes",
+        "max_image_upload_bytes",
+        "max_image_dimension",
+        "max_image_pixels",
         "max_pdf_pages",
         "max_extracted_chars",
         "chunk_size_chars",

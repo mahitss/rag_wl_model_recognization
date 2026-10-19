@@ -25,8 +25,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title="WonderLearn API",
         version="0.1.0",
         description=(
-            "Local PDF ingestion, citation-preserving retrieval, and an optional grounded tutor "
-            "connected only to a loopback OpenAI-compatible model server."
+            "Local PDF and educational-image ingestion, citation-preserving retrieval, and an "
+            "optional grounded tutor connected only to a loopback OpenAI-compatible model server."
         ),
         lifespan=lifespan,
     )

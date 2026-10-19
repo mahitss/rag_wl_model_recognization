@@ -51,6 +51,8 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 
 **M10 delivery note:** The local dashboard now reports persisted quiz attempts, completed study sessions, mastery summaries, and due reviews. This is a minimal analytics/review surface rather than an adaptive planner; the deterministic rules still need learner-task evaluation.
 
+**M11 image-learning update:** Learners can store local PNG/JPEG material, mark normalized image regions, optionally map them to curated concepts, retrieve indexed document passages, and ask the existing grounded tutor. Optional local Tesseract OCR reports unavailable/empty/failure states explicitly. This bounded upload-and-region workflow does not complete the original M9 goal of evaluated multimodal figure retrieval; no image embedding or image-to-image retrieval is introduced. Camera frames remain a separate local preview/tracking path and are not stored.
+
 ## Risks and sequencing
 
 The vertical slice validates ingestion, provenance, retrieval, and actual user value before detector/model work. Gesture and general vision require data collection and careful licensing, so they follow a supported diagram flow. Local LLM feasibility is an experiment, not a prerequisite. Retraining automation comes only after stable data and evaluation pipelines exist.

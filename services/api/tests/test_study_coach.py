@@ -71,6 +71,24 @@ def test_empty_or_unlinked_activity_produces_no_fabricated_recommendations():
     )
 
 
+def test_local_frontend_can_preflight_study_coach_patch_requests(tmp_path):
+    app = create_app(Settings(_env_file=None, database_path=tmp_path / "coach.sqlite3"))
+    response = asyncio.run(
+        request(
+            app,
+            "OPTIONS",
+            "/api/v1/study-coach/recommendations/coach_test",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "PATCH",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+    )
+    assert response.status_code == 200
+    assert "PATCH" in response.headers["access-control-allow-methods"]
+
+
 async def request(app, method, path, **kwargs):
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(

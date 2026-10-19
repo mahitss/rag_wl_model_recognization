@@ -470,6 +470,130 @@ def test_quiz_attempts_persist_explain_with_real_citations_and_support_retry(tmp
     assert forgotten.json()["totalAttempts"] == 0
 
 
+def test_release_journey_upload_to_diagram_quiz_coach_analytics_and_source_deletion(
+    tmp_path, monkeypatch
+):
+    upload = post_pdf(
+        tmp_path,
+        make_pdf(
+            "Chlorophyll absorbs light energy in leaves. "
+            "Plants use this energy to make food during photosynthesis."
+        ),
+        "biology.pdf",
+    )
+    assert upload.status_code == 201
+    document_id = upload.json()["documentId"]
+    settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
+    app = create_app(settings)
+    query = asyncio.run(
+        request_with_lifespan(
+            app, "POST", "/api/v1/retrieve", json={"query": "chlorophyll light", "limit": 5}
+        )
+    )
+    assert query.status_code == 200
+    assert query.json()["results"][0]["documentId"] == document_id
+
+    diagram_evidence = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/diagrams/photosynthesis-cycle/regions/chlorophyll/evidence",
+            json={"limit": 5},
+        )
+    )
+    assert diagram_evidence.status_code == 200
+    assert diagram_evidence.json()["results"][0]["pageNumber"] == 1
+    assert diagram_evidence.json()["results"][0]["documentId"] == document_id
+
+    generated = {
+        "questions": [
+            {
+                "type": "multiple_choice",
+                "question": "What does chlorophyll absorb?",
+                "options": [
+                    {"id": "A", "text": "Light energy"},
+                    {"id": "B", "text": "Sound energy"},
+                    {"id": "C", "text": "Soil"},
+                    {"id": "D", "text": "Oxygen"},
+                ],
+                "correctOption": "A",
+                "expectedAnswer": "",
+                "acceptedAnswers": [],
+                "explanation": "The source says chlorophyll absorbs light energy.",
+                "citations": ["E1"],
+            }
+        ]
+    }
+
+    class FakeResponse(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            self.close()
+
+    class FakeOpener:
+        def open(self, request, timeout):
+            return FakeResponse(
+                json.dumps({"choices": [{"message": {"content": json.dumps(generated)}}]}).encode()
+            )
+
+    monkeypatch.setattr("app.tutor.build_opener", lambda *_: FakeOpener())
+    quiz_response = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            "/api/v1/quizzes",
+            json={"topic": "chlorophyll", "questionCount": 1, "documentIds": [document_id]},
+        )
+    )
+    assert quiz_response.status_code == 200
+    quiz = quiz_response.json()
+    question = quiz["questions"][0]
+    attempt = asyncio.run(
+        request_with_lifespan(
+            app,
+            "POST",
+            f"/api/v1/quizzes/{quiz['quizId']}/questions/{question['questionId']}/attempts",
+            json={"answer": "B"},
+        )
+    )
+    assert attempt.status_code == 200
+    assert attempt.json()["outcome"] == "incorrect"
+    assert attempt.json()["citations"][0]["documentId"] == document_id
+
+    session = asyncio.run(
+        request_with_lifespan(app, "POST", "/api/v1/study-sessions", json={"topic": "chlorophyll"})
+    )
+    assert session.status_code == 201
+    completed = asyncio.run(
+        request_with_lifespan(
+            app, "POST", f"/api/v1/study-sessions/{session.json()['sessionId']}/complete"
+        )
+    )
+    assert completed.status_code == 200
+
+    plan = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/study-coach/plan"))
+    assert plan.status_code == 200
+    recommendation = plan.json()["recommendations"][0]
+    assert recommendation["quizTopic"] == "chlorophyll"
+    assert recommendation["citations"][0]["documentId"] == document_id
+    assert recommendation["citations"][0]["pageNumber"] == 1
+    assert any("incorrect" in reason for reason in recommendation["reasons"])
+    assert any("study session" in reason for reason in recommendation["reasons"])
+
+    analytics = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/learning-analytics"))
+    assert analytics.json()["totals"]["attemptCount"] == 1
+    assert analytics.json()["totals"]["completedStudySessions"] == 1
+    removed = asyncio.run(request_with_lifespan(app, "DELETE", f"/api/v1/documents/{document_id}"))
+    assert removed.status_code == 200
+    after_delete = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/study-coach/plan"))
+    assert after_delete.json()["recommendations"] == []
+    after_analytics = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/learning-analytics"))
+    assert after_analytics.json()["totals"]["attemptCount"] == 0
+    assert after_analytics.json()["totals"]["completedStudySessions"] == 1
+
+
 def test_quiz_without_retrieved_evidence_does_not_call_model(tmp_path):
     app = create_app(make_settings(tmp_path))
     response = asyncio.run(

@@ -7,7 +7,7 @@ from contextlib import closing
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
@@ -220,6 +220,31 @@ def initialize_storage(database_path: Path) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_knowledge_relationship_source "
                 "ON knowledge_relationships(source_concept_id, target_concept_id)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS study_coach_recommendations (
+                    recommendation_id TEXT PRIMARY KEY,
+                    plan_date TEXT NOT NULL,
+                    topic_id TEXT NOT NULL,
+                    topic TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    priority INTEGER NOT NULL,
+                    reasons_json TEXT NOT NULL,
+                    graph_concept_id TEXT,
+                    related_concept_ids_json TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK (status IN (
+                        'planned', 'accepted', 'dismissed', 'completed'
+                    )),
+                    estimated_minutes INTEGER NOT NULL CHECK (estimated_minutes BETWEEN 5 AND 180),
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(plan_date, topic_id)
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_study_coach_date "
+                "ON study_coach_recommendations(plan_date, priority DESC)"
             )
             connection.execute(
                 """
@@ -1159,6 +1184,19 @@ def get_learning_analytics_data(database_path: Path) -> dict[str, Any]:
                 "SELECT concept_id, canonical_name, aliases_json FROM knowledge_concepts"
             )
         ]
+        relationships = [
+            {
+                "relationshipId": row["relationship_id"],
+                "sourceConceptId": row["source_concept_id"],
+                "targetConceptId": row["target_concept_id"],
+                "relation": row["relation"],
+                "status": row["status"],
+            }
+            for row in connection.execute(
+                """SELECT relationship_id, source_concept_id, target_concept_id, relation, status
+                   FROM knowledge_relationships ORDER BY relationship_id"""
+            )
+        ]
     topic_sources: dict[str, list[dict[str, Any]]] = {}
     for row in source_rows:
         citations = topic_sources.setdefault(row["topic_id"], [])
@@ -1183,6 +1221,126 @@ def get_learning_analytics_data(database_path: Path) -> dict[str, Any]:
         "reviews": reviews,
         "topicSources": topic_sources,
         "concepts": concepts,
+        "relationships": relationships,
+    }
+
+
+def get_or_create_study_coach_plan(
+    database_path: Path,
+    *,
+    plan_date: str,
+    recommendations: list[dict[str, Any]],
+    updated_at: str,
+) -> list[dict[str, Any]]:
+    """Persist the deterministic daily plan once and preserve learner decisions."""
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.executemany(
+                """INSERT OR IGNORE INTO study_coach_recommendations(
+                       recommendation_id, plan_date, topic_id, topic, title, priority,
+                       reasons_json, graph_concept_id, related_concept_ids_json, status,
+                       estimated_minutes, updated_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)""",
+                [
+                    (
+                        item["recommendationId"],
+                        plan_date,
+                        item["topicId"],
+                        item["topic"],
+                        item["title"],
+                        item["priority"],
+                        json.dumps(item["reasons"]),
+                        item["graphConceptId"],
+                        json.dumps(item["relatedConceptIds"]),
+                        item["estimatedMinutes"],
+                        updated_at,
+                    )
+                    for item in recommendations
+                ],
+            )
+        rows = connection.execute(
+            """SELECT * FROM study_coach_recommendations WHERE plan_date=?
+               ORDER BY priority DESC, topic COLLATE NOCASE, recommendation_id""",
+            (plan_date,),
+        ).fetchall()
+    return [
+        {
+            "recommendationId": row["recommendation_id"],
+            "planDate": row["plan_date"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "title": row["title"],
+            "priority": row["priority"],
+            "reasons": json.loads(row["reasons_json"]),
+            "graphConceptId": row["graph_concept_id"],
+            "relatedConceptIds": json.loads(row["related_concept_ids_json"]),
+            "status": row["status"],
+            "estimatedMinutes": row["estimated_minutes"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_study_coach_recommendation(
+    database_path: Path,
+    *,
+    recommendation_id: str,
+    action: str,
+    updated_at: str,
+    title: str | None = None,
+    estimated_minutes: int | None = None,
+) -> dict[str, Any] | None:
+    """Apply an explicit learner decision to one persisted plan item."""
+    import json
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                "SELECT * FROM study_coach_recommendations WHERE recommendation_id=?",
+                (recommendation_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            status = {
+                "accept": "accepted",
+                "edit": "accepted",
+                "dismiss": "dismissed",
+                "complete": "completed",
+            }[action]
+            connection.execute(
+                """UPDATE study_coach_recommendations
+                   SET status=?, title=?, estimated_minutes=?, updated_at=?
+                   WHERE recommendation_id=?""",
+                (
+                    status,
+                    title if title is not None else row["title"],
+                    estimated_minutes
+                    if estimated_minutes is not None
+                    else row["estimated_minutes"],
+                    updated_at,
+                    recommendation_id,
+                ),
+            )
+            updated = connection.execute(
+                "SELECT * FROM study_coach_recommendations WHERE recommendation_id=?",
+                (recommendation_id,),
+            ).fetchone()
+    return {
+        "recommendationId": updated["recommendation_id"],
+        "planDate": updated["plan_date"],
+        "topicId": updated["topic_id"],
+        "topic": updated["topic"],
+        "title": updated["title"],
+        "priority": updated["priority"],
+        "reasons": json.loads(updated["reasons_json"]),
+        "graphConceptId": updated["graph_concept_id"],
+        "relatedConceptIds": json.loads(updated["related_concept_ids_json"]),
+        "status": updated["status"],
+        "estimatedMinutes": updated["estimated_minutes"],
+        "updatedAt": updated["updated_at"],
     }
 
 

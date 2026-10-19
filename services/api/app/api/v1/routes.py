@@ -63,6 +63,10 @@ from app.schemas import (
     RebuildEmbeddingsResponse,
     RetrievalRequest,
     RetrievalResponse,
+    StudyCoachActionRequest,
+    StudyCoachExplanationResponse,
+    StudyCoachPlanResponse,
+    StudyCoachRecommendation,
     StudySessionRequest,
     StudySessionResponse,
     TutorAnswerRequest,
@@ -82,6 +86,7 @@ from app.storage import (
     get_learning_image_detail,
     get_learning_image_region,
     get_learning_progress,
+    get_or_create_study_coach_plan,
     get_quiz_question,
     get_quiz_set,
     knowledge_graph_chunks,
@@ -93,8 +98,10 @@ from app.storage import (
     start_study_session,
     store_knowledge_extraction,
     store_learning_image,
+    update_study_coach_recommendation,
     verify_knowledge_relationship,
 )
+from app.study_coach import build_daily_recommendations
 from app.tutor import InvalidTutorResponse, TutorUnavailable, generate_grounded_answer
 
 router = APIRouter(prefix="/api/v1")
@@ -909,6 +916,152 @@ def finish_study_session(request: Request, session_id: str) -> dict[str, Any]:
     if session is None:
         raise ApiError(404, "STUDY_SESSION_NOT_FOUND", "The study session was not found.")
     return session
+
+
+@router.get(
+    "/study-coach/plan",
+    response_model=StudyCoachPlanResponse,
+    tags=["learning"],
+)
+def study_coach_plan(request: Request) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    plan_date = now.date().isoformat()
+    database_path = _database_path(request)
+    data = _database_call(get_learning_analytics_data, database_path)
+    analytics = build_analytics(
+        attempts=data["attempts"],
+        sessions=data["sessions"],
+        reviews=data["reviews"],
+        topic_sources=data["topicSources"],
+        concepts=data["concepts"],
+        now=now,
+    )
+    candidates = build_daily_recommendations(
+        analytics=data | {"topics": analytics["topics"]}, now=now
+    )
+    stored = _database_call(
+        get_or_create_study_coach_plan,
+        database_path,
+        plan_date=plan_date,
+        recommendations=candidates,
+        updated_at=now.isoformat(),
+    )
+    live_topics = {topic["topicId"]: topic for topic in analytics["topics"]}
+    recommendations = []
+    for item in stored:
+        topic = live_topics.get(item["topicId"])
+        citations = data["topicSources"].get(item["topicId"], [])
+        # Source deletion cascades learner activity; never display a stale plan without evidence.
+        if topic is None or not citations:
+            continue
+        recommendations.append(
+            StudyCoachRecommendation(
+                **item,
+                citations=citations,
+                quizTopic=topic["topic"],
+            ).model_dump(by_alias=True)
+        )
+    empty_reason = None
+    if not recommendations:
+        empty_reason = (
+            "No quiz attempts are recorded yet. Complete a cited quiz to get a personalized plan."
+            if not data["attempts"]
+            else "No current source-backed topics are available for a study recommendation."
+        )
+    return {
+        "planDate": plan_date,
+        "recommendations": recommendations,
+        "emptyReason": empty_reason,
+        "methodology": (
+            "Priority is deterministic: overdue reviews (+100 each), weak topic (+40), "
+            "latest incorrect results (+10 each, capped at 3), ambiguous results (+5 each, "
+            "capped at 3), graph neighbors (+1 each, capped at 5), and completed sessions "
+            "today (-10 each, capped at 2). Every item links to stored quiz source citations."
+        ),
+    }
+
+
+@router.patch(
+    "/study-coach/recommendations/{recommendation_id}",
+    response_model=StudyCoachRecommendation,
+    tags=["learning"],
+)
+def decide_study_coach_recommendation(
+    request: Request, recommendation_id: str, payload: StudyCoachActionRequest
+) -> dict[str, Any]:
+    now = datetime.now(UTC)
+    database_path = _database_path(request)
+    current_plan = study_coach_plan(request)
+    visible_recommendations = {
+        row["recommendationId"]: row for row in current_plan["recommendations"]
+    }
+    current = visible_recommendations.get(recommendation_id)
+    if current is None:
+        raise ApiError(
+            404,
+            "RECOMMENDATION_NOT_FOUND",
+            "The study recommendation is no longer available with current source evidence.",
+        )
+    item = _database_call(
+        update_study_coach_recommendation,
+        database_path,
+        recommendation_id=recommendation_id,
+        action=payload.action,
+        updated_at=now.isoformat(),
+        title=payload.title,
+        estimated_minutes=payload.estimated_minutes,
+    )
+    if item is None:
+        raise ApiError(404, "RECOMMENDATION_NOT_FOUND", "The study recommendation was not found.")
+    citations = current["citations"]
+    if not citations:
+        raise ApiError(
+            404,
+            "RECOMMENDATION_EVIDENCE_REMOVED",
+            "The source material for this recommendation is no longer available.",
+        )
+    return StudyCoachRecommendation(
+        **item,
+        citations=citations,
+        quizTopic=item["topic"],
+    ).model_dump(by_alias=True)
+
+
+@router.post(
+    "/study-coach/recommendations/{recommendation_id}/explanation",
+    response_model=StudyCoachExplanationResponse,
+    tags=["learning", "tutor"],
+)
+async def explain_study_coach_recommendation(
+    request: Request, recommendation_id: str
+) -> dict[str, Any]:
+    plan = study_coach_plan(request)
+    item = next(
+        (
+            recommendation
+            for recommendation in plan["recommendations"]
+            if recommendation["recommendationId"] == recommendation_id
+        ),
+        None,
+    )
+    if item is None:
+        raise ApiError(404, "RECOMMENDATION_NOT_FOUND", "The study recommendation was not found.")
+    citations = item["citations"]
+    question = "Explain why this study topic is recommended today and what to focus on."
+    result = await _grounded_tutor_response(
+        _settings(request),
+        question=question,
+        concept=item["topic"],
+        evidence=citations,
+        retrieval_mode="lexical_fallback",
+        fallback_reason="study_coach_uses_stored_quiz_citations",
+    )
+    return {
+        "question": question,
+        "status": result["status"],
+        "answer": result["answer"],
+        "citations": result["citations"],
+    }
 
 
 @router.get("/diagrams", response_model=DiagramsResponse, tags=["diagrams"])

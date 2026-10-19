@@ -23,6 +23,12 @@ Base path `/api/v1`; JSON camelCase in browser and explicit Pydantic mapping at 
 | `GET /learning-analytics` | Return persisted quiz, completed-session, daily activity, topic mastery, and due-review analytics |
 | `POST /study-sessions` | Start an explicitly learner-initiated local study session |
 | `POST /study-sessions/{sessionId}/complete` | Record the learner's explicit session completion |
+| `GET /study-coach/plan` | Build and persist today's deterministic, source-linked recommendations from quiz/review/session/graph records |
+| `PATCH /study-coach/recommendations/{recommendationId}` | Accept, edit, dismiss, or complete a persisted recommendation |
+| `POST /study-coach/recommendations/{recommendationId}/explanation` | Optionally explain a recommendation through the existing grounded tutor and its stored citations |
+| `GET /study-coach/plan` | Build and persist today's deterministic, source-linked recommendations from quiz/review/session/graph records |
+| `PATCH /study-coach/recommendations/{recommendationId}` | Accept, edit, dismiss, or complete a persisted recommendation |
+| `POST /study-coach/recommendations/{recommendationId}/explanation` | Optionally explain a recommendation through the existing grounded tutor and its stored citations |
 | `GET /knowledge-graph` | List locally stored evidence-backed concepts |
 | `POST /knowledge-graph/extract` | Extract bounded candidate concepts/relationships from selected stored chunks with the optional loopback tutor model |
 | `GET /knowledge-graph/concepts/{conceptId}` | Return a concept, connected concepts, exact supporting passages, and document/chunk/page provenance |
@@ -69,7 +75,15 @@ OCR uses optional `pytesseract` with the locally installed Tesseract executable.
 
 Topic mastery is the weighted accuracy of each question's latest outcome when that outcome is scored. For a scored result with age `d` days, weight is `2^(-d/30)`; the mastery score is weighted correct outcomes divided by total scored weight. Ambiguous latest results are excluded. The operational weak-topic marker is mastery below 0.60; this threshold and formula are reporting rules, not validated measures of knowledge or learning.
 
-Quiz attempts schedule a local review item per question: one day after incorrect or ambiguous outcomes and seven days after correct outcomes. A later attempt replaces that question's due date. Due means `dueAt <= current UTC time`. `POST /api/v1/study-sessions` records a learner-initiated topic and start time; `POST /api/v1/study-sessions/{sessionId}/complete` records explicit completion. These records are local to the SQLite database. Deleting source material cascades its quiz/citation/attempt/review data; independently recorded study sessions are retained because they have no source-document association. The dashboard is not an adaptive planner and does not claim that completing a session proves learning.
+Quiz attempts schedule a local review item per question: one day after incorrect or ambiguous outcomes and seven days after correct outcomes. A later attempt replaces that question's due date. Due means `dueAt <= current UTC time`. `POST /api/v1/study-sessions` records a learner-initiated topic and start time; `POST /api/v1/study-sessions/{sessionId}/complete` records explicit completion. These records are local to the SQLite database. Deleting source material cascades its quiz/citation/attempt/review data; independently recorded study sessions are retained because they have no source-document association. Completing a session records the learner's action, not proof of learning.
+
+## Personalized study coach
+
+`GET /api/v1/study-coach/plan` creates at most three deterministic recommendations for the current UTC date. It only recommends topics with a persisted quiz attempt and at least one currently stored quiz citation. Priority is overdue reviews (+100 each), the analytics weak-topic review flag (+40), latest incorrect questions (+10 each, capped at 3), ambiguous questions (+5 each, capped at 3), graph neighbors (+1 each, capped at 5), and completed study sessions on that topic today (-10 each, capped at 2). Ties are ordered by topic name. This is an operational scheduling heuristic, not a diagnosis or validated mastery estimate. Reasons expose actual contributing record counts and graph links; candidate graph edges remain labeled candidate.
+
+Recommendations are persisted by UTC date and topic in SQLite, so repeated reads preserve accept/edit/dismiss/complete decisions. Editing may change only the displayed plan title and estimated minutes; it cannot replace the source topic, citations, or graph IDs. Source citations are resolved from current quiz citation rows on every response. When source deletion cascades related quiz material, the coach omits the now unsupported recommendation. Every recommendation includes a direct quiz topic, current document/chunk/page citations, and an optional graph concept link.
+
+The rule-based plan works without a tutor model. An explicit explanation request may use the already configured loopback tutor with only that recommendation's stored citation passages; standard tutor abstention and citation-label validation apply. When no model is configured, rule reasons and source passages remain available, while the optional explanation endpoint reports model-unavailable. Empty attempt history returns an honest empty state.
 
 ## Knowledge graph
 

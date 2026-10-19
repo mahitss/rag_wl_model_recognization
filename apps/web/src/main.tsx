@@ -108,6 +108,15 @@ type LearningAnalytics = {
   activeSessions: { sessionId: string; topicId: string; topic: string; startedAt: string; completedAt: string | null }[];
   methodology: { mastery: string; recencyHalfLifeDays: number; weakTopicThreshold: number; reviewIntervalsDays: Record<string, number>; reviewDueBoundary: string };
 };
+type StudyCoachRecommendation = {
+  recommendationId: string; planDate: string; topicId: string; topic: string; title: string;
+  priority: number; reasons: string[]; graphConceptId: string | null; relatedConceptIds: string[];
+  status: "planned" | "accepted" | "dismissed" | "completed"; estimatedMinutes: number;
+  citations: Citation[]; quizTopic: string;
+};
+type StudyCoachPlan = {
+  planDate: string; recommendations: StudyCoachRecommendation[]; emptyReason: string | null; methodology: string;
+};
 
 type NormalizedRegion = { x: number; y: number; width: number; height: number };
 type LearningImageRegion = {
@@ -207,6 +216,11 @@ export function App() {
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [sessionTopic, setSessionTopic] = useState("");
+  const [studyPlan, setStudyPlan] = useState<StudyCoachPlan | null>(null);
+  const [studyPlanError, setStudyPlanError] = useState<string | null>(null);
+  const [studyPlanLoading, setStudyPlanLoading] = useState(false);
+  const [coachExplanation, setCoachExplanation] = useState<Record<string, TutorResult>>({});
+  const [coachExplanationError, setCoachExplanationError] = useState<Record<string, string>>({});
   const [learningImages, setLearningImages] = useState<LearningImageSummary[]>([]);
   const [selectedLearningImage, setSelectedLearningImage] = useState<LearningImage | null>(null);
   const [selectedImageRegionId, setSelectedImageRegionId] = useState<string | null>(null);
@@ -281,6 +295,12 @@ export function App() {
       .then((result) => { if (active) setAnalytics(result); })
       .catch((error: unknown) => {
         if (active) setAnalyticsError(error instanceof Error ? error.message : "Could not load learning analytics.");
+      });
+    fetch("/api/v1/study-coach/plan")
+      .then((response) => readJson<StudyCoachPlan>(response))
+      .then((result) => { if (active) setStudyPlan(result); })
+      .catch((error: unknown) => {
+        if (active) setStudyPlanError(error instanceof Error ? error.message : "Could not load the study plan.");
       });
     fetch("/api/v1/knowledge-graph")
       .then((response) => readJson<{ concepts: GraphConcept[] }>(response))
@@ -613,6 +633,43 @@ export function App() {
   async function refreshAnalytics() {
     const response = await fetch("/api/v1/learning-analytics");
     setAnalytics(await readJson<LearningAnalytics>(response));
+    await refreshStudyPlan();
+  }
+
+  async function refreshStudyPlan() {
+    const response = await fetch("/api/v1/study-coach/plan");
+    setStudyPlan(await readJson<StudyCoachPlan>(response));
+  }
+
+  async function updateStudyRecommendation(
+    recommendationId: string,
+    action: "accept" | "edit" | "dismiss" | "complete",
+    fields?: { title?: string; estimatedMinutes?: number },
+  ) {
+    setStudyPlanLoading(true);
+    setStudyPlanError(null);
+    try {
+      const response = await fetch(`/api/v1/study-coach/recommendations/${encodeURIComponent(recommendationId)}`, {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, ...(fields ?? {}) }),
+      });
+      await readJson<StudyCoachRecommendation>(response);
+      await refreshStudyPlan();
+    } catch (error) {
+      setStudyPlanError(error instanceof Error ? error.message : "Could not update the study recommendation.");
+    } finally { setStudyPlanLoading(false); }
+  }
+
+  async function explainStudyRecommendation(recommendationId: string) {
+    setStudyPlanLoading(true);
+    setCoachExplanationError((current) => ({ ...current, [recommendationId]: "" }));
+    try {
+      const response = await fetch(`/api/v1/study-coach/recommendations/${encodeURIComponent(recommendationId)}/explanation`, { method: "POST" });
+      const result = await readJson<TutorResult>(response);
+      setCoachExplanation((current) => ({ ...current, [recommendationId]: result }));
+    } catch (error) {
+      setCoachExplanationError((current) => ({ ...current, [recommendationId]: error instanceof Error ? error.message : "The local tutor could not explain this recommendation." }));
+    } finally { setStudyPlanLoading(false); }
   }
 
   async function beginStudySession(event: React.FormEvent<HTMLFormElement>) {
@@ -1214,6 +1271,57 @@ export function App() {
           </section>
         </section>
       )}
+      <section className="study-coach" aria-labelledby="study-coach-title">
+        <div className="analytics-heading">
+          <div>
+            <p className="eyebrow">A daily plan from your saved learning activity</p>
+            <h2 id="study-coach-title">AI study coach</h2>
+            <p className="muted">Recommendations and priorities are calculated with deterministic rules. The optional local tutor can explain a recommendation using only its linked passages.</p>
+          </div>
+        </div>
+        {studyPlanLoading && <p className="muted" role="status">Updating today’s plan…</p>}
+        {studyPlanError && <p className="notice notice--error" role="alert">{studyPlanError}</p>}
+        {!studyPlan && !studyPlanError && <p className="muted" role="status">Loading today’s plan…</p>}
+        {studyPlan && studyPlan.recommendations.length === 0 && <p className="muted" role="status">{studyPlan.emptyReason ?? "No recommendations are available today."}</p>}
+        {studyPlan && studyPlan.recommendations.length > 0 && <ol className="study-plan-list">
+          {studyPlan.recommendations.map((recommendation) => <li key={recommendation.recommendationId}>
+            <article className="study-plan-item">
+              <div className="study-plan-heading">
+                <div><h3>{recommendation.title}</h3><p><strong>{recommendation.topic}</strong> · {recommendation.estimatedMinutes} min · priority {recommendation.priority}</p></div>
+                <span className={`study-plan-status study-plan-status--${recommendation.status}`}>{recommendation.status}</span>
+              </div>
+              <h4>Why this is suggested</h4>
+              <ul>{recommendation.reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>
+              <div className="study-plan-links">
+                <button type="button" className="text-action" disabled={quizLoading || studyPlanLoading} onClick={() => void generateQuiz(recommendation.quizTopic)}>Practice with a cited quiz</button>
+                {recommendation.graphConceptId && <button type="button" className="text-action" disabled={graphLoading || studyPlanLoading} onClick={() => void loadGraphConcept(recommendation.graphConceptId!)}>Open knowledge graph topic</button>}
+              </div>
+              <details><summary>Supporting study passages ({recommendation.citations.length})</summary>
+                <ol className="evidence-list">{recommendation.citations.map((citation) => <li className="evidence-item" key={citation.citationId}>
+                  <blockquote>{citation.text}</blockquote><p className="citation-meta"><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · chunk <code>{citation.citationId}</code></p>
+                </li>)}</ol>
+              </details>
+              {tutorConfigured && <div className="study-plan-explainer">
+                <button type="button" className="text-action" disabled={studyPlanLoading} onClick={() => void explainStudyRecommendation(recommendation.recommendationId)}>Explain with local tutor</button>
+                {coachExplanationError[recommendation.recommendationId] && <p className="notice notice--error" role="alert">{coachExplanationError[recommendation.recommendationId]}</p>}
+                {coachExplanation[recommendation.recommendationId]?.status === "answered" && <div className="tutor-answer"><p>{coachExplanation[recommendation.recommendationId].answer}</p>{coachExplanation[recommendation.recommendationId].citations.map((citation) => <p className="citation-meta" key={citation.citationId}><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · <code>{citation.citationId}</code></p>)}</div>}
+                {coachExplanation[recommendation.recommendationId]?.status === "insufficient_evidence" && <p className="muted" role="status">The tutor abstained because the saved passages did not support an explanation.</p>}
+              </div>}
+              <div className="study-plan-actions">
+                {recommendation.status === "planned" && <button type="button" className="camera-action" disabled={studyPlanLoading} onClick={() => void updateStudyRecommendation(recommendation.recommendationId, "accept")}>Accept</button>}
+                {(recommendation.status === "planned" || recommendation.status === "accepted") && <button type="button" className="camera-action camera-action--primary" disabled={studyPlanLoading} onClick={() => void updateStudyRecommendation(recommendation.recommendationId, "complete")}>Mark complete</button>}
+                {(recommendation.status === "planned" || recommendation.status === "accepted") && <button type="button" className="camera-action" disabled={studyPlanLoading} onClick={() => void updateStudyRecommendation(recommendation.recommendationId, "dismiss")}>Dismiss</button>}
+                {(recommendation.status === "planned" || recommendation.status === "accepted") && <details><summary>Edit</summary><form className="study-plan-edit" onSubmit={(event) => { event.preventDefault(); const form = new FormData(event.currentTarget); void updateStudyRecommendation(recommendation.recommendationId, "edit", { title: String(form.get("title")), estimatedMinutes: Number(form.get("minutes")) }); }}>
+                  <label>Plan title<input name="title" defaultValue={recommendation.title} minLength={2} maxLength={160} required /></label>
+                  <label>Minutes<input name="minutes" type="number" defaultValue={recommendation.estimatedMinutes} min={5} max={180} required /></label>
+                  <button type="submit" className="camera-action">Save changes</button>
+                </form></details>}
+              </div>
+            </article>
+          </li>)}
+        </ol>}
+        {studyPlan && <details className="analytics-methodology"><summary>How priorities are calculated</summary><p>{studyPlan.methodology}</p></details>}
+      </section>
       <section className="analytics-panel" aria-labelledby="analytics-title">
         <div className="analytics-heading">
           <div>

@@ -119,6 +119,14 @@ type TestAnalytics = {
   activeSessions: { sessionId: string; topicId: string; topic: string; startedAt: string; completedAt: string | null }[];
   methodology: { mastery: string; recencyHalfLifeDays: number; weakTopicThreshold: number; reviewIntervalsDays: Record<string, number>; reviewDueBoundary: string };
 };
+type TestCoachPlan = {
+  planDate: string; recommendations: {
+    recommendationId: string; planDate: string; topicId: string; topic: string; title: string;
+    priority: number; reasons: string[]; graphConceptId: string | null; relatedConceptIds: string[];
+    status: "planned" | "accepted" | "dismissed" | "completed"; estimatedMinutes: number;
+    citations: typeof evidenceResponse.results; quizTopic: string;
+  }[]; emptyReason: string | null; methodology: string;
+};
 const analyticsFixture: TestAnalytics = {
   generatedAt: "2026-04-15T12:00:00+00:00",
   totals: { attemptCount: 0, attemptedQuestions: 0, correctQuestions: 0, incorrectQuestions: 0, ambiguousQuestions: 0, quizAccuracy: null, completedStudySessions: 0, activeStudySessions: 0, overdueReviews: 0 },
@@ -136,9 +144,15 @@ const uploadedImageFixture = {
   }[],
 };
 
-function installFetchMock(configured = true) {
+const coachPlanFixture: TestCoachPlan = {
+  planDate: "2026-10-19", emptyReason: null, methodology: "Overdue reviews rank first.",
+  recommendations: [{ recommendationId: "coach-photo", planDate: "2026-10-19", topicId: "topic-photo", topic: "Photosynthesis", title: "Review Photosynthesis", priority: 140, reasons: ["1 review is overdue."], graphConceptId: null, relatedConceptIds: [], status: "planned", estimatedMinutes: 20, citations: evidenceResponse.results, quizTopic: "Photosynthesis" }],
+};
+
+function installFetchMock(configured = true, initialPlan: TestCoachPlan = { ...coachPlanFixture, recommendations: [], emptyReason: "No quiz attempts are recorded yet." }) {
   let progressResult = emptyProgress;
   let analyticsResult = analyticsFixture;
+  let coachPlan = structuredClone(initialPlan);
   let imageResult = { ...uploadedImageFixture, regions: [...uploadedImageFixture.regions] };
   let imageExists = false;
   let graphRelationshipStatus: "candidate" | "human_verified" = "candidate";
@@ -153,6 +167,18 @@ function installFetchMock(configured = true) {
     }
     if (url === "/api/v1/progress") return jsonResponse(progressResult);
     if (url === "/api/v1/learning-analytics") return jsonResponse(analyticsResult);
+    if (url === "/api/v1/study-coach/plan") return jsonResponse(coachPlan);
+    if (url === "/api/v1/study-coach/recommendations/coach-photo" && init?.method === "PATCH") {
+      const payload = JSON.parse(String(init.body)) as { action: "accept" | "edit" | "dismiss" | "complete"; title?: string; estimatedMinutes?: number };
+      const recommendation = coachPlan.recommendations[0];
+      if (recommendation) {
+        recommendation.status = payload.action === "dismiss" ? "dismissed" : payload.action === "complete" ? "completed" : "accepted";
+        if (payload.title) recommendation.title = payload.title;
+        if (payload.estimatedMinutes) recommendation.estimatedMinutes = payload.estimatedMinutes;
+      }
+      return jsonResponse(recommendation);
+    }
+    if (url === "/api/v1/study-coach/recommendations/coach-photo/explanation" && init?.method === "POST") return tutorAnswerResponse();
     if (url === "/api/v1/images" && init?.method === "POST") {
       imageExists = true;
       return jsonResponse(imageResult);
@@ -434,5 +460,33 @@ describe("camera selection evidence flow", () => {
 
     await user.click(screen.getByRole("button", { name: "Delete uploaded image" }));
     expect(await screen.findByText(/Upload a PNG or JPEG image/)).not.toBeNull();
+  });
+});
+
+describe("personalized study coach", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    installFetchMock(true, coachPlanFixture);
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("shows cited rule reasons and persists recommendation decisions and edits", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "AI study coach" })).toBeTruthy();
+    expect(await screen.findByText("1 review is overdue.")).toBeTruthy();
+    expect(screen.getByText("Chlorophyll in leaves absorbs energy from light during photosynthesis.")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Accept" }));
+    expect(await screen.findByText("accepted")).toBeTruthy();
+    await user.click(screen.getByText("Edit"));
+    await user.clear(screen.getByLabelText("Plan title"));
+    await user.type(screen.getByLabelText("Plan title"), "Revisit plant energy");
+    await user.clear(screen.getByLabelText("Minutes"));
+    await user.type(screen.getByLabelText("Minutes"), "35");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    expect(await screen.findByRole("heading", { name: "Revisit plant energy" })).toBeTruthy();
+    expect(screen.getByText("accepted")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Mark complete" }));
+    expect(await screen.findByText("completed")).toBeTruthy();
   });
 });

@@ -531,6 +531,51 @@ class LearningAnalyticsResponse(ApiModel):
     methodology: AnalyticsMethodology
 
 
+class StudyCoachRecommendation(ApiModel):
+    recommendation_id: str
+    plan_date: str
+    topic_id: str
+    topic: str
+    title: str
+    priority: int
+    reasons: list[str]
+    graph_concept_id: str | None
+    related_concept_ids: list[str]
+    status: Literal["planned", "accepted", "dismissed", "completed"]
+    estimated_minutes: int = Field(ge=5, le=180)
+    updated_at: str
+    citations: list[CitationResponse]
+    quiz_topic: str
+
+
+class StudyCoachPlanResponse(ApiModel):
+    plan_date: str
+    recommendations: list[StudyCoachRecommendation]
+    empty_reason: str | None
+    methodology: str
+
+
+class StudyCoachExplanationResponse(ApiModel):
+    question: str
+    status: Literal["answered", "insufficient_evidence"]
+    answer: str | None
+    citations: list[CitationResponse]
+
+
+class StudyCoachActionRequest(ApiModel):
+    action: Literal["accept", "edit", "dismiss", "complete"]
+    title: str | None = Field(default=None, min_length=2, max_length=160)
+    estimated_minutes: int | None = Field(default=None, ge=5, le=180)
+
+    @model_validator(mode="after")
+    def edit_requires_changes(self):
+        if self.action == "edit" and self.title is None and self.estimated_minutes is None:
+            raise ValueError("Edit must include a new title or estimated duration")
+        if self.action != "edit" and (self.title is not None or self.estimated_minutes is not None):
+            raise ValueError("Only the edit action accepts title or duration changes")
+        return self
+
+
 class EmbeddingIndexCounts(ApiModel):
     total_chunks: int
     indexed_chunks: int

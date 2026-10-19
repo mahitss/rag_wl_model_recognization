@@ -242,6 +242,15 @@ export function App() {
   const requestNumber = useRef(0);
 
   useEffect(() => {
+    const section = quiz?.status === "ready" ? `Quiz: ${quiz.topic}`
+      : selectedGraphConcept ? `Knowledge graph: ${selectedGraphConcept.name}`
+      : selectedImageRegionId ? `Image region: ${selectedImageRegionId}`
+      : selectedRegion ? `Diagram: ${selectedRegion.displayName}`
+      : "WonderLearn";
+    document.title = `${section} — WonderLearn`;
+  }, [quiz, selectedGraphConcept, selectedImageRegionId, selectedRegion]);
+
+  useEffect(() => {
     let active = true;
     fetch("/api/v1/diagrams")
       .then((response) => readJson<{ diagrams: Diagram[] }>(response))
@@ -791,7 +800,8 @@ export function App() {
   }
 
   return (
-    <main className="page">
+    <main className="page" id="main-content" tabIndex={-1}>
+      <a href="#main-content" className="skip-link" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
       <header className="page-header">
         <p className="eyebrow">WonderLearn · curated diagram</p>
         <h1>Explore a concept</h1>
@@ -824,10 +834,12 @@ export function App() {
             accept="image/png,image/jpeg"
             disabled={imageLoading}
             onChange={(event) => void uploadLearningImage(event.currentTarget.files?.[0])}
+            aria-invalid={imageError ? true : undefined}
+            aria-describedby={imageError ? "learning-image-upload-error" : undefined}
           />
         </label>
         {imageLoading && <p className="muted" role="status">Processing image locally…</p>}
-        {imageError && <p className="notice notice--error" role="alert">{imageError}</p>}
+        {imageError && <p id="learning-image-upload-error" className="notice notice--error" role="alert">{imageError}</p>}
         {learningImages.length > 0 && <nav className="image-saved-list" aria-label="Saved educational images">
           {learningImages.map((image) => <button
             key={image.imageId}
@@ -909,11 +921,12 @@ export function App() {
               <button type="button" className="camera-action" disabled={imageLoading} onClick={() => void findImageEvidence()}>Find evidence for this region</button>
               <form className="image-tutor-form" onSubmit={(event) => void askImageTutor(event)}>
                 <label className="document-control" htmlFor="image-region-question">Ask about the selected region
-                  <textarea id="image-region-question" value={imageQuestion} maxLength={2_000} minLength={1} required rows={3} onChange={(event) => setImageQuestion(event.currentTarget.value)} placeholder="Ask about what this part shows" />
+                  <textarea id="image-region-question" value={imageQuestion} maxLength={2_000} minLength={1} required rows={3} onChange={(event) => setImageQuestion(event.currentTarget.value)} placeholder="Ask about what this part shows" aria-invalid={imageError ? true : undefined} aria-describedby={imageError ? "image-region-question-error" : undefined} />
                 </label>
                 <button className="camera-action camera-action--primary" type="submit" disabled={imageLoading || tutorConfigured === false}>{imageLoading ? "Searching and asking…" : "Ask grounded tutor"}</button>
               </form>
               {tutorConfigured === false && <p className="muted">Evidence search is available without the model. Configure the optional local tutor to generate an explanation.</p>}
+              {imageError && <p id="image-region-question-error" className="notice notice--error" role="alert">{imageError}</p>}
               {imageTutorResult?.status === "insufficient_evidence" && <p className="notice" role="status">No supporting passage was found, or the tutor abstained. No answer was invented.</p>}
               {imageTutorResult?.status === "answered" && imageTutorResult.answer && <div className="image-tutor-answer" aria-live="polite"><h4>Grounded explanation</h4><p>{imageTutorResult.answer}</p></div>}
               {imageEvidence?.status === "insufficient_evidence" && !imageTutorResult && <p className="notice" role="status">No indexed passage supports this region yet. Try a curated concept or add learning material.</p>}
@@ -1015,10 +1028,12 @@ export function App() {
                     void uploadDocument(event.currentTarget.files?.[0]);
                     event.currentTarget.value = "";
                   }}
+                  aria-invalid={uploadError ? true : undefined}
+                  aria-describedby={uploadError ? "pdf-upload-error" : undefined}
                 />
               </label>
-              {uploading && <p className="muted" role="status">Indexing PDF locallyâ€¦</p>}
-              {uploadError && <p className="notice notice--error" role="alert">{uploadError}</p>}
+              {uploading && <p className="muted" role="status">Indexing PDF locally…</p>}
+              {uploadError && <p id="pdf-upload-error" className="notice notice--error" role="alert">{uploadError}</p>}
             </div>
             <h2 id="evidence-title">{selectedRegion?.displayName ?? "Select a region"}</h2>
             {!selectedRegion && (
@@ -1089,14 +1104,16 @@ export function App() {
                     rows={3}
                     onChange={(event) => setTutorQuestion(event.currentTarget.value)}
                     placeholder="Ask a question grounded in your indexed passages"
+                    aria-invalid={tutorError ? true : undefined}
+                    aria-describedby={tutorError ? "tutor-question-error" : undefined}
                   />
                 </label>
                 <button className="camera-action camera-action--primary" type="submit" disabled={tutorLoading}>
-                  {tutorLoading ? "Retrieving and askingâ€¦" : "Ask tutor"}
+                  {tutorLoading ? "Retrieving and asking…" : "Ask tutor"}
                 </button>
               </form>
-              {tutorLoading && <p className="muted" role="status">Finding evidence and generating a grounded explanationâ€¦</p>}
-              {tutorError && <p className="notice notice--error" role="alert">{tutorError}</p>}
+              {tutorLoading && <p className="muted" role="status">Finding evidence and generating a grounded explanation…</p>}
+              {tutorError && <p id="tutor-question-error" className="notice notice--error" role="alert">{tutorError}</p>}
               {tutorResult?.status === "insufficient_evidence" && (
                 <p className="notice" role="status">No supporting passages were found, or the tutor abstained because the evidence did not support an answer.</p>
               )}
@@ -1141,6 +1158,8 @@ export function App() {
                     required
                     onChange={(event) => setQuizTopic(event.currentTarget.value)}
                     placeholder="For example, photosynthesis"
+                    aria-invalid={quizError ? true : undefined}
+                    aria-describedby={quizError ? "quiz-topic-error" : undefined}
                   />
                 </label>
                 <button
@@ -1152,7 +1171,7 @@ export function App() {
                 </button>
               </form>
               {quizLoading && <p className="muted" role="status">Retrieving passages and preparing questions…</p>}
-              {quizError && <p className="notice notice--error" role="alert">{quizError}</p>}
+              {quizError && <p id="quiz-topic-error" className="notice notice--error" role="alert">{quizError}</p>}
               {quiz?.status === "insufficient_evidence" && (
                 <p className="notice" role="status">No supporting passages were found, so no quiz was generated.</p>
               )}
@@ -1330,19 +1349,19 @@ export function App() {
             <p className="muted">These summaries use persisted quiz attempts, explicit study-session completions, and due-review records.</p>
           </div>
         </div>
-        {analyticsError && <p className="notice notice--error" role="alert">{analyticsError}</p>}
+          {analyticsError && <p id="session-topic-error" className="notice notice--error" role="alert">{analyticsError}</p>}
         {analyticsLoading && <p className="muted" role="status">Updating learning activity…</p>}
         {!analytics && !analyticsError && <p className="muted" role="status">Loading saved learning activity…</p>}
         {analytics && <>
-          <dl className="analytics-stats">
+          <div className="analytics-stats">
             <div><dt>Quiz accuracy</dt><dd>{analytics.totals.quizAccuracy === null ? "No scored answers" : `${Math.round(analytics.totals.quizAccuracy * 100)}%`}</dd></div>
             <div><dt>Questions attempted</dt><dd>{analytics.totals.attemptedQuestions}</dd></div>
             <div><dt>Completed study sessions</dt><dd>{analytics.totals.completedStudySessions}</dd></div>
             <div><dt>Reviews overdue</dt><dd>{analytics.totals.overdueReviews}</dd></div>
-          </dl>
+          </div>
           <form className="session-form" onSubmit={(event) => void beginStudySession(event)}>
             <label className="document-control" htmlFor="session-topic">Study session topic
-              <input id="session-topic" value={sessionTopic} minLength={2} maxLength={160} required onChange={(event) => setSessionTopic(event.currentTarget.value)} placeholder="What are you studying?" />
+              <input id="session-topic" value={sessionTopic} minLength={2} maxLength={160} required onChange={(event) => setSessionTopic(event.currentTarget.value)} placeholder="What are you studying?" aria-invalid={analyticsError ? true : undefined} aria-describedby={analyticsError ? "session-topic-error" : undefined} />
             </label>
             <button type="submit" className="camera-action camera-action--primary" disabled={analyticsLoading}>Start session</button>
           </form>

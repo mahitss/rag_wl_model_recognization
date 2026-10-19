@@ -286,7 +286,7 @@ h2 {
 
 .muted,
 .retrieval-note {
-  color: #61746b;
+  color: #4a5a52;
   font-size: 0.9rem;
   line-height: 1.5;
 }
@@ -798,7 +798,7 @@ code {
   gap: 0.75rem;
   margin: 0;
 }
-.analytics-stats div { padding: 0.9rem; border-radius: 0.7rem; background: #f4f7f2; }
+.analytics-stats > div { padding: 0.9rem; border-radius: 0.7rem; background: #f4f7f2; }
 .analytics-stats dt { color: #55766a; font-size: 0.86rem; }
 .analytics-stats dd { margin: 0.35rem 0 0; font-size: 1.2rem; font-weight: 750; }
 .session-form, .active-session { display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem; }
@@ -917,4 +917,42 @@ code {
 }
 @media (max-width: 420px) {
   .image-coordinate-fields { grid-template-columns: repeat(2, minmax(4rem, 1fr)); }
+}
+
+.skip-link {
+  position: absolute;
+  top: -10000px;
+  left: 0.75rem;
+  z-index: 100;
+  padding: 0.6rem 1rem;
+  background: #17613d;
+  color: #fff;
+  text-decoration: none;
+  border-radius: 0.5rem;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.15);
+}
+
+.skip-link:focus {
+  top: 0.75rem;
+  left: 0.75rem;
+}
+
+/* Ensure color is never the only indicator of status */
+.quiz-outcome--correct::before { content: "✓ "; }
+.quiz-outcome--incorrect::before { content: "✗ "; }
+.quiz-outcome--ambiguous::before { content: "⚠ "; }
+
+.study-plan-status--completed::before { content: "☑ "; }
+.study-plan-status--dismissed::before { content: "✗ "; }
+
+/* Stronger focus indicators across all interactive controls */
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[type="radio"]:focus-visible,
+[type="range"]:focus-visible {
+  outline: 3px solid #b96d23;
+  outline-offset: 2px;
 }

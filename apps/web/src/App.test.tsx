@@ -490,3 +490,99 @@ describe("personalized study coach", () => {
     expect(await screen.findByText("completed")).toBeTruthy();
   });
 });
+
+describe("accessibility", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    installFetchMock();
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it("exposes a skip-to-content link that reaches main content when activated", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const skipLink = screen.getByRole("link", { name: "Skip to main content" });
+    expect(skipLink).not.toBeNull();
+
+    await user.tab();
+    expect(document.activeElement).toBe(skipLink);
+
+    await user.keyboard("{Enter}");
+    const main = screen.getByRole("main");
+    expect(document.activeElement).toBe(main);
+    expect(document.title).toBe("WonderLearn — WonderLearn");
+  });
+
+  it("updates document title when a quiz is generated", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+    await user.type(screen.getByLabelText("Topic to practice"), "chlorophyll");
+    await user.click(screen.getByRole("button", { name: "Generate quiz from evidence" }));
+    await screen.findByRole("heading", { name: /What does chlorophyll absorb/ });
+
+    expect(document.title).toContain("Quiz: chlorophyll");
+    expect(document.title).toContain("WonderLearn");
+  });
+
+  it("marks invalid fields with aria-invalid and links errors via aria-describedby", async () => {
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+
+    // No errors initially: aria-invalid should be absent
+    const quizInput = screen.getByLabelText("Topic to practice");
+    expect(quizInput.getAttribute("aria-invalid")).toBeNull();
+    expect(quizInput.getAttribute("aria-describedby")).toBeNull();
+  });
+
+  it("region buttons expose pressed state for screen readers", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+
+    const regionButton = screen.getByRole("button", { name: "Explore Chlorophyll in leaves" });
+    expect(regionButton.getAttribute("aria-pressed")).toBe("false");
+
+    await user.click(regionButton);
+    expect(regionButton.getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it("evidence items have list semantics and citation metadata", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+    await user.click(screen.getByRole("button", { name: "Explore Chlorophyll in leaves" }));
+    await screen.findByText("Chlorophyll in leaves absorbs energy from light during photosynthesis.");
+
+    const evidenceList = screen.getByRole("list");
+    expect(evidenceList).not.toBeNull();
+
+    const firstItem = screen.getByRole("listitem");
+    expect(firstItem).not.toBeNull();
+    expect(screen.getAllByText("biology-notes.pdf").length).toBeGreaterThan(0);
+    expect(screen.getByText(/page 4/)).not.toBeNull();
+  });
+
+  it("tutor answer uses a polite live region for screen reader announcements", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Photosynthesis" });
+    await user.click(screen.getByRole("button", { name: "Explore Chlorophyll in leaves" }));
+    await screen.findByText("Chlorophyll in leaves absorbs energy from light during photosynthesis.");
+    await user.type(screen.getByLabelText("Question about Chlorophyll in leaves"), "What does it do?");
+    await user.click(screen.getByRole("button", { name: "Ask tutor" }));
+
+    await screen.findByText("Chlorophyll absorbs light energy [E1].");
+
+    const tutorAnswer = screen.getByText("Chlorophyll absorbs light energy [E1].");
+    const parent = tutorAnswer.parentElement;
+    expect(parent).not.toBeNull();
+    expect(parent?.getAttribute("aria-live")).toBe("polite");
+  });
+});

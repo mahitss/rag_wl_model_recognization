@@ -17,6 +17,11 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    environment: Literal["development", "production"] = "development"
+    log_level: str = "INFO"
+    api_host: str = "127.0.0.1"
+    api_port: int = 8000
+    request_timeout_seconds: float = 30.0
     database_path: Path = Path("data/local/wonderlearn.sqlite3")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     max_upload_bytes: int = 10 * 1024 * 1024
@@ -52,22 +57,30 @@ class Settings(BaseSettings):
 
     @field_validator("cors_origins")
     @classmethod
-    def cors_origins_must_be_local_http_origins(cls, value: str) -> str:
+    def cors_origins_must_be_safe_origins(cls, value: str) -> str:
         origins = [origin.strip() for origin in value.split(",") if origin.strip()]
         if not origins:
             raise ValueError("WL_CORS_ORIGINS must contain at least one origin")
         for origin in origins:
+            if origin == "*":
+                raise ValueError("WL_CORS_ORIGINS must not use wildcard '*'")
             parsed = urlsplit(origin)
-            if (
-                parsed.scheme != "http"
-                or parsed.hostname not in {"localhost", "127.0.0.1"}
-                or parsed.path
-                or parsed.query
-                or parsed.fragment
-                or parsed.username
-                or parsed.password
-            ):
-                raise ValueError("M0 CORS origins must use localhost or 127.0.0.1 over HTTP")
+            if parsed.scheme not in {"http", "https"}:
+                raise ValueError("WL_CORS_ORIGINS must use http or https")
+            if not parsed.hostname:
+                raise ValueError("WL_CORS_ORIGINS entries must include a hostname")
+            if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
+                raise ValueError(
+                    "WL_CORS_ORIGINS entries must not include path, query, "
+                    "fragment, or credentials"
+                )
+            # In development, only loopback HTTP origins are allowed.
+            # In production, HTTPS origins are permitted (e.g. a hosted frontend).
+            if parsed.scheme == "http" and parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+                raise ValueError(
+                    "WL_CORS_ORIGINS HTTP origins must use localhost or "
+                    "127.0.0.1; use HTTPS for remote origins"
+                )
         return ",".join(origins)
 
     @field_validator("tutor_base_url")
@@ -175,6 +188,43 @@ class Settings(BaseSettings):
     @property
     def tutor_configured(self) -> bool:
         return self.tutor_base_url is not None
+
+    @property
+    def is_production(self) -> bool:
+        return self.environment == "production"
+
+    def validate_startup(self) -> list[str]:
+        """Return a list of human-readable startup warnings (never fatal).
+
+        Checks that the database directory is writable, the embedding cache
+        path exists or can be created, and that production settings are safe.
+        """
+        warnings: list[str] = []
+
+        db_dir = self.database_path.parent
+        if not db_dir.exists():
+            try:
+                db_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                warnings.append(f"cannot create database directory {db_dir}: {exc}")
+
+        cache_dir = self.embedding_cache_path
+        if not cache_dir.exists():
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                warnings.append(f"cannot create embedding cache directory {cache_dir}: {exc}")
+
+        if self.is_production:
+            if self.api_host in {"127.0.0.1", "localhost", "::1"}:
+                warnings.append(
+                    "WL_API_HOST is loopback in production; bind to "
+                    "0.0.0.0 only behind a trusted reverse proxy"
+                )
+            if any(o.startswith("http://") for o in self.allowed_origins):
+                warnings.append("WL_CORS_ORIGINS contains http origins in production; prefer https")
+
+        return warnings
 
 
 @lru_cache

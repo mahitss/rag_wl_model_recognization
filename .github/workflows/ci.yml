@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "24"
+
+jobs:
+  backend:
+    name: Backend tests & lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Sync backend dependencies (dev + ocr extras)
+        run: uv sync --project services/api --extra dev --extra ocr
+
+      - name: Run Ruff
+        run: uv run --project services/api --extra dev ruff check services/api
+
+      - name: Run backend test suite
+        run: uv run --project services/api --extra dev pytest
+
+  frontend:
+    name: Frontend tests, typecheck & build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: "npm"
+          cache-dependency-path: apps/web/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix apps/web
+
+      - name: Run frontend tests
+        run: npm test --prefix apps/web
+
+      - name: Run TypeScript typecheck
+        run: npm run typecheck --prefix apps/web
+
+      - name: Production frontend build
+        run: npm run build --prefix apps/web
+
+  evaluation:
+    name: Evaluation & regression suite
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Sync backend dependencies (dev + semantic)
+        run: uv sync --project services/api --extra dev --extra semantic
+
+      - name: Run offline evaluation suite
+        run: uv run --locked --project services/api --extra dev --extra semantic python evaluations/run_suite.py

@@ -190,13 +190,16 @@ async def _grounded_tutor_response(
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
 def health(request: Request) -> dict[str, Any]:
+    settings = _settings(request)
     return {
         "status": "ok",
         "service": "wonderlearn-api",
+        "version": "0.1.0",
+        "environment": settings.environment,
         "capabilities": {
             "document_ingestion": True,
             "retrieval": True,
-            "model_inference": _settings(request).tutor_configured,
+            "model_inference": settings.tutor_configured,
         },
     }
 
@@ -1195,14 +1198,20 @@ def rebuild_embeddings(
         ) from exc
 
 
-def make_error_response(status_code: int, code: str, message: str, details: object = None):
+def make_error_response(
+    status_code: int,
+    code: str,
+    message: str,
+    details: object = None,
+    request_id: str | None = None,
+) -> JSONResponse:
     return JSONResponse(
         status_code=status_code,
         content={
             "error": {
                 "code": code,
                 "message": message,
-                "requestId": uuid.uuid4().hex,
+                "requestId": request_id or uuid.uuid4().hex,
                 "details": details,
             }
         },

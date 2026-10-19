@@ -1,8 +1,9 @@
 """FastAPI application factory and local learning API routes."""
 
 from contextlib import asynccontextmanager
+from typing import Any
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -10,16 +11,41 @@ from app.api.v1.routes import make_error_response, router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
 from app.errors import ApiError
+from app.logging import configure_logging, get_logger
+from app.middleware import RequestIdMiddleware
 from app.storage import initialize_storage
+
+logger = get_logger("wonderlearn")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     configured = settings or get_settings()
+    configure_logging(configured.log_level)
+
+    # Startup validation: surface configuration issues before serving traffic.
+    startup_warnings = configured.validate_startup()
+    for warning in startup_warnings:
+        logger.warning("startup_warning", extra={"warning": warning})
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        initialize_storage(configured.database_path)
+        # Startup
+        logger.info("startup", extra={"environment": configured.environment})
+        try:
+            initialize_storage(configured.database_path)
+            logger.info(
+                "storage_initialized",
+                extra={"database_path": str(configured.database_path)},
+            )
+        except Exception:
+            logger.exception(
+                "storage_initialization_failed",
+                extra={"database_path": str(configured.database_path)},
+            )
+            raise
         yield
+        # Shutdown: clean up any long-lived resources.
+        logger.info("shutdown")
 
     application = FastAPI(
         title="WonderLearn API",
@@ -32,21 +58,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = configured
     application.state.embedding_service = EmbeddingService(configured)
+
+    # Request ID + access logging (applied before CORS so headers flow through).
+    application.add_middleware(RequestIdMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=configured.allowed_origins,
         allow_credentials=False,
         allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Content-Type"],
+        allow_headers=["Content-Type", "X-Request-ID"],
     )
 
     @application.exception_handler(ApiError)
-    async def handle_api_error(_, exc: ApiError):
-        return make_error_response(exc.status_code, exc.code, exc.message, exc.details)
+    async def handle_api_error(request: Request, exc: ApiError) -> Any:
+        request_id = getattr(request.state, "request_id", None)
+        return make_error_response(
+            exc.status_code, exc.code, exc.message, exc.details, request_id=request_id
+        )
 
     @application.exception_handler(RequestValidationError)
-    async def handle_validation_error(_, __: RequestValidationError):
-        return make_error_response(422, "INVALID_REQUEST", "The request did not pass validation.")
+    async def handle_validation_error(request: Request, __: RequestValidationError) -> Any:
+        request_id = getattr(request.state, "request_id", None)
+        return make_error_response(
+            422, "INVALID_REQUEST", "The request did not pass validation.",
+            request_id=request_id,
+        )
 
     application.include_router(router)
     return application

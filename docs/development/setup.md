@@ -139,7 +139,7 @@ Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/api/v1/documents/$d
 - `services/api`: FastAPI modular-monolith boundary and system routes.
 - `ml/notebooks`: future training experiments; no training code in M0.
 - `data/manifests`: dataset provenance metadata only.
-- `evaluations`: future evaluation material; no model results claimed.
+- `evaluations`: versioned synthetic retrieval smoke set, evaluation runner, and ignored generated JSON/Markdown reports; synthetic results are not real-world quality claims.
 - `scripts`: local maintenance and setup helpers.
 - `tests`: reserved for cross-component checks; API tests currently live beside the service in `services/api/tests`.
 

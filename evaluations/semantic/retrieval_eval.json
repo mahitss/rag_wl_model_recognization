@@ -1,4 +1,7 @@
 {
+  "datasetVersion": "1.0.0",
+  "datasetKind": "synthetic",
+  "labeling": "Authored synthetic query labels; not human-reviewed learner data.",
   "description": "Small synthetic English science corpus for a deterministic retrieval smoke evaluation.",
   "documents": [
     {
@@ -29,31 +32,45 @@
   "queries": [
     {
       "query": "What is photosynthesis?",
-      "relevant": ["eval-photosynthesis-p1"]
+      "relevant": ["eval-photosynthesis-p1"],
+      "expectedEvidence": ["Photosynthesis is the process plants use to convert sunlight, water, and carbon dioxide into glucose and oxygen."],
+      "expectedSources": [{"documentId": "eval-photosynthesis", "filename": "photosynthesis.txt", "pageNumber": 1}]
     },
     {
       "query": "How do green plants make sugar using sunlight?",
-      "relevant": ["eval-photosynthesis-p1", "eval-photosynthesis-p2"]
+      "relevant": ["eval-photosynthesis-p1", "eval-photosynthesis-p2"],
+      "expectedEvidence": ["convert sunlight, water, and carbon dioxide into glucose", "Chlorophyll is the green pigment in leaves that absorbs light energy."],
+      "expectedSources": [{"documentId": "eval-photosynthesis", "filename": "photosynthesis.txt", "pageNumber": 1}, {"documentId": "eval-photosynthesis", "filename": "photosynthesis.txt", "pageNumber": 2}]
     },
     {
       "query": "What is water vapor formation from heated liquid called?",
-      "relevant": ["eval-water-cycle-p1"]
+      "relevant": ["eval-water-cycle-p1"],
+      "expectedEvidence": ["Evaporation, also called vaporization, happens when liquid water gains heat and becomes water vapor."],
+      "expectedSources": [{"documentId": "eval-water-cycle", "filename": "water-cycle.txt", "pageNumber": 1}]
     },
     {
       "query": "How does chlorophyll help make glucose and oxygen?",
-      "relevant": ["eval-photosynthesis-p1", "eval-photosynthesis-p2"]
+      "relevant": ["eval-photosynthesis-p2"],
+      "expectedEvidence": ["Chlorophyll is the green pigment in leaves that absorbs light energy."],
+      "expectedSources": [{"documentId": "eval-photosynthesis", "filename": "photosynthesis.txt", "pageNumber": 2}]
     },
     {
       "query": "What causes objects to attract one another?",
-      "relevant": ["eval-gravity-p1"]
+      "relevant": ["eval-gravity-p1"],
+      "expectedEvidence": ["Gravity is the attraction between objects that have mass."],
+      "expectedSources": [{"documentId": "eval-gravity", "filename": "gravity.txt", "pageNumber": 1}]
     },
     {
       "query": "How do plate tectonics produce earthquakes?",
-      "relevant": []
+      "relevant": [],
+      "expectedEvidence": [],
+      "expectedSources": []
     },
     {
       "query": "What is the boiling point of nitrogen?",
-      "relevant": []
+      "relevant": [],
+      "expectedEvidence": [],
+      "expectedSources": []
     }
   ]
 }

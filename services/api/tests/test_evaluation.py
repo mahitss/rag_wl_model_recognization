@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -60,3 +61,54 @@ def test_evaluation_settings_report_effective_ranking_configuration(tmp_path):
         "lexical_query_term_limit": 32,
         "lexical_query_stop_words": sorted(QUERY_STOP_WORDS),
     }
+
+
+def _evaluation_module():
+    repository_root = Path(__file__).resolve().parents[3]
+    sys.path[:0] = [str(repository_root), str(repository_root / "services" / "api")]
+    from evaluations.semantic import evaluate_retrieval
+
+    return evaluate_retrieval
+
+
+def test_synthetic_relevance_labels_point_to_real_evidence_and_provenance():
+    evaluator = _evaluation_module()
+    dataset_path = (
+        Path(__file__).resolve().parents[3] / "evaluations" / "semantic" / "retrieval_eval.json"
+    )
+    dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+    assert evaluator.validate_dataset(dataset) == []
+
+
+def test_recall_precision_and_mrr_follow_documented_top_k_conventions():
+    evaluator = _evaluation_module()
+    results = [
+        {"citationId": "unrelated"},
+        {"citationId": "expected"},
+    ]
+    assert evaluator._metrics(results, {"expected"}) == {
+        "recallAt5": 1.0,
+        "precisionAt5": 0.2,
+        "reciprocalRank": 0.5,
+    }
+
+
+def test_citation_provenance_rejects_invented_or_mismatched_fields():
+    evaluator = _evaluation_module()
+    document = {
+        "doc1": {
+            "filename": "lesson.txt",
+            "pages": ["Exact supporting passage."],
+        }
+    }
+    citation = {
+        "citationId": "doc1-p1",
+        "documentId": "doc1",
+        "displayFilename": "lesson.txt",
+        "pageNumber": 1,
+        "chunkIndex": 0,
+        "text": "Exact supporting passage.",
+    }
+    assert evaluator.citation_is_valid(citation, document)
+    assert not evaluator.citation_is_valid({**citation, "pageNumber": 2}, document)
+    assert not evaluator.citation_is_valid({**citation, "text": "fabricated"}, document)

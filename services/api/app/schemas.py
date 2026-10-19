@@ -37,6 +37,7 @@ class Capabilities(BaseModel):
 class HealthResponse(BaseModel):
     status: Literal["ok"]
     service: str
+    environment: str
     capabilities: Capabilities
 
 

@@ -13,6 +13,11 @@ from app.embeddings.service import EmbeddingService
 from app.errors import ApiError
 from app.logging import configure_logging, get_logger
 from app.middleware import RequestIdMiddleware
+from app.security import (
+    MaxBodySizeMiddleware,
+    RateLimitMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.storage import initialize_storage
 
 logger = get_logger("wonderlearn")
@@ -59,6 +64,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = configured
     application.state.embedding_service = EmbeddingService(configured)
 
+    # Security headers (outermost: present on every response, including errors).
+    application.add_middleware(SecurityHeadersMiddleware)
+    # Max request body size: reject oversized bodies before rate-limit accounting.
+    application.add_middleware(
+        MaxBodySizeMiddleware,
+        max_bytes=configured.max_request_body_bytes,
+    )
+    # Rate limiting: fixed window per client IP + path; disabled by default.
+    application.add_middleware(
+        RateLimitMiddleware,
+        enabled=configured.rate_limit_enabled,
+        requests_per_minute=configured.rate_limit_requests_per_minute,
+        exempt_paths=frozenset({"/api/v1/health", "/api/v1/ready"}),
+    )
     # Request ID + access logging (applied before CORS so headers flow through).
     application.add_middleware(RequestIdMiddleware)
     application.add_middleware(

@@ -34,6 +34,7 @@ def test_health_reports_only_implemented_capabilities(tmp_path):
     assert response.json() == {
         "status": "ok",
         "service": "wonderlearn-api",
+        "environment": "development",
         "capabilities": {
             "document_ingestion": True,
             "retrieval": True,

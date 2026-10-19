@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     request_timeout_seconds: float = 30.0
+    rate_limit_enabled: bool = False
+    rate_limit_requests_per_minute: int = 60
+    max_request_body_bytes: int | None = None
     database_path: Path = Path("data/local/wonderlearn.sqlite3")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     max_upload_bytes: int = 10 * 1024 * 1024
@@ -136,6 +139,20 @@ class Settings(BaseSettings):
             raise ValueError("WL_TUTOR_TIMEOUT_SECONDS must be between 1 and 600")
         return value
 
+    @field_validator("rate_limit_requests_per_minute")
+    @classmethod
+    def rate_limit_requests_is_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_RATE_LIMIT_REQUESTS_PER_MINUTE must be positive")
+        return value
+
+    @field_validator("max_request_body_bytes")
+    @classmethod
+    def max_request_body_bytes_is_positive(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("WL_MAX_REQUEST_BODY_BYTES must be positive or unset")
+        return value
+
     @field_validator(
         "embedding_dimensions",
         "embedding_batch_size",
@@ -223,6 +240,17 @@ class Settings(BaseSettings):
                 )
             if any(o.startswith("http://") for o in self.allowed_origins):
                 warnings.append("WL_CORS_ORIGINS contains http origins in production; prefer https")
+            if not self.rate_limit_enabled:
+                warnings.append(
+                    "WL_RATE_LIMIT_ENABLED is false in production; expensive "
+                    "endpoints (embedding rebuild, document upload, retrieval) "
+                    "are unprotected from denial-of-service abuse"
+                )
+            if self.max_request_body_bytes is None:
+                warnings.append(
+                    "WL_MAX_REQUEST_BODY_BYTES is unset in production; request "
+                    "body size is not bounded at the ASGI layer"
+                )
 
         return warnings
 

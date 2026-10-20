@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     tutor_timeout_seconds: float = 90.0
     tutor_max_tokens: int = 700
 
+    # Session and authentication settings
+    session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
+    session_cookie_secure: bool = False  # True in production (HTTPS only)
+    session_secret_key: str = ""
+
     @field_validator("database_path")
     @classmethod
     def database_path_must_name_a_file(cls, value: Path) -> Path:
@@ -155,6 +160,13 @@ class Settings(BaseSettings):
             value = int(value)
         if value <= 0:
             raise ValueError("WL_MAX_REQUEST_BODY_BYTES must be positive or unset")
+        return value
+
+    @field_validator("session_secret_key")
+    @classmethod
+    def session_secret_key_required_in_production(cls, value: str) -> str:
+        if not value:
+            raise ValueError("WL_SESSION_SECRET_KEY must be set")
         return value
 
     @field_validator(

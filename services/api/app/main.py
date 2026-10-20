@@ -1,13 +1,22 @@
 """FastAPI application factory and local learning API routes."""
 
+from __future__ import annotations
+
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.v1.routes import make_error_response, router
+from app.api.v1.auth_routes import router as auth_router
+from app.auth import (
+    SESSION_COOKIE_NAME,
+    get_current_user,
+    require_auth,
+)
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
 from app.errors import ApiError
@@ -64,6 +73,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = configured
     application.state.embedding_service = EmbeddingService(configured)
 
+    # Session middleware for authentication cookies
+    application.add_middleware(
+        SessionMiddleware,
+        secret_key=configured.session_secret_key,
+        session_cookie="wl_session",
+        max_age=configured.session_ttl_seconds,
+        https_only=configured.is_production,
+        same_site="lax",
+    )
+
     # Security headers (outermost: present on every response, including errors).
     application.add_middleware(SecurityHeadersMiddleware)
     # Max request body size: reject oversized bodies before rate-limit accounting.
@@ -83,10 +102,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_middleware(
         CORSMiddleware,
         allow_origins=configured.allowed_origins,
-        allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH", "DELETE"],
-        allow_headers=["Content-Type", "X-Request-ID"],
+        allow_credentials=True,
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "X-Request-ID", "X-CSRF-Token"],
     )
+
+    # Auth router (registration, login, logout, current user)
+    application.include_router(auth_router)
+    # Main API router (all user-facing endpoints require authentication)
+    application.include_router(router)
 
     @application.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> Any:

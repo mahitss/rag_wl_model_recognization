@@ -22,20 +22,19 @@ library, appropriate for a ₹0-budget deployment.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import secrets
-import sqlite3
-import time
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyError, InvalidHashError
+from argon2.exceptions import InvalidHashError, VerificationError
 from fastapi import HTTPException, Request, Response, status
 
-from app.config import Settings
-
+from app.storage import connect_database, get_user_by_id
 
 # ---------------------------------------------------------------------------
 # Password hashing (Argon2id)
@@ -43,13 +42,8 @@ from app.config import Settings
 
 # Argon2id parameters: 64 MiB memory, 3 iterations, 4 parallel lanes.
 # These are modest but appropriate for a single-instance local deployment.
-password_hasher = PasswordHasher(
-    time_cost=3,
-    memory_cost=64 * 1024,
-    parallelism=4,
-    hash_len=32,
-    salt_len=16,
-)
+password_hasher = PasswordHasher()
+DUMMY_PASSWORD_HASH = password_hasher.hash(secrets.token_urlsafe(32))
 
 
 def hash_password(password: str) -> str:
@@ -66,7 +60,7 @@ def verify_password(password: str, password_hash: str) -> bool:
     try:
         password_hasher.verify(password_hash, password)
         return True
-    except (VerifyError, InvalidHashError):
+    except (VerificationError, InvalidHashError, TypeError, ValueError):
         return False
 
 
@@ -92,6 +86,10 @@ def generate_csrf_token() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _session_digest(session_token: str) -> str:
+    return hashlib.sha256(session_token.encode("utf-8")).hexdigest()
+
+
 def _now_utc() -> datetime:
     return datetime.now(UTC)
 
@@ -109,27 +107,30 @@ def create_session(
     """
     session_token = generate_session_token()
     expires_at = _now_utc() + timedelta(seconds=ttl_seconds)
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             connection.execute(
                 """INSERT INTO user_sessions(
                        session_id, user_id, expires_at, created_at
                    ) VALUES (?, ?, ?, ?)""",
-                (session_token, user_id, expires_at.isoformat(), _now_utc().isoformat()),
+                (
+                    _session_digest(session_token),
+                    user_id,
+                    expires_at.isoformat(),
+                    _now_utc().isoformat(),
+                ),
             )
     return session_token, expires_at
 
 
-def get_session(
-    database_path: Path, session_token: str
-) -> dict[str, Any] | None:
+def get_session(database_path: Path, session_token: str) -> dict[str, Any] | None:
     """Return the session row for ``session_token`` if it exists and is not
     expired, otherwise ``None``.  Expired sessions are deleted lazily."""
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         row = connection.execute(
             """SELECT session_id, user_id, expires_at, created_at
                FROM user_sessions WHERE session_id = ?""",
-            (session_token,),
+            (_session_digest(session_token),),
         ).fetchone()
         if row is None:
             return None
@@ -138,7 +139,7 @@ def get_session(
             expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at <= _now_utc():
             connection.execute(
-                "DELETE FROM user_sessions WHERE session_id = ?", (session_token,)
+                "DELETE FROM user_sessions WHERE session_id = ?", (_session_digest(session_token),)
             )
             connection.commit()
             return None
@@ -152,16 +153,16 @@ def get_session(
 
 def destroy_session(database_path: Path, session_token: str) -> None:
     """Remove ``session_token`` from the session store (no-op if absent)."""
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             connection.execute(
-                "DELETE FROM user_sessions WHERE session_id = ?", (session_token,)
+                "DELETE FROM user_sessions WHERE session_id = ?", (_session_digest(session_token),)
             )
 
 
 def cleanup_expired_sessions(database_path: Path) -> int:
     """Delete all expired sessions and return the number removed."""
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             cursor = connection.execute(
                 "DELETE FROM user_sessions WHERE expires_at <= ?",
@@ -191,10 +192,7 @@ def get_current_user(request: Request) -> AuthUser | None:
     database, and the corresponding user is looked up.  Expired sessions are
     removed automatically.
     """
-    from app.config import get_settings
-    from app.storage import get_user_by_session
-
-    settings = get_settings()
+    settings = request.app.state.settings
     database_path = settings.database_path
 
     session_cookie = request.cookies.get(SESSION_COOKIE_NAME)
@@ -206,7 +204,9 @@ def get_current_user(request: Request) -> AuthUser | None:
         return None
 
     user = get_user_by_id(database_path, session["user_id"])
-    return user
+    if user is None:
+        return None
+    return AuthUser(user_id=user["user_id"], username=user["username"])
 
 
 def require_auth(request: Request) -> AuthUser:
@@ -242,14 +242,20 @@ def verify_csrf_token(request: Request) -> None:
     """
     cookie_token = request.cookies.get(CSRF_COOKIE_NAME)
     header_token = request.headers.get(CSRF_HEADER_NAME)
-    if not cookie_token or not header_token or cookie_token != header_token:
+    if not cookie_token or not header_token or not hmac.compare_digest(cookie_token, header_token):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="CSRF token missing or invalid",
         )
 
 
-def set_session_cookie(response: Response, token: str, *, is_production: bool) -> None:
+def set_session_cookie(
+    response: Response,
+    token: str,
+    *,
+    is_production: bool,
+    max_age: int = SESSION_TTL_SECONDS,
+) -> None:
     """Attach the session cookie to ``response`` with secure attributes."""
     response.set_cookie(
         SESSION_COOKIE_NAME,
@@ -258,16 +264,28 @@ def set_session_cookie(response: Response, token: str, *, is_production: bool) -
         secure=is_production,
         samesite="lax",
         path="/",
-        max_age=SESSION_TTL_SECONDS,
+        max_age=max_age,
     )
 
 
-def clear_session_cookie(response: Response) -> None:
+def clear_session_cookie(response: Response, *, is_production: bool = False) -> None:
     """Clear the session cookie on ``response``."""
-    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(
+        SESSION_COOKIE_NAME,
+        path="/",
+        secure=is_production,
+        httponly=True,
+        samesite="lax",
+    )
 
 
-def set_csrf_cookie(response: Response, token: str, *, is_production: bool) -> None:
+def set_csrf_cookie(
+    response: Response,
+    token: str,
+    *,
+    is_production: bool,
+    max_age: int = SESSION_TTL_SECONDS,
+) -> None:
     """Attach the CSRF token cookie to ``response``."""
     response.set_cookie(
         CSRF_COOKIE_NAME,
@@ -276,10 +294,16 @@ def set_csrf_cookie(response: Response, token: str, *, is_production: bool) -> N
         secure=is_production,
         samesite="lax",
         path="/",
-        max_age=SESSION_TTL_SECONDS,
+        max_age=max_age,
     )
 
 
-def clear_csrf_cookie(response: Response) -> None:
+def clear_csrf_cookie(response: Response, *, is_production: bool = False) -> None:
     """Clear the CSRF cookie on ``response``."""
-    response.delete_cookie(CSRF_COOKIE_NAME, path="/")
+    response.delete_cookie(
+        CSRF_COOKIE_NAME,
+        path="/",
+        secure=is_production,
+        httponly=False,
+        samesite="lax",
+    )

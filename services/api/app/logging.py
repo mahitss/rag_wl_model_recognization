@@ -51,8 +51,6 @@ class StructuredFormatter(logging.Formatter):
             value = getattr(record, attr, None)
             if value is not None:
                 payload[attr] = value
-        if record.args:
-            payload["args"] = _redact(record.args)
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -75,7 +73,7 @@ def configure_logging(log_level: str | None = None) -> None:
     root.addHandler(handler)
 
     # Keep third-party loggers quiet unless explicitly asked otherwise.
-    for name in ("uvicorn", "uvicorn.error", "fastapi", "sqlalchemy"):
+    for name in ("uvicorn", "uvicorn.error", "fastapi", "httpx", "sqlalchemy"):
         logging.getLogger(name).setLevel(logging.WARNING)
 
     logging.getLogger("wonderlearn").info("logging_configured", extra={"level": level_name})

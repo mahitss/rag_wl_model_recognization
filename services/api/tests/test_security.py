@@ -21,9 +21,10 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 sys.path.insert(0, "services/api")
 
+from app.auth import hash_password  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.main import create_app  # noqa: E402
-from app.storage import initialize_storage  # noqa: E402
+from app.storage import create_user, initialize_storage  # noqa: E402
 
 pytestmark = pytest.mark.security
 
@@ -58,11 +59,21 @@ def _client(tmp_path, *, rate_limit=False, max_body=None):
         cors_origins="http://localhost:5173",
         rate_limit_enabled=rate_limit,
         rate_limit_requests_per_minute=2,
+        expensive_rate_limit_requests_per_minute=2,
         max_request_body_bytes=max_body,
     )
     initialize_storage(db_path)
     app = create_app(settings)
-    return TestClient(app)
+    create_user(db_path, "security-test-user", hash_password("test-password-123"))
+    client = TestClient(app)
+    csrf_token = client.get("/api/v1/auth/csrf-token").json()["csrfToken"]
+    client.headers.update({"X-CSRF-Token": csrf_token})
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"username": "security-test-user", "password": "test-password-123"},
+    )
+    assert login.status_code == 200
+    return client
 
 
 def test_security_headers_present_on_health(tmp_path):

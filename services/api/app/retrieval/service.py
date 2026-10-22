@@ -21,10 +21,11 @@ def retrieve(
     query: str,
     document_ids: list[str] | None,
     limit: int,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     fts_query = build_fts_query(query)
     try:
-        rows = search_chunks(database_path, fts_query, document_ids, limit)
+        rows = search_chunks(database_path, fts_query, document_ids, limit, user_id=user_id)
     except sqlite3.OperationalError as exc:
         if "fts5" in str(exc).lower() and "syntax" in str(exc).lower():
             raise ApiError(
@@ -105,6 +106,7 @@ def retrieve_with_mode(
     mode: str,
     settings: Settings,
     embeddings: EmbeddingService,
+    user_id: str | None = None,
 ) -> dict[str, Any]:
     if mode not in {"lexical", "semantic", "hybrid"}:
         raise ApiError(
@@ -119,12 +121,13 @@ def retrieve_with_mode(
         query=query,
         document_ids=document_ids,
         limit=lexical_limit,
+        user_id=user_id,
     )
     if mode == "lexical":
         return {"results": lexical[:limit], "retrievalMode": "lexical", "fallbackReason": None}
 
     try:
-        status = embeddings.status(database_path)
+        status = embeddings.status(database_path, user_id=user_id)
     except (OSError, sqlite3.Error) as exc:
         if mode == "hybrid":
             return {
@@ -160,6 +163,7 @@ def retrieve_with_mode(
             query_vector=query_vector,
             limit=settings.semantic_candidate_limit,
             document_ids=document_ids,
+            user_id=user_id,
         )
     except ModelUnavailable as exc:
         if mode == "hybrid":

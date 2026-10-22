@@ -1,4 +1,5 @@
 """Versioned system, document, retrieval, and evidence-only answer routes."""
+# ruff: noqa: B008,E501
 
 import asyncio
 import hashlib
@@ -8,9 +9,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, File, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from app.auth import AuthUser, get_current_user, require_auth
 from app.config import Settings
 from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
@@ -119,6 +121,16 @@ def _embedding_service(request: Request) -> EmbeddingService:
     return request.app.state.embedding_service
 
 
+def _current_user(request: Request) -> AuthUser | None:
+    """Return the authenticated user, or None if not authenticated."""
+    return get_current_user(request)
+
+
+def _require_user(request: Request) -> AuthUser:
+    """Require an authenticated user, raising 401 if not authenticated."""
+    return require_auth(request)
+
+
 def _safe_document(document: dict[str, Any]) -> dict[str, Any]:
     return {
         "documentId": document["document_id"],
@@ -217,19 +229,27 @@ def readiness(request: Request) -> JSONResponse:
 
 
 @router.post("/documents", status_code=201, response_model=DocumentResponse, tags=["documents"])
-def upload_document(request: Request, file: Annotated[UploadFile, File()]) -> dict[str, Any]:
+def upload_document(
+    request: Request,
+    file: Annotated[UploadFile, File()],
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
     settings = _settings(request)
     metadata = ingest_pdf(
         file.file,
         filename=file.filename,
         database_path=settings.database_path,
         settings=settings,
+        user_id=current_user.user_id,
     )
     response = _safe_document(metadata)  # type: ignore[arg-type]
     response["embeddingStatus"] = "not_requested"
     if settings.retrieval_mode != "lexical":
         try:
-            result = _embedding_service(request).rebuild(settings.database_path)
+            result = _embedding_service(request).rebuild(
+                settings.database_path,
+                user_id=current_user.user_id,
+            )
             response["embeddingStatus"] = "indexed" if result["complete"] else "incomplete"
         except ModelUnavailable:
             response["embeddingStatus"] = "unavailable"
@@ -239,14 +259,18 @@ def upload_document(request: Request, file: Annotated[UploadFile, File()]) -> di
 
 
 @router.get("/documents", response_model=DocumentsResponse, tags=["documents"])
-def documents(request: Request) -> dict[str, Any]:
-    rows = _database_call(list_documents, _database_path(request))
+def documents(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
+    rows = _database_call(list_documents, _database_path(request), user_id=current_user.user_id)
     return {"documents": [_safe_document(row) for row in rows]}
 
 
 @router.get("/documents/{document_id}", response_model=DocumentResponse, tags=["documents"])
-def document(request: Request, document_id: str) -> dict[str, Any]:
-    row = _database_call(get_document, _database_path(request), document_id)
+def document(
+    request: Request, document_id: str, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    row = _database_call(
+        get_document, _database_path(request), document_id, user_id=current_user.user_id
+    )
     if row is None:
         raise ApiError(404, "DOCUMENT_NOT_FOUND", "The requested document was not found.")
     return _safe_document(row)
@@ -255,8 +279,12 @@ def document(request: Request, document_id: str) -> dict[str, Any]:
 @router.delete(
     "/documents/{document_id}", response_model=DeleteDocumentResponse, tags=["documents"]
 )
-def remove_document(request: Request, document_id: str) -> dict[str, Any]:
-    deleted = _database_call(delete_document, _database_path(request), document_id)
+def remove_document(
+    request: Request, document_id: str, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    deleted = _database_call(
+        delete_document, _database_path(request), document_id, user_id=current_user.user_id
+    )
     if not deleted:
         raise ApiError(404, "DOCUMENT_NOT_FOUND", "The requested document was not found.")
     return {"documentId": document_id, "deleted": True}
@@ -266,7 +294,9 @@ def remove_document(request: Request, document_id: str) -> dict[str, Any]:
     "/images", response_model=LearningImageDetailResponse, status_code=201, tags=["images"]
 )
 async def upload_learning_image(
-    request: Request, file: Annotated[UploadFile, File()]
+    request: Request,
+    file: Annotated[UploadFile, File()],
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     settings = _settings(request)
     content = await file.read(settings.max_image_upload_bytes + 1)
@@ -289,26 +319,51 @@ async def upload_learning_image(
         "ocrStatus": ocr_status,
         "extractedText": extracted_text,
     }
-    _database_call(store_learning_image, settings.database_path, metadata, normalized.content)
-    return _database_call(get_learning_image_detail, settings.database_path, metadata["imageId"])
+    _database_call(
+        store_learning_image,
+        settings.database_path,
+        metadata,
+        normalized.content,
+        user_id=current_user.user_id,
+    )
+    return _database_call(
+        get_learning_image_detail,
+        settings.database_path,
+        metadata["imageId"],
+        user_id=current_user.user_id,
+    )
 
 
 @router.get("/images", response_model=LearningImageListResponse, tags=["images"])
-def learning_images(request: Request) -> dict[str, Any]:
-    return {"images": _database_call(list_learning_images, _database_path(request))}
+def learning_images(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    return {
+        "images": _database_call(
+            list_learning_images, _database_path(request), user_id=current_user.user_id
+        )
+    }
 
 
 @router.get("/images/{image_id}", response_model=LearningImageDetailResponse, tags=["images"])
-def learning_image(request: Request, image_id: str) -> dict[str, Any]:
-    result = _database_call(get_learning_image_detail, _database_path(request), image_id)
+def learning_image(
+    request: Request, image_id: str, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    result = _database_call(
+        get_learning_image_detail, _database_path(request), image_id, user_id=current_user.user_id
+    )
     if result is None:
         raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
     return result
 
 
 @router.get("/images/{image_id}/content", tags=["images"])
-def learning_image_content(request: Request, image_id: str) -> Response:
-    image = _database_call(get_learning_image, _database_path(request), image_id)
+def learning_image_content(
+    request: Request, image_id: str, current_user: AuthUser = Depends(require_auth)
+) -> Response:
+    image = _database_call(
+        get_learning_image, _database_path(request), image_id, user_id=current_user.user_id
+    )
     if image is None:
         raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
     return Response(
@@ -319,8 +374,12 @@ def learning_image_content(request: Request, image_id: str) -> Response:
 
 
 @router.delete("/images/{image_id}", tags=["images"])
-def remove_learning_image(request: Request, image_id: str) -> dict[str, Any]:
-    deleted = _database_call(delete_learning_image, _database_path(request), image_id)
+def remove_learning_image(
+    request: Request, image_id: str, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    deleted = _database_call(
+        delete_learning_image, _database_path(request), image_id, user_id=current_user.user_id
+    )
     if not deleted:
         raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
     return {"imageId": image_id, "deleted": True}
@@ -333,10 +392,15 @@ def remove_learning_image(request: Request, image_id: str) -> dict[str, Any]:
     tags=["images"],
 )
 def create_image_region(
-    request: Request, image_id: str, payload: ImageRegionCreateRequest
+    request: Request,
+    image_id: str,
+    payload: ImageRegionCreateRequest,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     settings = _settings(request)
-    image = _database_call(get_learning_image, settings.database_path, image_id)
+    image = _database_call(
+        get_learning_image, settings.database_path, image_id, user_id=current_user.user_id
+    )
     if image is None:
         raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
     concept = None
@@ -363,7 +427,12 @@ def create_image_region(
         "conceptName": concept.display_name if concept else None,
         "createdAt": datetime.now(UTC).isoformat(timespec="seconds"),
     }
-    _database_call(create_learning_image_region, settings.database_path, region)
+    _database_call(
+        create_learning_image_region,
+        settings.database_path,
+        region,
+        user_id=current_user.user_id,
+    )
     return {
         "regionId": region["regionId"],
         "geometry": region["geometry"],
@@ -377,13 +446,21 @@ def create_image_region(
 
 
 def _image_region_context(
-    request: Request, image_id: str, region_id: str
+    request: Request, image_id: str, region_id: str, current_user: AuthUser = Depends(require_auth)
 ) -> tuple[dict[str, Any], dict[str, Any], Any | None]:
     settings = _settings(request)
-    image = _database_call(get_learning_image, settings.database_path, image_id)
+    image = _database_call(
+        get_learning_image, settings.database_path, image_id, user_id=current_user.user_id
+    )
     if image is None:
         raise ApiError(404, "IMAGE_NOT_FOUND", "The requested image was not found.")
-    region = _database_call(get_learning_image_region, settings.database_path, image_id, region_id)
+    region = _database_call(
+        get_learning_image_region,
+        settings.database_path,
+        image_id,
+        region_id,
+        user_id=current_user.user_id,
+    )
     if region is None:
         raise ApiError(404, "IMAGE_REGION_NOT_FOUND", "The selected image region was not found.")
     concept = None
@@ -403,6 +480,7 @@ def _image_region_search(
     question: str | None,
     limit: int,
     mode: str | None,
+    current_user: AuthUser,
 ) -> dict[str, Any]:
     settings = _settings(request)
     if limit > settings.max_retrieval_results:
@@ -432,6 +510,7 @@ def _image_region_search(
         mode=mode or settings.retrieval_mode,
         settings=settings,
         embeddings=_embedding_service(request),
+        user_id=current_user.user_id,
     )
 
 
@@ -445,15 +524,19 @@ def image_region_evidence(
     image_id: str,
     region_id: str,
     payload: DiagramEvidenceRequest | None = None,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     payload = payload or DiagramEvidenceRequest()
-    _, region, concept = _image_region_context(request, image_id, region_id)
-    search = _image_region_search(request, region, question=None, limit=payload.limit, mode=None)
+    _, region, concept = _image_region_context(request, image_id, region_id, current_user)
+    search = _image_region_search(
+        request, region, question=None, limit=payload.limit, mode=None, current_user=current_user
+    )
     _database_call(
         replace_image_region_citations,
         _database_path(request),
         region_id,
         search["results"],
+        user_id=current_user.user_id,
     )
     return {
         "status": "evidence_found" if search["results"] else "insufficient_evidence",
@@ -479,20 +562,23 @@ async def image_region_tutor(
     image_id: str,
     region_id: str,
     payload: ImageTutorRequest,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
-    _, region, concept = _image_region_context(request, image_id, region_id)
+    _, region, concept = _image_region_context(request, image_id, region_id, current_user)
     search = _image_region_search(
         request,
         region,
         question=payload.question,
         limit=payload.limit,
         mode=payload.mode,
+        current_user=current_user,
     )
     _database_call(
         replace_image_region_citations,
         _database_path(request),
         region_id,
         search["results"],
+        user_id=current_user.user_id,
     )
     generated = await _grounded_tutor_response(
         _settings(request),
@@ -515,7 +601,9 @@ async def image_region_tutor(
 
 
 @router.post("/retrieve", response_model=RetrievalResponse, tags=["retrieval"])
-def retrieve_evidence(request: Request, payload: RetrievalRequest) -> dict[str, Any]:
+def retrieve_evidence(
+    request: Request, payload: RetrievalRequest, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     settings = _settings(request)
     if payload.limit > settings.max_retrieval_results:
         raise ApiError(
@@ -531,11 +619,14 @@ def retrieve_evidence(request: Request, payload: RetrievalRequest) -> dict[str, 
         mode=payload.mode or settings.retrieval_mode,
         settings=settings,
         embeddings=_embedding_service(request),
+        user_id=current_user.user_id,
     )
 
 
 @router.post("/answers", response_model=AnswerResponse, tags=["retrieval"])
-def answer(request: Request, payload: AnswerRequest) -> dict[str, Any]:
+def answer(
+    request: Request, payload: AnswerRequest, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     settings = _settings(request)
     if payload.limit > settings.max_retrieval_results:
         raise ApiError(
@@ -551,6 +642,7 @@ def answer(request: Request, payload: AnswerRequest) -> dict[str, Any]:
         mode=payload.mode or settings.retrieval_mode,
         settings=settings,
         embeddings=_embedding_service(request),
+        user_id=current_user.user_id,
     )
     response = answer_from_evidence(payload.question, search["results"])
     response["retrievalMode"] = search["retrievalMode"]
@@ -568,7 +660,9 @@ def tutor_status(request: Request) -> dict[str, Any]:
 
 
 @router.post("/tutor/answers", response_model=TutorAnswerResponse, tags=["tutor"])
-async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[str, Any]:
+async def tutor_answer(
+    request: Request, payload: TutorAnswerRequest, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     settings = _settings(request)
     if payload.limit > settings.max_retrieval_results:
         raise ApiError(
@@ -593,7 +687,10 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
         query = f"{payload.question} {concept.retrieval_query}"
     elif payload.graph_concept_id is not None:
         graph_concept = _database_call(
-            get_knowledge_concept, settings.database_path, payload.graph_concept_id
+            get_knowledge_concept,
+            settings.database_path,
+            payload.graph_concept_id,
+            user_id=current_user.user_id,
         )
         if graph_concept is None:
             raise ApiError(404, "CONCEPT_NOT_FOUND", "The requested graph concept was not found.")
@@ -609,6 +706,7 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
         mode=payload.mode or settings.retrieval_mode,
         settings=settings,
         embeddings=_embedding_service(request),
+        user_id=current_user.user_id,
     )
     generated = await _grounded_tutor_response(
         settings,
@@ -622,8 +720,14 @@ async def tutor_answer(request: Request, payload: TutorAnswerRequest) -> dict[st
 
 
 @router.get("/knowledge-graph", response_model=KnowledgeGraphConceptList, tags=["knowledge graph"])
-def knowledge_graph(request: Request) -> dict[str, Any]:
-    return {"concepts": _database_call(list_knowledge_concepts, _database_path(request))}
+def knowledge_graph(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    return {
+        "concepts": _database_call(
+            list_knowledge_concepts, _database_path(request), user_id=current_user.user_id
+        )
+    }
 
 
 @router.post(
@@ -632,7 +736,9 @@ def knowledge_graph(request: Request) -> dict[str, Any]:
     tags=["knowledge graph"],
 )
 async def extract_knowledge_graph(
-    request: Request, payload: KnowledgeGraphExtractRequest
+    request: Request,
+    payload: KnowledgeGraphExtractRequest,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     settings = _settings(request)
     try:
@@ -641,6 +747,7 @@ async def extract_knowledge_graph(
             document_ids=payload.document_ids,
             limit=payload.chunk_limit + 1,
             after_chunk_id=payload.after_chunk_id,
+            user_id=current_user.user_id,
         )
     except (OSError, sqlite3.Error) as exc:
         raise ApiError(503, "STORAGE_UNAVAILABLE", "Local storage is unavailable.") from exc
@@ -654,7 +761,9 @@ async def extract_knowledge_graph(
             result = await asyncio.to_thread(extract_chunk, settings, chunk)
             parsed.append((chunk, result))
         for chunk, result in parsed:
-            store_knowledge_extraction(settings.database_path, chunk, result)
+            store_knowledge_extraction(
+                settings.database_path, chunk, result, user_id=current_user.user_id
+            )
     except TutorUnavailable as exc:
         raise ApiError(
             503,
@@ -672,7 +781,9 @@ async def extract_knowledge_graph(
     return {
         "chunksProcessed": len(chunks),
         "nextAfterChunkId": chunks[-1]["chunk_id"] if has_more else None,
-        "concepts": _database_call(list_knowledge_concepts, settings.database_path),
+        "concepts": _database_call(
+            list_knowledge_concepts, settings.database_path, user_id=current_user.user_id
+        ),
     }
 
 
@@ -681,8 +792,12 @@ async def extract_knowledge_graph(
     response_model=KnowledgeGraphConceptDetail,
     tags=["knowledge graph"],
 )
-def knowledge_graph_concept(request: Request, concept_id: str) -> dict[str, Any]:
-    result = _database_call(get_knowledge_concept, _database_path(request), concept_id)
+def knowledge_graph_concept(
+    request: Request, concept_id: str, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    result = _database_call(
+        get_knowledge_concept, _database_path(request), concept_id, user_id=current_user.user_id
+    )
     if result is None:
         raise ApiError(404, "CONCEPT_NOT_FOUND", "The requested graph concept was not found.")
     return result
@@ -692,9 +807,14 @@ def knowledge_graph_concept(request: Request, concept_id: str) -> dict[str, Any]
     "/knowledge-graph/relationships/{relationship_id}/verify",
     tags=["knowledge graph"],
 )
-def verify_knowledge_graph_relationship(request: Request, relationship_id: str) -> dict[str, Any]:
+def verify_knowledge_graph_relationship(
+    request: Request, relationship_id: str, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     verified = _database_call(
-        verify_knowledge_relationship, _database_path(request), relationship_id
+        verify_knowledge_relationship,
+        _database_path(request),
+        relationship_id,
+        user_id=current_user.user_id,
     )
     if not verified:
         raise ApiError(404, "RELATIONSHIP_NOT_FOUND", "The candidate relationship was not found.")
@@ -702,7 +822,9 @@ def verify_knowledge_graph_relationship(request: Request, relationship_id: str) 
 
 
 @router.post("/quizzes", response_model=QuizSetResponse, tags=["learning"])
-async def create_quiz(request: Request, payload: QuizGenerateRequest) -> dict[str, Any]:
+async def create_quiz(
+    request: Request, payload: QuizGenerateRequest, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     settings = _settings(request)
     if payload.limit > settings.max_retrieval_results:
         raise ApiError(
@@ -732,6 +854,7 @@ async def create_quiz(request: Request, payload: QuizGenerateRequest) -> dict[st
         mode=payload.mode or settings.retrieval_mode,
         settings=settings,
         embeddings=_embedding_service(request),
+        user_id=current_user.user_id,
     )
     if not search["results"]:
         return {
@@ -797,22 +920,31 @@ async def create_quiz(request: Request, payload: QuizGenerateRequest) -> dict[st
                     for item in generated
                 ],
             },
+            user_id=current_user.user_id,
         )
     except (OSError, sqlite3.Error) as exc:
         raise ApiError(
             503, "STORAGE_UNAVAILABLE", "Local learning storage is unavailable."
         ) from exc
-    quiz = _database_call(get_quiz_set, settings.database_path, quiz_id)
+    quiz = _database_call(
+        get_quiz_set, settings.database_path, quiz_id, user_id=current_user.user_id
+    )
     return {"status": "ready", **quiz}
 
 
 @router.get("/quizzes/{quiz_id}", response_model=QuizSetResponse, tags=["learning"])
-def read_quiz(request: Request, quiz_id: str, review_incorrect: bool = False) -> dict[str, Any]:
+def read_quiz(
+    request: Request,
+    quiz_id: str,
+    current_user: AuthUser = Depends(require_auth),
+    review_incorrect: bool = False,
+) -> dict[str, Any]:
     quiz = _database_call(
         get_quiz_set,
         _database_path(request),
         quiz_id,
         review_incorrect=review_incorrect,
+        user_id=current_user.user_id,
     )
     if quiz is None:
         raise ApiError(404, "QUIZ_NOT_FOUND", "The requested quiz was not found.")
@@ -825,10 +957,16 @@ def read_quiz(request: Request, quiz_id: str, review_incorrect: bool = False) ->
     tags=["learning"],
 )
 def submit_quiz_answer(
-    request: Request, quiz_id: str, question_id: str, payload: QuizAttemptRequest
+    request: Request,
+    quiz_id: str,
+    question_id: str,
+    payload: QuizAttemptRequest,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     database_path = _database_path(request)
-    question = _database_call(get_quiz_question, database_path, question_id)
+    question = _database_call(
+        get_quiz_question, database_path, question_id, user_id=current_user.user_id
+    )
     if question is None or question["quiz_id"] != quiz_id:
         raise ApiError(404, "QUIZ_QUESTION_NOT_FOUND", "The requested quiz question was not found.")
     try:
@@ -843,8 +981,9 @@ def submit_quiz_answer(
         question_id=question_id,
         outcome=outcome,
         created_at=datetime.now(UTC).isoformat(),
+        user_id=current_user.user_id,
     )
-    quiz = _database_call(get_quiz_set, database_path, quiz_id)
+    quiz = _database_call(get_quiz_set, database_path, quiz_id, user_id=current_user.user_id)
     reviewed = next(item for item in quiz["questions"] if item["questionId"] == question_id)
     expected_answer = question["answer_key"]
     if question["question_type"] == "multiple_choice":
@@ -864,8 +1003,12 @@ def submit_quiz_answer(
 
 
 @router.get("/progress", response_model=LearningProgressResponse, tags=["learning"])
-def learning_progress(request: Request) -> dict[str, Any]:
-    return _database_call(get_learning_progress, _database_path(request))
+def learning_progress(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    return _database_call(
+        get_learning_progress, _database_path(request), user_id=current_user.user_id
+    )
 
 
 @router.get(
@@ -873,9 +1016,13 @@ def learning_progress(request: Request) -> dict[str, Any]:
     response_model=LearningAnalyticsResponse,
     tags=["learning"],
 )
-def learning_analytics(request: Request) -> dict[str, Any]:
+def learning_analytics(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     now = datetime.now(UTC)
-    data = _database_call(get_learning_analytics_data, _database_path(request))
+    data = _database_call(
+        get_learning_analytics_data, _database_path(request), user_id=current_user.user_id
+    )
     return build_analytics(
         **{
             "attempts": data["attempts"],
@@ -891,7 +1038,9 @@ def learning_analytics(request: Request) -> dict[str, Any]:
 @router.post(
     "/study-sessions", response_model=StudySessionResponse, status_code=201, tags=["learning"]
 )
-def begin_study_session(request: Request, payload: StudySessionRequest) -> dict[str, Any]:
+def begin_study_session(
+    request: Request, payload: StudySessionRequest, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     topic = " ".join(payload.topic.split())
     topic_id = hashlib.sha256(topic.casefold().encode("utf-8")).hexdigest()[:20]
     return _database_call(
@@ -901,6 +1050,7 @@ def begin_study_session(request: Request, payload: StudySessionRequest) -> dict[
         topic_id=topic_id,
         topic=topic,
         started_at=datetime.now(UTC).isoformat(),
+        user_id=current_user.user_id,
     )
 
 
@@ -909,12 +1059,15 @@ def begin_study_session(request: Request, payload: StudySessionRequest) -> dict[
     response_model=StudySessionResponse,
     tags=["learning"],
 )
-def finish_study_session(request: Request, session_id: str) -> dict[str, Any]:
+def finish_study_session(
+    request: Request, session_id: str, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     session = _database_call(
         complete_study_session,
         _database_path(request),
         session_id=session_id,
         completed_at=datetime.now(UTC).isoformat(),
+        user_id=current_user.user_id,
     )
     if session is None:
         raise ApiError(404, "STUDY_SESSION_NOT_FOUND", "The study session was not found.")
@@ -926,11 +1079,13 @@ def finish_study_session(request: Request, session_id: str) -> dict[str, Any]:
     response_model=StudyCoachPlanResponse,
     tags=["learning"],
 )
-def study_coach_plan(request: Request) -> dict[str, Any]:
+def study_coach_plan(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     now = datetime.now(UTC)
     plan_date = now.date().isoformat()
     database_path = _database_path(request)
-    data = _database_call(get_learning_analytics_data, database_path)
+    data = _database_call(get_learning_analytics_data, database_path, user_id=current_user.user_id)
     analytics = build_analytics(
         attempts=data["attempts"],
         sessions=data["sessions"],
@@ -939,8 +1094,11 @@ def study_coach_plan(request: Request) -> dict[str, Any]:
         concepts=data["concepts"],
         now=now,
     )
+    analytics["topicSources"] = data["topicSources"]
     candidates = build_daily_recommendations(
-        analytics=data | {"topics": analytics["topics"]}, now=now
+        analytics=data | analytics,
+        now=now,
+        user_id=current_user.user_id,
     )
     stored = _database_call(
         get_or_create_study_coach_plan,
@@ -948,6 +1106,7 @@ def study_coach_plan(request: Request) -> dict[str, Any]:
         plan_date=plan_date,
         recommendations=candidates,
         updated_at=now.isoformat(),
+        user_id=current_user.user_id,
     )
     live_topics = {topic["topicId"]: topic for topic in analytics["topics"]}
     recommendations = []
@@ -990,11 +1149,14 @@ def study_coach_plan(request: Request) -> dict[str, Any]:
     tags=["learning"],
 )
 def decide_study_coach_recommendation(
-    request: Request, recommendation_id: str, payload: StudyCoachActionRequest
+    request: Request,
+    recommendation_id: str,
+    payload: StudyCoachActionRequest,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
     database_path = _database_path(request)
-    current_plan = study_coach_plan(request)
+    current_plan = study_coach_plan(request, current_user)
     visible_recommendations = {
         row["recommendationId"]: row for row in current_plan["recommendations"]
     }
@@ -1013,6 +1175,7 @@ def decide_study_coach_recommendation(
         updated_at=now.isoformat(),
         title=payload.title,
         estimated_minutes=payload.estimated_minutes,
+        user_id=current_user.user_id,
     )
     if item is None:
         raise ApiError(404, "RECOMMENDATION_NOT_FOUND", "The study recommendation was not found.")
@@ -1036,9 +1199,9 @@ def decide_study_coach_recommendation(
     tags=["learning", "tutor"],
 )
 async def explain_study_coach_recommendation(
-    request: Request, recommendation_id: str
+    request: Request, recommendation_id: str, current_user: AuthUser = Depends(require_auth)
 ) -> dict[str, Any]:
-    plan = study_coach_plan(request)
+    plan = study_coach_plan(request, current_user)
     item = next(
         (
             recommendation
@@ -1109,6 +1272,7 @@ def diagram_region_evidence(
     diagram_id: str,
     region_id: str,
     payload: DiagramEvidenceRequest,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     diagram = get_diagram(diagram_id)
     if diagram is None:
@@ -1137,6 +1301,7 @@ def diagram_region_evidence(
         mode=settings.retrieval_mode,
         settings=settings,
         embeddings=_embedding_service(request),
+        user_id=current_user.user_id,
     )
     citations = result["results"]
     return {
@@ -1155,14 +1320,16 @@ def diagram_region_evidence(
 
 
 @router.get("/embeddings/status", response_model=EmbeddingStatusResponse, tags=["embeddings"])
-def embedding_status(request: Request) -> dict[str, Any]:
+def embedding_status(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     service = _embedding_service(request)
     try:
         service.load_model()
     except ModelUnavailable:
         pass
     try:
-        return service.status(_database_path(request))
+        return service.status(_database_path(request), user_id=current_user.user_id)
     except (OSError, sqlite3.Error) as exc:
         raise ApiError(
             503, "STORAGE_UNAVAILABLE", "Local embedding storage is unavailable."
@@ -1177,10 +1344,13 @@ def embedding_status(request: Request) -> dict[str, Any]:
 def rebuild_embeddings(
     request: Request,
     payload: Annotated[RebuildEmbeddingsRequest | None, Body()] = None,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     try:
         return _embedding_service(request).rebuild(
-            _database_path(request), force=payload.force if payload else False
+            _database_path(request),
+            force=payload.force if payload else False,
+            user_id=current_user.user_id,
         )
     except ModelUnavailable as exc:
         raise ApiError(

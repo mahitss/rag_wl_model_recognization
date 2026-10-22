@@ -8,21 +8,16 @@ from typing import Any
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
 
-from app.api.v1.routes import make_error_response, router
 from app.api.v1.auth_routes import router as auth_router
-from app.auth import (
-    SESSION_COOKIE_NAME,
-    get_current_user,
-    require_auth,
-)
+from app.api.v1.routes import make_error_response, router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
 from app.errors import ApiError
 from app.logging import configure_logging, get_logger
 from app.middleware import RequestIdMiddleware
 from app.security import (
+    CSRFProtectionMiddleware,
     MaxBodySizeMiddleware,
     RateLimitMiddleware,
     SecurityHeadersMiddleware,
@@ -73,16 +68,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.state.settings = configured
     application.state.embedding_service = EmbeddingService(configured)
 
-    # Session middleware for authentication cookies
-    application.add_middleware(
-        SessionMiddleware,
-        secret_key=configured.session_secret_key,
-        session_cookie="wl_session",
-        max_age=configured.session_ttl_seconds,
-        https_only=configured.is_production,
-        same_site="lax",
-    )
-
+    # All API state changes use cookie authentication and require CSRF validation.
+    application.add_middleware(CSRFProtectionMiddleware)
     # Security headers (outermost: present on every response, including errors).
     application.add_middleware(SecurityHeadersMiddleware)
     # Max request body size: reject oversized bodies before rate-limit accounting.
@@ -90,11 +77,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         MaxBodySizeMiddleware,
         max_bytes=configured.max_request_body_bytes,
     )
-    # Rate limiting: fixed window per client IP + path; disabled by default.
+    # Rate limiting: fixed window per client IP and endpoint.
     application.add_middleware(
         RateLimitMiddleware,
         enabled=configured.rate_limit_enabled,
         requests_per_minute=configured.rate_limit_requests_per_minute,
+        auth_requests_per_minute=configured.auth_rate_limit_requests_per_minute,
+        expensive_requests_per_minute=configured.expensive_rate_limit_requests_per_minute,
         exempt_paths=frozenset({"/api/v1/health", "/api/v1/ready"}),
     )
     # Request ID + access logging (applied before CORS so headers flow through).
@@ -123,11 +112,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def handle_validation_error(request: Request, __: RequestValidationError) -> Any:
         request_id = getattr(request.state, "request_id", None)
         return make_error_response(
-            422, "INVALID_REQUEST", "The request did not pass validation.",
+            422,
+            "INVALID_REQUEST",
+            "The request did not pass validation.",
             request_id=request_id,
         )
 
-    application.include_router(router)
     return application
 
 

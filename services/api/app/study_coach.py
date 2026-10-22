@@ -6,7 +6,11 @@ from typing import Any
 
 
 def build_daily_recommendations(
-    *, analytics: dict[str, Any], now: datetime, limit: int = 3
+    *,
+    analytics: dict[str, Any],
+    now: datetime,
+    limit: int = 3,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Rank topics from stored reviews, quiz outcomes, sessions, and graph links."""
     current = now.astimezone(UTC)
@@ -77,11 +81,12 @@ def build_daily_recommendations(
         if not reasons:
             reasons.append(
                 f"You have stored quiz and source material for this topic across "
-                f"{topic['attemptedQuestions']} attempted question(s)."
+                f"{topic.get('attemptedQuestions', topic.get('attemptCount', 0))} "
+                "attempted question(s)."
             )
 
         recommendation_id = hashlib.sha256(
-            f"{current_day}:{topic['topicId']}".encode()
+            f"{user_id or ''}:{current_day}:{topic['topicId']}".encode()
         ).hexdigest()[:24]
         candidates.append(
             {

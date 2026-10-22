@@ -1,8 +1,8 @@
 import asyncio
 import json
 
-import httpx
 import pytest
+from auth_helpers import authenticated_request
 
 from app.config import Settings
 from app.knowledge_graph import parse_extraction, stable_concept_id
@@ -157,11 +157,7 @@ def test_persistence_deduplicates_edges_and_document_deletion_cascades_provenanc
 
 
 async def request(app, method, path, **kwargs):
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            return await client.request(method, path, **kwargs)
+    return await authenticated_request(app, method, path, **kwargs)
 
 
 def test_graph_api_extract_details_verify_and_tutor_use_curated_graph_node(tmp_path, monkeypatch):
@@ -215,7 +211,10 @@ def test_graph_api_extract_details_verify_and_tutor_use_curated_graph_node(tmp_p
         )
     )
     assert second_batch.json()["nextAfterChunkId"] is None
-    concept_id = stable_concept_id("Photosynthesis")
+    concepts = asyncio.run(request(app, "GET", "/api/v1/knowledge-graph")).json()["concepts"]
+    concept_id = next(
+        concept["conceptId"] for concept in concepts if concept["name"] == "Photosynthesis"
+    )
     detail = asyncio.run(request(app, "GET", f"/api/v1/knowledge-graph/concepts/{concept_id}"))
     assert detail.status_code == 200
     assert detail.json()["relationships"][0]["supportingText"] == "Photosynthesis uses chlorophyll"

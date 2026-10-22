@@ -1,5 +1,7 @@
 """SQLite schema, readiness checks, and transactional document persistence."""
+# ruff: noqa: E501
 
+import hashlib
 import math
 import secrets
 import sqlite3
@@ -9,7 +11,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 10
+
+
+def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
+    if user_id is None:
+        return identifier
+    digest = hashlib.sha256(f"{user_id}\x1f{identifier}".encode()).hexdigest()[:24]
+    return f"{prefix}_{digest}"
 
 
 def _database_uri(database_path: Path, *, mode: str = "rw") -> str:
@@ -36,11 +45,17 @@ def connect_database(database_path: Path) -> sqlite3.Connection:
 # ---------------------------------------------------------------------------
 
 
+def _ensure_column(connection, table_name: str, column_name: str, column_definition: str) -> None:
+    """Add a column to a table only if it doesn't already exist."""
+    existing = connection.execute(f"PRAGMA table_info({table_name})").fetchall()
+    if not any(row[1] == column_name for row in existing):
+        connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_definition}")
+
+
 def create_user(
     database_path: Path, username: str, password_hash: str, email: str | None = None
 ) -> str:
     """Create a new user and return the user_id."""
-    import uuid
 
     user_id = f"user_{secrets.token_urlsafe(16)}"
     with closing(sqlite3.connect(database_path, timeout=5)) as connection:
@@ -52,7 +67,7 @@ def create_user(
                 (
                     user_id,
                     username,
-                    email or "",
+                    email or f"{user_id}@users.wonderlearn.invalid",
                     password_hash,
                     datetime.now(UTC).isoformat(),
                 ),
@@ -62,29 +77,43 @@ def create_user(
 
 def get_user_by_id(database_path: Path, user_id: str) -> dict[str, Any] | None:
     """Return a user record by user_id, or None if not found."""
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         row = connection.execute(
             "SELECT user_id, username, email, password_hash, created_at "
             "FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    return {
+        "user_id": row["user_id"],
+        "username": row["username"],
+        "email": row["email"],
+        "password_hash": row["password_hash"],
+        "created_at": row["created_at"],
+    }
 
 
 def get_user_by_username(database_path: Path, username: str) -> dict[str, Any] | None:
     """Return a user record by username, or None if not found."""
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         row = connection.execute(
             "SELECT user_id, username, email, password_hash, created_at "
             "FROM users WHERE username = ?",
             (username,),
         ).fetchone()
-    return dict(row) if row else None
+    if row is None:
+        return None
+    return {
+        "user_id": row["user_id"],
+        "username": row["username"],
+        "email": row["email"],
+        "password_hash": row["password_hash"],
+        "created_at": row["created_at"],
+    }
 
 
-def get_user_by_session(
-    database_path: Path, session_token: str
-) -> dict[str, Any] | None:
+def get_user_by_session(database_path: Path, session_token: str) -> dict[str, Any] | None:
     """Return the user associated with a valid session token, or None.
 
     Expired sessions are deleted lazily.
@@ -122,9 +151,7 @@ def destroy_session(database_path: Path, session_token: str) -> None:
     """Remove a session from the store (no-op if absent)."""
     with closing(sqlite3.connect(database_path, timeout=5)) as connection:
         with connection:
-            connection.execute(
-                "DELETE FROM user_sessions WHERE session_id = ?", (session_token,)
-            )
+            connection.execute("DELETE FROM user_sessions WHERE session_id = ?", (session_token,))
 
 
 def cleanup_expired_sessions(database_path: Path) -> int:
@@ -138,12 +165,11 @@ def cleanup_expired_sessions(database_path: Path) -> int:
             return cursor.rowcount
 
 
-
 def initialize_storage(database_path: Path) -> None:
-    """Create the local database and apply the initial idempotent schema migration."""
+    """Create the local database and apply idempotent, data-preserving migrations."""
     database_path.parent.mkdir(parents=True, exist_ok=True)
     with closing(sqlite3.connect(database_path, timeout=5)) as connection:
-        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("PRAGMA foreign_keys = OFF")
         with connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version > SCHEMA_VERSION:
@@ -154,7 +180,7 @@ def initialize_storage(database_path: Path) -> None:
                 CREATE TABLE IF NOT EXISTS documents (
                     document_id TEXT PRIMARY KEY,
                     display_name TEXT NOT NULL,
-                    sha256 TEXT NOT NULL UNIQUE,
+                    sha256 TEXT NOT NULL,
                     byte_size INTEGER NOT NULL CHECK (byte_size > 0),
                     page_count INTEGER NOT NULL CHECK (page_count > 0),
                     chunk_count INTEGER NOT NULL CHECK (chunk_count > 0),
@@ -448,33 +474,47 @@ def initialize_storage(database_path: Path) -> None:
             # backward compatibility with pre-M23 data).  Existing rows keep
             # user_id = NULL (orphaned/legacy); new writes require auth and
             # set user_id from the session.
-            connection.execute(
-                "ALTER TABLE documents ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "documents",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE quiz_sets ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "quiz_sets",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE quiz_attempts ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "quiz_attempts",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE study_sessions ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "study_sessions",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE learning_images ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "learning_images",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE knowledge_concepts ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "knowledge_concepts",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE study_coach_recommendations ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "study_coach_recommendations",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
             # Users table
             connection.execute(
@@ -501,8 +541,7 @@ def initialize_storage(database_path: Path) -> None:
                 """
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id "
-                "ON user_sessions(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_user_sessions_user_id ON user_sessions(user_id)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at "
@@ -510,24 +549,19 @@ def initialize_storage(database_path: Path) -> None:
             )
             # Indexes on user_id columns for query performance
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_documents_user_id "
-                "ON documents(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id)"
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_quiz_sets_user_id "
-                "ON quiz_sets(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_quiz_sets_user_id ON quiz_sets(user_id)"
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_id "
-                "ON quiz_attempts(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_quiz_attempts_user_id ON quiz_attempts(user_id)"
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_study_sessions_user_id "
-                "ON study_sessions(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_study_sessions_user_id ON study_sessions(user_id)"
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_learning_images_user_id "
-                "ON learning_images(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_learning_images_user_id ON learning_images(user_id)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_knowledge_concepts_user_id "
@@ -538,57 +572,70 @@ def initialize_storage(database_path: Path) -> None:
                 "ON study_coach_recommendations(user_id)"
             )
             # Additional user_id columns on inherited tables for simpler queries
-            connection.execute(
-                "ALTER TABLE chunks ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "chunks",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE quiz_questions ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "quiz_questions",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE quiz_citations ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "quiz_citations",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE image_regions ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "image_regions",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE image_region_citations ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "image_region_citations",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE knowledge_concept_evidence ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "knowledge_concept_evidence",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE knowledge_relationships ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "knowledge_relationships",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE chunk_embeddings ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "chunk_embeddings",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
-            connection.execute(
-                "ALTER TABLE topic_review_items ADD COLUMN user_id TEXT "
-                "REFERENCES users(user_id) ON DELETE CASCADE"
+            _ensure_column(
+                connection,
+                "topic_review_items",
+                "user_id",
+                "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
             # Additional indexes
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_chunks_user_id ON chunks(user_id)")
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_chunks_user_id ON chunks(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_quiz_questions_user_id ON quiz_questions(user_id)"
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_quiz_questions_user_id "
-                "ON quiz_questions(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_quiz_citations_user_id ON quiz_citations(user_id)"
             )
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_quiz_citations_user_id "
-                "ON quiz_citations(user_id)"
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_image_regions_user_id "
-                "ON image_regions(user_id)"
+                "CREATE INDEX IF NOT EXISTS idx_image_regions_user_id ON image_regions(user_id)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_image_region_citations_user_id "
@@ -610,7 +657,183 @@ def initialize_storage(database_path: Path) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_topic_review_items_user_id "
                 "ON topic_review_items(user_id)"
             )
+
+            if version < 9:
+                connection.execute(
+                    """
+                    CREATE TABLE documents_m23 (
+                        document_id TEXT PRIMARY KEY,
+                        display_name TEXT NOT NULL,
+                        sha256 TEXT NOT NULL,
+                        byte_size INTEGER NOT NULL CHECK (byte_size > 0),
+                        page_count INTEGER NOT NULL CHECK (page_count > 0),
+                        chunk_count INTEGER NOT NULL CHECK (chunk_count > 0),
+                        created_at TEXT NOT NULL,
+                        parser_version TEXT NOT NULL,
+                        user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE,
+                        UNIQUE(user_id, sha256)
+                    )
+                    """
+                )
+                connection.execute(
+                    """INSERT INTO documents_m23(
+                           document_id, display_name, sha256, byte_size, page_count,
+                           chunk_count, created_at, parser_version, user_id
+                       )
+                       SELECT document_id, display_name, sha256, byte_size, page_count,
+                              chunk_count, created_at, parser_version, user_id
+                       FROM documents"""
+                )
+                connection.execute("DROP TABLE documents")
+                connection.execute("ALTER TABLE documents_m23 RENAME TO documents")
+                connection.execute(
+                    """
+                    CREATE TABLE study_coach_recommendations_m23 (
+                        recommendation_id TEXT PRIMARY KEY,
+                        plan_date TEXT NOT NULL,
+                        topic_id TEXT NOT NULL,
+                        topic TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        priority INTEGER NOT NULL,
+                        reasons_json TEXT NOT NULL,
+                        graph_concept_id TEXT,
+                        related_concept_ids_json TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'planned', 'accepted', 'dismissed', 'completed'
+                        )),
+                        estimated_minutes INTEGER NOT NULL
+                            CHECK (estimated_minutes BETWEEN 5 AND 180),
+                        updated_at TEXT NOT NULL,
+                        user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE,
+                        UNIQUE(plan_date, topic_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    """INSERT INTO study_coach_recommendations_m23(
+                           recommendation_id, plan_date, topic_id, topic, title, priority,
+                           reasons_json, graph_concept_id, related_concept_ids_json,
+                           status, estimated_minutes, updated_at, user_id
+                       )
+                       SELECT recommendation_id, plan_date, topic_id, topic, title, priority,
+                              reasons_json, graph_concept_id, related_concept_ids_json,
+                              status, estimated_minutes, updated_at, user_id
+                       FROM study_coach_recommendations"""
+                )
+                connection.execute("DROP TABLE study_coach_recommendations")
+                connection.execute(
+                    "ALTER TABLE study_coach_recommendations_m23 "
+                    "RENAME TO study_coach_recommendations"
+                )
+                connection.execute(
+                    "UPDATE knowledge_concepts SET normalized_name = "
+                    "user_id || char(31) || normalized_name "
+                    "WHERE user_id IS NOT NULL"
+                )
+                legacy_sessions = connection.execute(
+                    "SELECT session_id FROM user_sessions"
+                ).fetchall()
+                for row in legacy_sessions:
+                    digest = hashlib.sha256(row[0].encode("utf-8")).hexdigest()
+                    connection.execute(
+                        "UPDATE user_sessions SET session_id=? WHERE session_id=?",
+                        (digest, row[0]),
+                    )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_documents_created "
+                    "ON documents(created_at DESC, document_id ASC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_coach_date "
+                    "ON study_coach_recommendations(plan_date, priority DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_coach_recs_user_id "
+                    "ON study_coach_recommendations(user_id)"
+                )
+
+            if version < 10:
+                owner_relations = (
+                    ("chunks", "documents", "document_id", "document_id"),
+                    ("quiz_questions", "quiz_sets", "quiz_id", "quiz_id"),
+                    ("quiz_attempts", "quiz_questions", "question_id", "question_id"),
+                    ("quiz_citations", "quiz_questions", "question_id", "question_id"),
+                    ("image_regions", "learning_images", "image_id", "image_id"),
+                    ("image_region_citations", "image_regions", "region_id", "region_id"),
+                    (
+                        "knowledge_concept_evidence",
+                        "knowledge_concepts",
+                        "concept_id",
+                        "concept_id",
+                    ),
+                    (
+                        "knowledge_relationships",
+                        "knowledge_concepts",
+                        "source_concept_id",
+                        "concept_id",
+                    ),
+                    ("chunk_embeddings", "chunks", "chunk_id", "chunk_id"),
+                    ("topic_review_items", "quiz_questions", "question_id", "question_id"),
+                )
+                for child, parent, child_key, parent_key in owner_relations:
+                    mismatch = connection.execute(
+                        f"""SELECT 1 FROM {child} AS child
+                            JOIN {parent} AS parent
+                              ON parent.{parent_key}=child.{child_key}
+                            WHERE child.user_id IS NOT NULL
+                              AND parent.user_id IS NOT NULL
+                              AND child.user_id != parent.user_id
+                            LIMIT 1"""
+                    ).fetchone()
+                    if mismatch is not None:
+                        raise RuntimeError(
+                            f"Cannot safely migrate conflicting ownership in {child}"
+                        )
+                    connection.execute(
+                        f"""UPDATE {child}
+                            SET user_id=(
+                                SELECT parent.user_id FROM {parent} AS parent
+                                WHERE parent.{parent_key}={child}.{child_key}
+                            )
+                            WHERE user_id IS NULL AND EXISTS (
+                                SELECT 1 FROM {parent} AS parent
+                                WHERE parent.{parent_key}={child}.{child_key}
+                                  AND parent.user_id IS NOT NULL
+                            )"""
+                    )
+
+                cross_owner_checks = (
+                    """SELECT 1 FROM quiz_citations AS citation
+                       JOIN chunks AS chunk ON chunk.chunk_id=citation.citation_id
+                       WHERE citation.user_id IS NOT chunk.user_id LIMIT 1""",
+                    """SELECT 1 FROM image_region_citations AS citation
+                       JOIN chunks AS chunk ON chunk.chunk_id=citation.citation_id
+                       WHERE citation.user_id IS NOT chunk.user_id LIMIT 1""",
+                    """SELECT 1 FROM knowledge_concept_evidence AS evidence
+                       JOIN chunks AS chunk ON chunk.chunk_id=evidence.chunk_id
+                       WHERE evidence.user_id IS NOT chunk.user_id LIMIT 1""",
+                    """SELECT 1 FROM knowledge_relationships AS relationship
+                       JOIN knowledge_concepts AS target
+                         ON target.concept_id=relationship.target_concept_id
+                       JOIN chunks AS chunk ON chunk.chunk_id=relationship.chunk_id
+                       WHERE relationship.user_id IS NOT target.user_id
+                          OR relationship.user_id IS NOT chunk.user_id LIMIT 1""",
+                    """SELECT 1 FROM topic_review_items AS review
+                       JOIN quiz_attempts AS attempt
+                         ON attempt.attempt_id=review.last_attempt_id
+                       WHERE review.user_id IS NOT attempt.user_id LIMIT 1""",
+                )
+                if any(connection.execute(query).fetchone() for query in cross_owner_checks):
+                    raise RuntimeError("Cannot safely migrate resources with conflicting ownership")
+
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.execute("PRAGMA foreign_keys = ON")
+        violations = connection.execute("PRAGMA foreign_key_check").fetchall()
+        if violations:
+            raise RuntimeError("Database migration produced invalid foreign-key references")
 
 
 def check_storage(database_path: Path) -> dict[str, bool]:
@@ -638,9 +861,16 @@ def store_document(
     with closing(connect_database(database_path)) as connection:
         with connection:
             connection.execute("BEGIN IMMEDIATE")
-            existing = connection.execute(
-                "SELECT document_id FROM documents WHERE sha256 = ?", (metadata["sha256"],)
-            ).fetchone()
+            if user_id is None:
+                existing = connection.execute(
+                    "SELECT document_id FROM documents WHERE sha256=? AND user_id IS NULL",
+                    (metadata["sha256"],),
+                ).fetchone()
+            else:
+                existing = connection.execute(
+                    "SELECT document_id FROM documents WHERE sha256=? AND user_id=?",
+                    (metadata["sha256"], user_id),
+                ).fetchone()
             if existing:
                 return str(existing["document_id"])
 
@@ -668,8 +898,8 @@ def store_document(
                     """
                     INSERT INTO chunks (
                         chunk_id, document_id, page_number, chunk_index,
-                        char_start, char_end, text
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        char_start, char_end, text, user_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -680,6 +910,7 @@ def store_document(
                             chunk["char_start"],
                             chunk["char_end"],
                             chunk["text"],
+                            user_id,
                         )
                         for chunk in chunks
                     ],
@@ -691,9 +922,7 @@ def store_document(
     return None
 
 
-def list_documents(
-    database_path: Path, user_id: str | None = None
-) -> list[dict[str, Any]]:
+def list_documents(database_path: Path, user_id: str | None = None) -> list[dict[str, Any]]:
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
             rows = connection.execute(
@@ -742,38 +971,49 @@ def get_document(
     return dict(row) if row else None
 
 
-def delete_document(
-    database_path: Path, document_id: str, user_id: str | None = None
-) -> bool:
+def delete_document(database_path: Path, document_id: str, user_id: str | None = None) -> bool:
     with closing(connect_database(database_path)) as connection:
         with connection:
-            chunk_ids = connection.execute(
-                "SELECT chunk_id FROM chunks WHERE document_id = ?", (document_id,)
-            ).fetchall()
             if user_id is not None:
-                document = connection.execute(
-                    "DELETE FROM documents WHERE document_id = ? AND user_id = ?",
+                owned = connection.execute(
+                    "SELECT 1 FROM documents WHERE document_id=? AND user_id=?",
                     (document_id, user_id),
-                )
+                ).fetchone()
             else:
-                document = connection.execute(
-                    "DELETE FROM documents WHERE document_id = ? AND user_id IS NULL",
+                owned = connection.execute(
+                    "SELECT 1 FROM documents WHERE document_id=? AND user_id IS NULL",
                     (document_id,),
-                )
-            if document.rowcount == 0:
+                ).fetchone()
+            if owned is None:
                 return False
+            chunk_ids = connection.execute(
+                "SELECT chunk_id FROM chunks WHERE document_id = ?",
+                (document_id,),
+            ).fetchall()
+            connection.execute("DELETE FROM documents WHERE document_id=?", (document_id,))
             connection.executemany(
                 "DELETE FROM chunks_fts WHERE chunk_id = ?",
                 [(row["chunk_id"],) for row in chunk_ids],
             )
-            connection.execute(
-                "DELETE FROM knowledge_concepts WHERE NOT EXISTS ("
-                "SELECT 1 FROM knowledge_concept_evidence e "
-                "WHERE e.concept_id=knowledge_concepts.concept_id"
-                ") AND NOT EXISTS (SELECT 1 FROM knowledge_relationships r "
-                "WHERE r.source_concept_id=knowledge_concepts.concept_id "
-                "OR r.target_concept_id=knowledge_concepts.concept_id)"
-            )
+            if user_id is not None:
+                connection.execute(
+                    "DELETE FROM knowledge_concepts WHERE user_id=? AND NOT EXISTS ("
+                    "SELECT 1 FROM knowledge_concept_evidence e "
+                    "WHERE e.concept_id=knowledge_concepts.concept_id"
+                    ") AND NOT EXISTS (SELECT 1 FROM knowledge_relationships r "
+                    "WHERE r.source_concept_id=knowledge_concepts.concept_id "
+                    "OR r.target_concept_id=knowledge_concepts.concept_id)",
+                    (user_id,),
+                )
+            else:
+                connection.execute(
+                    "DELETE FROM knowledge_concepts WHERE user_id IS NULL AND NOT EXISTS ("
+                    "SELECT 1 FROM knowledge_concept_evidence e "
+                    "WHERE e.concept_id=knowledge_concepts.concept_id"
+                    ") AND NOT EXISTS (SELECT 1 FROM knowledge_relationships r "
+                    "WHERE r.source_concept_id=knowledge_concepts.concept_id "
+                    "OR r.target_concept_id=knowledge_concepts.concept_id)"
+                )
             return True
 
 
@@ -823,9 +1063,7 @@ def store_learning_image(
             )
 
 
-def list_learning_images(
-    database_path: Path, user_id: str | None = None
-) -> list[dict[str, Any]]:
+def list_learning_images(database_path: Path, user_id: str | None = None) -> list[dict[str, Any]]:
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
             rows = connection.execute(
@@ -869,6 +1107,12 @@ def create_learning_image_region(
 ) -> None:
     with closing(connect_database(database_path)) as connection:
         with connection:
+            image = connection.execute(
+                "SELECT 1 FROM learning_images WHERE image_id=? AND user_id IS ?",
+                (region["imageId"], user_id),
+            ).fetchone()
+            if image is None:
+                raise ValueError("Image is not owned by the requested user")
             connection.execute(
                 """INSERT INTO image_regions(
                        region_id, image_id, x, y, width, height, ocr_status, extracted_text,
@@ -926,26 +1170,52 @@ def get_learning_image_region(
 
 
 def replace_image_region_citations(
-    database_path: Path, region_id: str, citations: list[dict[str, Any]],
+    database_path: Path,
+    region_id: str,
+    citations: list[dict[str, Any]],
     user_id: str | None = None,
 ) -> None:
     import json
 
     with closing(connect_database(database_path)) as connection:
         with connection:
+            region = connection.execute(
+                "SELECT 1 FROM image_regions WHERE region_id=? AND user_id IS ?",
+                (region_id, user_id),
+            ).fetchone()
+            if region is None:
+                raise ValueError("Image region is not owned by the requested user")
+            for citation in citations:
+                chunk = connection.execute(
+                    """SELECT 1 FROM chunks c JOIN documents d
+                         ON d.document_id=c.document_id
+                       WHERE c.chunk_id=? AND c.user_id IS ? AND d.user_id IS ?""",
+                    (citation["citationId"], user_id, user_id),
+                ).fetchone()
+                if chunk is None:
+                    raise ValueError("Image citation is not owned by the requested user")
             if user_id is not None:
                 connection.execute(
                     "DELETE FROM image_region_citations WHERE region_id=? AND user_id=?",
                     (region_id, user_id),
                 )
             else:
-                connection.execute("DELETE FROM image_region_citations WHERE region_id=?", (region_id,))
+                connection.execute(
+                    "DELETE FROM image_region_citations WHERE region_id=? AND user_id IS NULL",
+                    (region_id,),
+                )
             connection.executemany(
                 """INSERT INTO image_region_citations(
-                       region_id, citation_id, position, retrieval_json
-                   ) VALUES (?, ?, ?, ?)""",
+                       region_id, citation_id, position, retrieval_json, user_id
+                   ) VALUES (?, ?, ?, ?, ?)""",
                 [
-                    (region_id, item["citationId"], index, json.dumps(item["retrieval"]))
+                    (
+                        region_id,
+                        item["citationId"],
+                        index,
+                        json.dumps(item["retrieval"]),
+                        user_id,
+                    )
                     for index, item in enumerate(citations)
                 ],
             )
@@ -998,8 +1268,9 @@ def get_learning_image_detail(
                        FROM image_region_citations irc
                        JOIN chunks c ON c.chunk_id=irc.citation_id
                        JOIN documents d ON d.document_id=c.document_id
-                       WHERE irc.region_id=? AND c.user_id=? ORDER BY irc.position""",
-                    (row["region_id"], user_id),
+                       WHERE irc.region_id=? AND irc.user_id=? AND c.user_id=?
+                         AND d.user_id=? ORDER BY irc.position""",
+                    (row["region_id"], user_id, user_id, user_id),
                 ).fetchall()
             else:
                 citations = connection.execute(
@@ -1009,7 +1280,8 @@ def get_learning_image_detail(
                        FROM image_region_citations irc
                        JOIN chunks c ON c.chunk_id=irc.citation_id
                        JOIN documents d ON d.document_id=c.document_id
-                       WHERE irc.region_id=? AND c.user_id IS NULL ORDER BY irc.position""",
+                       WHERE irc.region_id=? AND irc.user_id IS NULL
+                         AND c.user_id IS NULL AND d.user_id IS NULL ORDER BY irc.position""",
                     (row["region_id"],),
                 ).fetchall()
             result["regions"].append(
@@ -1100,27 +1372,40 @@ def store_knowledge_extraction(
 
     with closing(connect_database(database_path)) as connection:
         with connection:
+            owned_chunk = connection.execute(
+                """SELECT 1 FROM chunks c JOIN documents d
+                     ON d.document_id=c.document_id
+                   WHERE c.chunk_id=? AND c.user_id IS ? AND d.user_id IS ?""",
+                (chunk["chunk_id"], user_id, user_id),
+            ).fetchone()
+            if owned_chunk is None:
+                raise ValueError("Knowledge graph source is not owned by the requested user")
             resolved: dict[str, str] = {}
             for concept in extraction["concepts"]:
+                scoped_name = (
+                    concept["normalized_name"]
+                    if user_id is None
+                    else f"{user_id}\x1f{concept['normalized_name']}"
+                )
                 row = connection.execute(
                     "SELECT concept_id, aliases_json FROM knowledge_concepts "
-                    "WHERE normalized_name=? AND user_id=?",
-                    (concept["normalized_name"], user_id),
+                    "WHERE normalized_name=? AND user_id IS ?",
+                    (scoped_name, user_id),
                 ).fetchone()
                 if row is None:
+                    concept_id = _user_scoped_id("kg", concept["concept_id"], user_id)
                     connection.execute(
                         "INSERT INTO knowledge_concepts("
                         "concept_id, canonical_name, normalized_name, aliases_json, user_id) "
                         "VALUES (?, ?, ?, ?, ?)",
                         (
-                            concept["concept_id"],
+                            concept_id,
                             concept["name"],
-                            concept["normalized_name"],
+                            scoped_name,
                             json.dumps(concept["aliases"]),
                             user_id,
                         ),
                     )
-                    concept_id = concept["concept_id"]
                 else:
                     concept_id = row["concept_id"]
                     aliases = list(
@@ -1146,7 +1431,7 @@ def store_knowledge_extraction(
             for relation in extraction["relationships"]:
                 source_id = resolved[relation["source_normalized"]]
                 target_id = resolved[relation["target_normalized"]]
-                relationship_id = relation["relationship_id"]
+                relationship_id = _user_scoped_id("rel", relation["relationship_id"], user_id)
                 connection.execute(
                     """INSERT OR IGNORE INTO knowledge_relationships(
                        relationship_id, source_concept_id, target_concept_id, relation,
@@ -1176,8 +1461,10 @@ def list_knowledge_concepts(
                           count(DISTINCT r.relationship_id) AS relationship_count
                    FROM knowledge_concepts c
                    LEFT JOIN knowledge_concept_evidence e ON e.concept_id=c.concept_id
+                        AND e.user_id=c.user_id
                    LEFT JOIN knowledge_relationships r ON r.source_concept_id=c.concept_id
-                        OR r.target_concept_id=c.concept_id
+                        AND r.user_id=c.user_id
+                        OR (r.target_concept_id=c.concept_id AND r.user_id=c.user_id)
                    WHERE c.user_id = ?
                    GROUP BY c.concept_id ORDER BY c.canonical_name COLLATE NOCASE""",
                 (user_id,),
@@ -1189,8 +1476,10 @@ def list_knowledge_concepts(
                           count(DISTINCT r.relationship_id) AS relationship_count
                    FROM knowledge_concepts c
                    LEFT JOIN knowledge_concept_evidence e ON e.concept_id=c.concept_id
+                        AND e.user_id IS NULL
                    LEFT JOIN knowledge_relationships r ON r.source_concept_id=c.concept_id
-                        OR r.target_concept_id=c.concept_id
+                        AND r.user_id IS NULL
+                        OR (r.target_concept_id=c.concept_id AND r.user_id IS NULL)
                    WHERE c.user_id IS NULL
                    GROUP BY c.concept_id ORDER BY c.canonical_name COLLATE NOCASE"""
             ).fetchall()
@@ -1321,16 +1610,22 @@ def verify_knowledge_relationship(
                     "WHERE relationship_id=? AND status='candidate' AND user_id=?",
                     (relationship_id, user_id),
                 )
+                row = connection.execute(
+                    "SELECT status FROM knowledge_relationships "
+                    "WHERE relationship_id=? AND user_id=?",
+                    (relationship_id, user_id),
+                ).fetchone()
             else:
                 connection.execute(
                     "UPDATE knowledge_relationships SET status='human_verified' "
                     "WHERE relationship_id=? AND status='candidate' AND user_id IS NULL",
                     (relationship_id,),
                 )
-            row = connection.execute(
-                "SELECT status FROM knowledge_relationships WHERE relationship_id=?",
-                (relationship_id,),
-            ).fetchone()
+                row = connection.execute(
+                    "SELECT status FROM knowledge_relationships "
+                    "WHERE relationship_id=? AND user_id IS NULL",
+                    (relationship_id,),
+                ).fetchone()
     return row is not None and row["status"] == "human_verified"
 
 
@@ -1368,14 +1663,22 @@ def search_chunks(
     return [dict(row) for row in rows]
 
 
-def create_quiz_set(
-    database_path: Path, quiz: dict[str, Any], user_id: str | None = None
-) -> None:
+def create_quiz_set(database_path: Path, quiz: dict[str, Any], user_id: str | None = None) -> None:
     """Persist generated questions and foreign-key citations atomically."""
     import json
 
     with closing(connect_database(database_path)) as connection:
         with connection:
+            for question in quiz["questions"]:
+                for citation in question["citations"]:
+                    owned_chunk = connection.execute(
+                        """SELECT 1 FROM chunks c JOIN documents d
+                             ON d.document_id=c.document_id
+                           WHERE c.chunk_id=? AND c.user_id IS ? AND d.user_id IS ?""",
+                        (citation["citationId"], user_id, user_id),
+                    ).fetchone()
+                    if owned_chunk is None:
+                        raise ValueError("Quiz citation is not owned by the requested user")
             connection.execute(
                 "INSERT INTO quiz_sets(quiz_id, topic_id, topic, created_at, user_id) VALUES (?, ?, ?, ?, ?)",
                 (quiz["quiz_id"], quiz["topic_id"], quiz["topic"], quiz["created_at"], user_id),
@@ -1421,7 +1724,10 @@ def create_quiz_set(
 
 
 def get_quiz_set(
-    database_path: Path, quiz_id: str, *, review_incorrect: bool = False,
+    database_path: Path,
+    quiz_id: str,
+    *,
+    review_incorrect: bool = False,
     user_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Load a quiz with current source provenance and latest attempt outcomes."""
@@ -1485,18 +1791,32 @@ def get_quiz_set(
         for row in rows:
             if review_incorrect and row["latest_outcome"] not in {"incorrect", "ambiguous"}:
                 continue
-            citation_rows = connection.execute(
-                """
-                SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
-                       c.chunk_index, c.char_start, c.char_end, c.text, qc.retrieval_json
-                FROM quiz_citations qc
-                JOIN chunks c ON c.chunk_id=qc.citation_id
-                JOIN documents d ON d.document_id=c.document_id
-                WHERE qc.question_id=? AND qc.user_id=?
-                ORDER BY qc.position
-                """,
-                (row["question_id"], user_id if user_id is not None else "NULL"),
-            ).fetchall()
+            if user_id is None:
+                citation_rows = connection.execute(
+                    """SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
+                              c.chunk_index, c.char_start, c.char_end, c.text,
+                              qc.retrieval_json
+                       FROM quiz_citations qc
+                       JOIN chunks c ON c.chunk_id=qc.citation_id
+                       JOIN documents d ON d.document_id=c.document_id
+                       WHERE qc.question_id=? AND qc.user_id IS NULL
+                         AND c.user_id IS NULL AND d.user_id IS NULL
+                       ORDER BY qc.position""",
+                    (row["question_id"],),
+                ).fetchall()
+            else:
+                citation_rows = connection.execute(
+                    """SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
+                              c.chunk_index, c.char_start, c.char_end, c.text,
+                              qc.retrieval_json
+                       FROM quiz_citations qc
+                       JOIN chunks c ON c.chunk_id=qc.citation_id
+                       JOIN documents d ON d.document_id=c.document_id
+                       WHERE qc.question_id=? AND qc.user_id=?
+                         AND c.user_id=? AND d.user_id=?
+                       ORDER BY qc.position""",
+                    (row["question_id"], user_id, user_id, user_id),
+                ).fetchall()
             citations = [
                 {
                     "citationId": citation["chunk_id"],
@@ -1575,6 +1895,14 @@ def record_quiz_attempt(
 ) -> None:
     with closing(connect_database(database_path)) as connection:
         with connection:
+            question = connection.execute(
+                """SELECT s.topic_id, s.topic FROM quiz_questions q
+                   JOIN quiz_sets s ON s.quiz_id=q.quiz_id
+                   WHERE q.question_id=? AND q.user_id IS ? AND s.user_id IS ?""",
+                (question_id, user_id, user_id),
+            ).fetchone()
+            if question is None:
+                raise ValueError("Quiz question is not owned by the requested user")
             connection.execute(
                 """
                 INSERT INTO quiz_attempts(attempt_id, question_id, outcome, created_at, user_id)
@@ -1582,29 +1910,15 @@ def record_quiz_attempt(
                 """,
                 (attempt_id, question_id, outcome, created_at, user_id),
             )
-            if user_id is not None:
-                question = connection.execute(
-                    """SELECT s.topic_id, s.topic FROM quiz_questions q
-                       JOIN quiz_sets s ON s.quiz_id=q.quiz_id
-                       WHERE q.question_id=? AND q.user_id=? """,
-                    (question_id, user_id),
-                ).fetchone()
-            else:
-                question = connection.execute(
-                    """SELECT s.topic_id, s.topic FROM quiz_questions q
-                       JOIN quiz_sets s ON s.quiz_id=q.quiz_id WHERE q.question_id=? AND q.user_id IS NULL """,
-                    (question_id,),
-                ).fetchone()
-            if question is not None:
-                from datetime import UTC, datetime, timedelta
+            from datetime import UTC, datetime, timedelta
 
-                interval_days = {"incorrect": 1, "ambiguous": 1, "correct": 7}[outcome]
-                attempted_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                if attempted_at.tzinfo is None:
-                    attempted_at = attempted_at.replace(tzinfo=UTC)
-                due_at = (attempted_at + timedelta(days=interval_days)).astimezone(UTC).isoformat()
-                connection.execute(
-                    """INSERT INTO topic_review_items(
+            interval_days = {"incorrect": 1, "ambiguous": 1, "correct": 7}[outcome]
+            attempted_at = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            if attempted_at.tzinfo is None:
+                attempted_at = attempted_at.replace(tzinfo=UTC)
+            due_at = (attempted_at + timedelta(days=interval_days)).astimezone(UTC).isoformat()
+            connection.execute(
+                """INSERT INTO topic_review_items(
                            question_id, topic_id, topic, last_attempt_id, last_outcome,
                            attempted_at, due_at, user_id
                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -1613,22 +1927,26 @@ def record_quiz_attempt(
                            last_attempt_id=excluded.last_attempt_id,
                            last_outcome=excluded.last_outcome,
                            attempted_at=excluded.attempted_at, due_at=excluded.due_at""",
-                    (
-                        question_id,
-                        question["topic_id"],
-                        question["topic"],
-                        attempt_id,
-                        outcome,
-                        created_at,
-                        due_at,
-                        user_id,
-                    ),
-                )
+                (
+                    question_id,
+                    question["topic_id"],
+                    question["topic"],
+                    attempt_id,
+                    outcome,
+                    created_at,
+                    due_at,
+                    user_id,
+                ),
+            )
 
 
 def start_study_session(
-    database_path: Path, *,
-    session_id: str, topic_id: str, topic: str, started_at: str,
+    database_path: Path,
+    *,
+    session_id: str,
+    topic_id: str,
+    topic: str,
+    started_at: str,
     user_id: str | None = None,
 ) -> dict[str, Any]:
     with closing(connect_database(database_path)) as connection:
@@ -1648,7 +1966,10 @@ def start_study_session(
 
 
 def complete_study_session(
-    database_path: Path, *, session_id: str, completed_at: str,
+    database_path: Path,
+    *,
+    session_id: str,
+    completed_at: str,
     user_id: str | None = None,
 ) -> dict[str, Any] | None:
     with closing(connect_database(database_path)) as connection:
@@ -1667,7 +1988,7 @@ def complete_study_session(
                 )
             row = connection.execute(
                 "SELECT session_id, topic_id, topic, started_at, completed_at "
-                "FROM study_sessions WHERE session_id=? AND user_id=?",
+                "FROM study_sessions WHERE session_id=? AND user_id IS ?",
                 (session_id, user_id),
             ).fetchone()
     if row is None:
@@ -1681,9 +2002,7 @@ def complete_study_session(
     }
 
 
-def get_learning_analytics_data(
-    database_path: Path, user_id: str | None = None
-) -> dict[str, Any]:
+def get_learning_analytics_data(database_path: Path, user_id: str | None = None) -> dict[str, Any]:
     import json
 
     with closing(connect_database(database_path)) as connection:
@@ -1697,9 +2016,9 @@ def get_learning_analytics_data(
                               s.topic_id AS topicId, s.topic
                        FROM quiz_attempts a JOIN quiz_questions q ON q.question_id=a.question_id
                        JOIN quiz_sets s ON s.quiz_id=q.quiz_id
-                       WHERE a.user_id = ? AND s.user_id = ?
+                       WHERE a.user_id = ? AND q.user_id = ? AND s.user_id = ?
                        ORDER BY a.created_at DESC, a.rowid DESC""",
-                    (user_id, user_id),
+                    (user_id, user_id, user_id),
                 )
             ]
             sessions = [
@@ -1738,10 +2057,11 @@ def get_learning_analytics_data(
                  JOIN quiz_citations qc ON qc.question_id=q.question_id
                  JOIN chunks c ON c.chunk_id=qc.citation_id
                  JOIN documents d ON d.document_id=c.document_id
-                 WHERE s.user_id=? AND c.user_id=?
+                 WHERE s.user_id=? AND q.user_id=? AND qc.user_id=?
+                   AND c.user_id=? AND d.user_id=?
                  GROUP BY s.topic_id, qc.citation_id
                  ORDER BY s.topic_id, c.document_id, c.page_number, c.chunk_index""",
-                (user_id, user_id),
+                (user_id, user_id, user_id, user_id, user_id),
             ).fetchall()
             concepts = [
                 {
@@ -1816,7 +2136,8 @@ def get_learning_analytics_data(
                    JOIN quiz_citations qc ON qc.question_id=q.question_id
                    JOIN chunks c ON c.chunk_id=qc.citation_id
                    JOIN documents d ON d.document_id=c.document_id
-                   WHERE s.user_id IS NULL AND c.user_id IS NULL
+                   WHERE s.user_id IS NULL AND q.user_id IS NULL
+                     AND qc.user_id IS NULL AND c.user_id IS NULL AND d.user_id IS NULL
                    GROUP BY s.topic_id, qc.citation_id
                    ORDER BY s.topic_id, c.document_id, c.page_number, c.chunk_index"""
             ).fetchall()
@@ -1862,11 +2183,18 @@ def get_learning_analytics_data(
                     "retrieval": json.loads(row["retrieval_json"]),
                 }
             )
+        topics = []
+        seen_topic_ids = set()
+        for review in reviews:
+            if review["topicId"] not in seen_topic_ids:
+                seen_topic_ids.add(review["topicId"])
+                topics.append({"topicId": review["topicId"], "topic": review["topic"]})
         return {
             "attempts": attempts,
             "sessions": sessions,
             "reviews": reviews,
             "topicSources": topic_sources,
+            "topics": topics,
             "concepts": concepts,
             "relationships": relationships,
         }
@@ -1890,7 +2218,7 @@ def get_or_create_study_coach_plan(
                        recommendation_id, plan_date, topic_id, topic, title, priority,
                        reasons_json, graph_concept_id, related_concept_ids_json, status,
                        estimated_minutes, updated_at, user_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?)""",
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'planned', ?, ?, ?)""",
                 [
                     (
                         item["recommendationId"],
@@ -1955,16 +2283,11 @@ def update_study_coach_recommendation(
 
     with closing(connect_database(database_path)) as connection:
         with connection:
-            if user_id is not None:
-                row = connection.execute(
-                    "SELECT * FROM study_coach_recommendations WHERE recommendation_id=? AND user_id=?",
-                    (recommendation_id, user_id),
-                ).fetchone()
-            else:
-                row = connection.execute(
-                    "SELECT * FROM study_coach_recommendations WHERE recommendation_id=? AND user_id IS NULL",
-                    (recommendation_id,),
-                ).fetchone()
+            row = connection.execute(
+                "SELECT * FROM study_coach_recommendations "
+                "WHERE recommendation_id=? AND user_id IS ?",
+                (recommendation_id, user_id),
+            ).fetchone()
             if row is None:
                 return None
             status = {
@@ -1976,7 +2299,7 @@ def update_study_coach_recommendation(
             connection.execute(
                 """UPDATE study_coach_recommendations
                    SET status=?, title=?, estimated_minutes=?, updated_at=?
-                   WHERE recommendation_id=? AND user_id=? """,
+                   WHERE recommendation_id=? AND user_id IS ? """,
                 (
                     status,
                     title if title is not None else row["title"],
@@ -1989,9 +2312,12 @@ def update_study_coach_recommendation(
                 ),
             )
             updated = connection.execute(
-                "SELECT * FROM study_coach_recommendations WHERE recommendation_id=? AND user_id=?",
+                "SELECT * FROM study_coach_recommendations "
+                "WHERE recommendation_id=? AND user_id IS ?",
                 (recommendation_id, user_id),
             ).fetchone()
+    if updated is None:
+        return None
     return {
         "recommendationId": updated["recommendation_id"],
         "planDate": updated["plan_date"],
@@ -2007,9 +2333,8 @@ def update_study_coach_recommendation(
         "updatedAt": updated["updated_at"],
     }
 
-def get_learning_progress(
-    database_path: Path, user_id: str | None = None
-) -> dict[str, Any]:
+
+def get_learning_progress(database_path: Path, user_id: str | None = None) -> dict[str, Any]:
     """Return local topic mastery based on each question's latest attempt and recent history."""
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
@@ -2034,13 +2359,13 @@ def get_learning_progress(
                     FROM quiz_sets s
                     JOIN quiz_questions q ON q.quiz_id=s.quiz_id
                     JOIN latest ON latest.question_id=q.question_id AND latest.rn=1
-                    WHERE s.user_id = ?
+                    WHERE s.user_id = ? AND q.user_id = ?
                     GROUP BY s.topic_id, s.topic
                 )
                 SELECT *, round(1.0 * correct_questions / attempted_questions, 3) AS accuracy
                 FROM counts ORDER BY accuracy ASC, topic COLLATE NOCASE
                 """,
-                (user_id, user_id),
+                (user_id, user_id, user_id),
             ).fetchall()
             attempt_total = int(
                 connection.execute(
@@ -2053,10 +2378,10 @@ def get_learning_progress(
                 FROM quiz_attempts a
                 JOIN quiz_questions q ON q.question_id=a.question_id
                 JOIN quiz_sets s ON s.quiz_id=q.quiz_id
-                WHERE q.user_id = ? AND s.user_id = ?
+                WHERE a.user_id = ? AND q.user_id = ? AND s.user_id = ?
                 ORDER BY a.created_at DESC, a.rowid DESC LIMIT 100
                 """,
-                (user_id, user_id),
+                (user_id, user_id, user_id),
             ).fetchall()
         else:
             topic_rows = connection.execute(
@@ -2068,6 +2393,7 @@ def get_learning_progress(
                                ORDER BY a.created_at DESC, a.rowid DESC
                            ) AS rn
                     FROM quiz_attempts a
+                    WHERE a.user_id IS NULL
                 ), counts AS (
                     SELECT s.topic_id, s.topic, count(DISTINCT q.question_id) AS attempted_questions,
                            sum(CASE WHEN latest.outcome='correct' THEN 1 ELSE 0 END)
@@ -2096,7 +2422,7 @@ def get_learning_progress(
                 FROM quiz_attempts a
                 JOIN quiz_questions q ON q.question_id=a.question_id
                 JOIN quiz_sets s ON s.quiz_id=q.quiz_id
-                WHERE q.user_id IS NULL AND s.user_id IS NULL
+                WHERE a.user_id IS NULL AND q.user_id IS NULL AND s.user_id IS NULL
                 ORDER BY a.created_at DESC, a.rowid DESC LIMIT 100
                 """
             ).fetchall()
@@ -2136,6 +2462,7 @@ def fetch_chunk_batch(
                        e.dimensions, e.vector
                 FROM chunks AS c
                 LEFT JOIN chunk_embeddings AS e ON e.chunk_id = c.chunk_id
+                    AND e.user_id IS c.user_id
                 WHERE (? IS NULL OR c.chunk_id > ?) AND c.user_id = ?
                 ORDER BY c.chunk_id ASC
                 LIMIT ?
@@ -2149,6 +2476,7 @@ def fetch_chunk_batch(
                        e.dimensions, e.vector
                 FROM chunks AS c
                 LEFT JOIN chunk_embeddings AS e ON e.chunk_id = c.chunk_id
+                    AND e.user_id IS NULL
                 WHERE (? IS NULL OR c.chunk_id > ?) AND c.user_id IS NULL
                 ORDER BY c.chunk_id ASC
                 LIMIT ?
@@ -2166,6 +2494,19 @@ def store_chunk_embeddings(
     """Atomically upsert a batch of embeddings without touching source chunks or FTS."""
     with closing(connect_database(database_path)) as connection:
         with connection:
+            for entry in entries:
+                if user_id is None:
+                    chunk = connection.execute(
+                        "SELECT 1 FROM chunks WHERE chunk_id=? AND user_id IS NULL",
+                        (entry["chunk_id"],),
+                    ).fetchone()
+                else:
+                    chunk = connection.execute(
+                        "SELECT 1 FROM chunks WHERE chunk_id=? AND user_id=?",
+                        (entry["chunk_id"], user_id),
+                    ).fetchone()
+                if chunk is None:
+                    raise ValueError("Embedding chunk is not owned by the requested user")
             connection.executemany(
                 """
                 INSERT INTO chunk_embeddings(
@@ -2229,7 +2570,11 @@ def embedding_index_counts(
                 (user_id,),
             ).fetchall()
         else:
-            total = int(connection.execute("SELECT count(*) FROM chunks WHERE user_id IS NULL").fetchone()[0])
+            total = int(
+                connection.execute("SELECT count(*) FROM chunks WHERE user_id IS NULL").fetchone()[
+                    0
+                ]
+            )
             vectors = connection.execute(
                 "SELECT config_hash, dimensions, vector FROM chunk_embeddings WHERE user_id IS NULL"
             ).fetchall()
@@ -2297,18 +2642,16 @@ def search_semantic_chunks(
             vector_sql += f" AND c.document_id IN ({placeholders})"
             params.extend(document_ids)
         if user_id is not None:
-            vector_sql += " AND c.user_id = ?"
-            params.append(user_id)
+            vector_sql += " AND c.user_id = ? AND e.user_id = ?"
+            params.extend((user_id, user_id))
         else:
-            vector_sql += " AND c.user_id IS NULL"
+            vector_sql += " AND c.user_id IS NULL AND e.user_id IS NULL"
 
         for chunk_id, vector_bytes in connection.execute(vector_sql, params):
             if not is_valid_normalized_vector_blob(vector_bytes, dimensions):
                 continue
             vector = struct.unpack(f"<{dimensions}f", vector_bytes)
-            similarity = math.fsum(
-                a * b for a, b in zip(query_vector, vector, strict=True)
-            )
+            similarity = math.fsum(a * b for a, b in zip(query_vector, vector, strict=True))
             key = str(chunk_id)
             heapq.heappush(heap, (similarity, key))
             if len(heap) > limit:
@@ -2323,11 +2666,12 @@ def search_semantic_chunks(
         detail_sql = detail_sql.format(placeholders=placeholders)
         if user_id is not None:
             rows = connection.execute(
-                detail_sql + " AND c.user_id = ?", [*top_ids, user_id]
+                detail_sql + " AND c.user_id = ? AND d.user_id = ?",
+                [*top_ids, user_id, user_id],
             ).fetchall()
         else:
             rows = connection.execute(
-                detail_sql + " AND c.user_id IS NULL", top_ids
+                detail_sql + " AND c.user_id IS NULL AND d.user_id IS NULL", top_ids
             ).fetchall()
 
     # Attach similarities and return in ranked order.

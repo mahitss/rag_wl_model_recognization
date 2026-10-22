@@ -22,9 +22,11 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = 8000
     request_timeout_seconds: float = 30.0
-    rate_limit_enabled: bool = False
+    rate_limit_enabled: bool = True
     rate_limit_requests_per_minute: int = 60
-    max_request_body_bytes: int | None = None
+    auth_rate_limit_requests_per_minute: int = 10
+    expensive_rate_limit_requests_per_minute: int = 10
+    max_request_body_bytes: int | None = 12 * 1024 * 1024
     database_path: Path = Path("data/local/wonderlearn.sqlite3")
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     max_upload_bytes: int = 10 * 1024 * 1024
@@ -53,8 +55,6 @@ class Settings(BaseSettings):
 
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
-    session_cookie_secure: bool = False  # True in production (HTTPS only)
-    session_secret_key: str = ""
 
     @field_validator("database_path")
     @classmethod
@@ -79,8 +79,7 @@ class Settings(BaseSettings):
                 raise ValueError("WL_CORS_ORIGINS entries must include a hostname")
             if parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
                 raise ValueError(
-                    "WL_CORS_ORIGINS entries must not include path, query, "
-                    "fragment, or credentials"
+                    "WL_CORS_ORIGINS entries must not include path, query, fragment, or credentials"
                 )
             # In development, only loopback HTTP origins are allowed.
             # In production, HTTPS origins are permitted (e.g. a hosted frontend).
@@ -151,6 +150,17 @@ class Settings(BaseSettings):
             raise ValueError("WL_RATE_LIMIT_REQUESTS_PER_MINUTE must be positive")
         return value
 
+    @field_validator(
+        "auth_rate_limit_requests_per_minute",
+        "expensive_rate_limit_requests_per_minute",
+        "session_ttl_seconds",
+    )
+    @classmethod
+    def authentication_limits_are_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("Authentication and session limits must be positive")
+        return value
+
     @field_validator("max_request_body_bytes", mode="before")
     @classmethod
     def max_request_body_bytes_is_positive(cls, value: int | None) -> int | None:
@@ -160,13 +170,6 @@ class Settings(BaseSettings):
             value = int(value)
         if value <= 0:
             raise ValueError("WL_MAX_REQUEST_BODY_BYTES must be positive or unset")
-        return value
-
-    @field_validator("session_secret_key")
-    @classmethod
-    def session_secret_key_required_in_production(cls, value: str) -> str:
-        if not value:
-            raise ValueError("WL_SESSION_SECRET_KEY must be set")
         return value
 
     @field_validator(
@@ -249,24 +252,17 @@ class Settings(BaseSettings):
                 warnings.append(f"cannot create embedding cache directory {cache_dir}: {exc}")
 
         if self.is_production:
+            if any(origin.startswith("http://") for origin in self.allowed_origins):
+                raise ValueError("Production CORS origins must use HTTPS")
             if self.api_host in {"127.0.0.1", "localhost", "::1"}:
                 warnings.append(
                     "WL_API_HOST is loopback in production; bind to "
                     "0.0.0.0 only behind a trusted reverse proxy"
                 )
-            if any(o.startswith("http://") for o in self.allowed_origins):
-                warnings.append("WL_CORS_ORIGINS contains http origins in production; prefer https")
             if not self.rate_limit_enabled:
-                warnings.append(
-                    "WL_RATE_LIMIT_ENABLED is false in production; expensive "
-                    "endpoints (embedding rebuild, document upload, retrieval) "
-                    "are unprotected from denial-of-service abuse"
-                )
+                raise ValueError("WL_RATE_LIMIT_ENABLED must be true in production")
             if self.max_request_body_bytes is None:
-                warnings.append(
-                    "WL_MAX_REQUEST_BODY_BYTES is unset in production; request "
-                    "body size is not bounded at the ASGI layer"
-                )
+                raise ValueError("WL_MAX_REQUEST_BODY_BYTES must be set in production")
 
         return warnings
 

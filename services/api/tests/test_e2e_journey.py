@@ -21,15 +21,15 @@ import io
 import json
 from io import BytesIO
 
-import httpx
 import pytest
+from auth_helpers import authenticated_request, prepare_test_account
 from PIL import Image
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.config import Settings
 from app.errors import ApiError
-from app.knowledge_graph import parse_extraction, stable_concept_id
+from app.knowledge_graph import parse_extraction
 from app.main import create_app
 from app.storage import (
     delete_document,
@@ -88,11 +88,7 @@ def make_settings(tmp_path, **overrides) -> Settings:
 
 
 async def request(app, method: str, path: str, **kwargs):
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            return await client.request(method, path, **kwargs)
+    return await authenticated_request(app, method, path, **kwargs)
 
 
 def post_pdf(app, pdf_bytes: bytes, filename="lesson.pdf"):
@@ -210,15 +206,7 @@ def mock_quiz_generator(monkeypatch):
                 }
             ]
         }
-        provider_result = {
-            "choices": [
-                {
-                    "message": {
-                        "content": json.dumps(generated)
-                    }
-                }
-            ]
-        }
+        provider_result = {"choices": [{"message": {"content": json.dumps(generated)}}]}
         return FakeResponse(json.dumps(provider_result).encode())
 
     class FakeOpener:
@@ -341,7 +329,7 @@ def test_document_retrieval_tutor_and_abstention_journey(tmp_path, monkeypatch):
 def test_diagram_concept_evidence_provenance(tmp_path):
     """A curated diagram region returns evidence from the indexed document."""
     uploaded = post_pdf(
-        app:=create_app(make_settings(tmp_path)),
+        app := create_app(make_settings(tmp_path)),
         make_pdf_pages(["Chlorophyll absorbs light energy in leaves."]),
     )
     document_id = uploaded.json()["documentId"]
@@ -369,6 +357,7 @@ def test_image_region_tutor_journey(tmp_path, monkeypatch):
     seed_document(tmp_path / "e2e.sqlite3")
     settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
     app = create_app(settings)
+    user_id = prepare_test_account(app)
 
     # Monkeypatch OCR and grounded answer for deterministic region flow.
     monkeypatch.setattr(
@@ -433,7 +422,7 @@ def test_image_region_tutor_journey(tmp_path, monkeypatch):
     assert tutor.json()["citations"][0]["citationId"] == "chunk_e2e_source"
 
     # Deleting the source document clears region citations (deletion consistency).
-    assert delete_document(settings.database_path, "doc_e2e_source")
+    assert delete_document(settings.database_path, "doc_e2e_source", user_id=user_id)
     after_delete = asyncio.run(request(app, "GET", f"/api/v1/images/{image_id}"))
     assert after_delete.json()["regions"][0]["citations"] == []
 
@@ -480,7 +469,7 @@ def test_knowledge_graph_extract_verify_tutor_journey(tmp_path, monkeypatch):
     """Upload a document, extract graph concepts, verify a relationship, then tutor."""
     SOURCE = "Photosynthesis uses chlorophyll to absorb light energy."
     uploaded = post_pdf(
-        app:=create_app(make_settings(tmp_path)),
+        app := create_app(make_settings(tmp_path)),
         make_pdf_pages([SOURCE]),
     )
     document_id = uploaded.json()["documentId"]
@@ -528,10 +517,12 @@ def test_knowledge_graph_extract_verify_tutor_journey(tmp_path, monkeypatch):
     assert len(concepts.json()["concepts"]) == 2
 
     # Concept detail shows relationship.
-    concept_id = stable_concept_id("Photosynthesis")
-    detail = asyncio.run(
-        request(app, "GET", f"/api/v1/knowledge-graph/concepts/{concept_id}")
+    concept_id = next(
+        concept["conceptId"]
+        for concept in concepts.json()["concepts"]
+        if concept["name"] == "Photosynthesis"
     )
+    detail = asyncio.run(request(app, "GET", f"/api/v1/knowledge-graph/concepts/{concept_id}"))
     assert detail.status_code == 200
     relationship = detail.json()["relationships"][0]
     assert relationship["relation"] == "uses"

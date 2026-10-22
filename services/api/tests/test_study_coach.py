@@ -2,7 +2,7 @@ import asyncio
 import sqlite3
 from datetime import UTC, datetime, timedelta
 
-import httpx
+from auth_helpers import authenticated_request, prepare_test_account
 
 from app.config import Settings
 from app.main import create_app
@@ -90,11 +90,7 @@ def test_local_frontend_can_preflight_study_coach_patch_requests(tmp_path):
 
 
 async def request(app, method, path, **kwargs):
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            return await client.request(method, path, **kwargs)
+    return await authenticated_request(app, method, path, **kwargs)
 
 
 def make_learning_data(database_path, now):
@@ -157,15 +153,21 @@ def make_learning_data(database_path, now):
     )
     with sqlite3.connect(database_path) as connection:
         connection.execute(
-            "INSERT INTO knowledge_concepts VALUES (?, ?, ?, ?)",
+            "INSERT INTO knowledge_concepts("
+            "concept_id, canonical_name, normalized_name, aliases_json) "
+            "VALUES (?, ?, ?, ?)",
             ("concept_photo", "Photosynthesis", "photosynthesis", "[]"),
         )
         connection.execute(
-            "INSERT INTO knowledge_concepts VALUES (?, ?, ?, ?)",
+            "INSERT INTO knowledge_concepts("
+            "concept_id, canonical_name, normalized_name, aliases_json) "
+            "VALUES (?, ?, ?, ?)",
             ("concept_light", "Light", "light", "[]"),
         )
         connection.execute(
-            """INSERT INTO knowledge_relationships VALUES (
+            """INSERT INTO knowledge_relationships(
+               relationship_id, source_concept_id, target_concept_id, relation,
+               chunk_id, page_number, supporting_text, status) VALUES (
                ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 "relation_coach",
@@ -185,6 +187,7 @@ def test_api_plan_is_cited_persisted_and_supports_accept_edit_dismiss_complete(t
     settings = Settings(_env_file=None, database_path=tmp_path / "coach.sqlite3")
     make_learning_data(settings.database_path, now)
     app = create_app(settings)
+    prepare_test_account(app)
     plan = asyncio.run(request(app, "GET", "/api/v1/study-coach/plan"))
     assert plan.status_code == 200
     recommendation = plan.json()["recommendations"][0]
@@ -259,7 +262,8 @@ def test_plan_empty_state_and_source_deletion_remove_recommendation_citations(tm
     make_learning_data(settings.database_path, datetime.now(UTC))
     from app.storage import delete_document
 
-    delete_document(settings.database_path, "doc_coach")
+    user_id = prepare_test_account(app)
+    delete_document(settings.database_path, "doc_coach", user_id=user_id)
     after = asyncio.run(request(app, "GET", "/api/v1/study-coach/plan"))
     assert after.status_code == 200
     assert after.json()["recommendations"] == []

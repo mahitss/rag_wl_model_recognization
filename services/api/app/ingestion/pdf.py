@@ -113,6 +113,7 @@ def ingest_pdf(
     filename: str | None,
     database_path: Path,
     settings: Settings,
+    user_id: str | None = None,
 ) -> dict[str, object]:
     stream.seek(0, 2)
     byte_size = stream.tell()
@@ -151,7 +152,7 @@ def ingest_pdf(
         "parser_version": f"pypdf/{pypdf_version}",
     }
     try:
-        duplicate_id = store_document(database_path, metadata, chunks)
+        duplicate_id = store_document(database_path, metadata, chunks, user_id=user_id)
     except OSError as exc:
         raise ApiError(503, "STORAGE_UNAVAILABLE", "Local storage is unavailable.") from exc
     except sqlite3.Error as exc:

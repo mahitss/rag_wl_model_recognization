@@ -1,20 +1,26 @@
-import asyncio
 import io
 import json
 import sqlite3
 from io import BytesIO
 
-import httpx
 import pytest
+from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
+from app.auth import hash_password
 from app.config import Settings
 from app.errors import ApiError
 from app.ingestion.chunking import chunk_page_text
 from app.ingestion.pdf import ingest_pdf, safe_display_filename
 from app.main import create_app
-from app.storage import get_document, initialize_storage, search_chunks
+from app.storage import (
+    create_user,
+    get_document,
+    get_user_by_username,
+    initialize_storage,
+    search_chunks,
+)
 
 
 def make_pdf(*pages: str, encrypted: bool = False) -> bytes:
@@ -52,38 +58,54 @@ def make_settings(tmp_path, **overrides):
     )
 
 
-async def request_with_lifespan(app, method, path, **kwargs):
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            return await client.request(method, path, **kwargs)
-
-
 def post_pdf(tmp_path, pdf: bytes, filename="lesson.pdf", **overrides):
     app = create_app(make_settings(tmp_path, **overrides))
-    return asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/documents",
-            files={"file": (filename, pdf, "application/pdf")},
+    initialize_storage(app.state.settings.database_path)
+    username = "testuser"
+    user = get_user_by_username(app.state.settings.database_path, username)
+    user_id = (
+        user["user_id"]
+        if user
+        else create_user(
+            app.state.settings.database_path, username, hash_password("testpassword123")
         )
     )
+    client = TestClient(app)
+    csrf = client.get("/api/v1/auth/csrf-token").json()["csrfToken"]
+    client.headers.update({"X-CSRF-Token": csrf})
+
+    # Log in
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": username, "password": "testpassword123"},
+    )
+    assert response.status_code == 200, f"Login failed: {response.text}"
+
+    # Upload document and return both response and authenticated client
+    upload_response = client.post(
+        "/api/v1/documents",
+        files={"file": (filename, pdf, "application/pdf")},
+    )
+    return upload_response, client, user_id, app.state.settings
 
 
 def test_multi_page_pdf_ingestion_preserves_page_provenance(tmp_path):
-    response = post_pdf(tmp_path, make_pdf("The moon has craters.", "Mars is a planet."))
+    response, client, user_id, _ = post_pdf(
+        tmp_path, make_pdf("The moon has craters.", "Mars is a planet.")
+    )
     assert response.status_code == 201
     document_id = response.json()["documentId"]
-    rows = search_chunks(make_settings(tmp_path).database_path, '"moon"', [document_id], 5)
+    rows = search_chunks(
+        make_settings(tmp_path).database_path, '"moon"', [document_id], 5, user_id=user_id
+    )
     assert len(rows) == 1
     assert rows[0]["page_number"] == 1
     assert "moon" in rows[0]["text"]
-    rows = search_chunks(make_settings(tmp_path).database_path, '"Mars"', [document_id], 5)
+    rows = search_chunks(
+        make_settings(tmp_path).database_path, '"Mars"', [document_id], 5, user_id=user_id
+    )
     assert rows[0]["page_number"] == 2
-    app = create_app(make_settings(tmp_path))
-    status = asyncio.run(request_with_lifespan(app, "GET", f"/api/v1/documents/{document_id}"))
+    status = client.get(f"/api/v1/documents/{document_id}")
     assert status.status_code == 200
     assert status.json()["status"] == "indexed"
     assert status.json()["pageCount"] == 2
@@ -101,9 +123,9 @@ def test_chunking_is_deterministic_word_bounded_and_page_local():
 
 
 def test_invalid_content_and_textless_pdf_are_rejected(tmp_path):
-    invalid = post_pdf(tmp_path, b"not a pdf", "spoof.pdf")
-    malformed = post_pdf(tmp_path, b"%PDF-1.7\nnot really a PDF", "malformed.pdf")
-    textless = post_pdf(tmp_path, make_pdf(""), "scan.pdf")
+    invalid, _, _, _ = post_pdf(tmp_path, b"not a pdf", "spoof.pdf")
+    malformed, _, _, _ = post_pdf(tmp_path, b"%PDF-1.7\nnot really a PDF", "malformed.pdf")
+    textless, _, _, _ = post_pdf(tmp_path, make_pdf(""), "scan.pdf")
     assert invalid.status_code == 415
     assert invalid.json()["error"]["code"] == "UNSUPPORTED_FORMAT"
     assert malformed.status_code == 422
@@ -113,8 +135,8 @@ def test_invalid_content_and_textless_pdf_are_rejected(tmp_path):
 
 
 def test_encrypted_and_empty_files_are_rejected(tmp_path):
-    encrypted = post_pdf(tmp_path, make_pdf("secret", encrypted=True))
-    empty = post_pdf(tmp_path, b"")
+    encrypted, _, _, _ = post_pdf(tmp_path, make_pdf("secret", encrypted=True))
+    empty, _, _, _ = post_pdf(tmp_path, b"")
     assert encrypted.status_code == 422
     assert encrypted.json()["error"]["code"] == "ENCRYPTED_PDF"
     assert empty.status_code == 422
@@ -122,73 +144,52 @@ def test_encrypted_and_empty_files_are_rejected(tmp_path):
 
 
 def test_upload_limit_is_enforced(tmp_path):
-    response = post_pdf(tmp_path, make_pdf("too large"), max_upload_bytes=10)
+    response, _, _, _ = post_pdf(tmp_path, make_pdf("too large"), max_upload_bytes=10)
     assert response.status_code == 413
     assert response.json()["error"]["code"] == "FILE_TOO_LARGE"
 
 
 def test_duplicate_content_returns_existing_document_reference(tmp_path):
     pdf = make_pdf("same bytes for both uploads")
-    first = post_pdf(tmp_path, pdf, "first.pdf")
-    duplicate = post_pdf(tmp_path, pdf, "second.pdf")
+    first, _, _, _ = post_pdf(tmp_path, pdf, "first.pdf")
+    duplicate, _, _, _ = post_pdf(tmp_path, pdf, "second.pdf")
     assert first.status_code == 201
     assert duplicate.status_code == 409
     assert duplicate.json()["error"]["details"]["existingDocumentId"] == first.json()["documentId"]
 
 
 def test_retrieval_answer_citations_and_query_validation(tmp_path):
-    response = post_pdf(tmp_path, make_pdf("The water cycle includes evaporation."))
-    document_id = response.json()["documentId"]
-    app = create_app(make_settings(tmp_path))
-    result = asyncio.run(
-        request_with_lifespan(
-            app, "POST", "/api/v1/retrieve", json={"query": "evaporation", "limit": 5}
-        )
+    response, client, user_id, _ = post_pdf(
+        tmp_path, make_pdf("The water cycle includes evaporation.")
     )
+    document_id = response.json()["documentId"]
+    result = client.post("/api/v1/retrieve", json={"query": "evaporation", "limit": 5})
     assert result.status_code == 200
     citation = result.json()["results"][0]
     assert citation["documentId"] == document_id
     assert citation["pageNumber"] == 1
     assert citation["citationId"].startswith("chk_")
-    fts_syntax = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/retrieve",
-            json={"query": "OR (evaporation* NEAR/2 cycle) AND"},
-        )
+    fts_syntax = client.post(
+        "/api/v1/retrieve",
+        json={"query": "OR (evaporation* NEAR/2 cycle) AND"},
     )
     assert fts_syntax.status_code == 200
     assert fts_syntax.json()["results"][0]["documentId"] == document_id
-    answer = asyncio.run(
-        request_with_lifespan(app, "POST", "/api/v1/answers", json={"question": "evaporation?"})
-    )
+    answer = client.post("/api/v1/answers", json={"question": "evaporation?"})
     assert answer.json()["status"] == "evidence_found"
     assert answer.json()["answerType"] == "extractive_evidence"
     assert answer.json()["citations"][0]["citationId"] == citation["citationId"]
-    no_match = asyncio.run(
-        request_with_lifespan(
-            app, "POST", "/api/v1/answers", json={"question": "quantum astronomy"}
-        )
-    )
+    no_match = client.post("/api/v1/answers", json={"question": "quantum astronomy"})
     assert no_match.json()["status"] == "insufficient_evidence"
     assert no_match.json()["answer"] is None
-    invalid = asyncio.run(
-        request_with_lifespan(app, "POST", "/api/v1/retrieve", json={"query": "!!!"})
-    )
+    invalid = client.post("/api/v1/retrieve", json={"query": "!!!"})
     assert invalid.status_code == 422
     assert invalid.json()["error"]["code"] == "INVALID_QUERY"
-    empty = asyncio.run(
-        request_with_lifespan(app, "POST", "/api/v1/retrieve", json={"query": "  "})
-    )
+    empty = client.post("/api/v1/retrieve", json={"query": "  "})
     assert empty.status_code == 422
-    common_words = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/retrieve",
-            json={"query": "What is the boiling point of nitrogen?"},
-        )
+    common_words = client.post(
+        "/api/v1/retrieve",
+        json={"query": "What is the boiling point of nitrogen?"},
     )
     assert common_words.status_code == 200
     assert common_words.json()["results"] == []
@@ -196,19 +197,16 @@ def test_retrieval_answer_citations_and_query_validation(tmp_path):
 
 def test_delete_removes_evidence_and_allows_reingestion(tmp_path):
     pdf = make_pdf("Evidence to delete remains searchable.")
-    uploaded = post_pdf(tmp_path, pdf)
+    uploaded, client, _, _ = post_pdf(tmp_path, pdf)
     document_id = uploaded.json()["documentId"]
-    app = create_app(make_settings(tmp_path))
-    removed = asyncio.run(request_with_lifespan(app, "DELETE", f"/api/v1/documents/{document_id}"))
+    removed = client.delete(f"/api/v1/documents/{document_id}")
     assert removed.status_code == 200
     assert get_document(make_settings(tmp_path).database_path, document_id) is None
-    search = asyncio.run(
-        request_with_lifespan(app, "POST", "/api/v1/retrieve", json={"query": "searchable"})
-    )
+    search = client.post("/api/v1/retrieve", json={"query": "searchable"})
     assert search.json()["results"] == []
-    missing = asyncio.run(request_with_lifespan(app, "DELETE", f"/api/v1/documents/{document_id}"))
+    missing = client.delete(f"/api/v1/documents/{document_id}")
     assert missing.status_code == 404
-    reingested = post_pdf(tmp_path, pdf)
+    reingested, _, _, _ = post_pdf(tmp_path, pdf)
     assert reingested.status_code == 201
     assert reingested.json()["documentId"] != document_id
 
@@ -242,10 +240,11 @@ def test_filename_paths_are_reduced_to_safe_display_name():
 
 
 def test_grounded_tutor_returns_only_real_retrieved_citations(tmp_path, monkeypatch):
-    uploaded = post_pdf(tmp_path, make_pdf("Chlorophyll absorbs light energy in leaves."))
+    uploaded, client, _, settings = post_pdf(
+        tmp_path, make_pdf("Chlorophyll absorbs light energy in leaves.")
+    )
     document_id = uploaded.json()["documentId"]
-    settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
-    app = create_app(settings)
+    settings.tutor_base_url = "http://127.0.0.1:8080/v1"
 
     class FakeResponse(BytesIO):
         def __enter__(self):
@@ -277,18 +276,14 @@ def test_grounded_tutor_returns_only_real_retrieved_citations(tmp_path, monkeypa
             return fake_urlopen(request, timeout)
 
     monkeypatch.setattr("app.tutor.build_opener", lambda *_: FakeOpener())
-    result = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/tutor/answers",
-            json={
-                "question": "What does chlorophyll do?",
-                "diagramId": "photosynthesis-cycle",
-                "conceptId": "biology.photosynthesis.chlorophyll",
-                "documentIds": [document_id],
-            },
-        )
+    result = client.post(
+        "/api/v1/tutor/answers",
+        json={
+            "question": "What does chlorophyll do?",
+            "diagramId": "photosynthesis-cycle",
+            "conceptId": "biology.photosynthesis.chlorophyll",
+            "documentIds": [document_id],
+        },
     )
     body = result.json()
     assert result.status_code == 200
@@ -298,61 +293,73 @@ def test_grounded_tutor_returns_only_real_retrieved_citations(tmp_path, monkeypa
     assert body["citations"][0]["pageNumber"] == 1
     assert body["citations"][0]["citationId"].startswith("chk_")
 
-    unknown_concept = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/tutor/answers",
-            json={
-                "question": "What happens?",
-                "diagramId": "photosynthesis-cycle",
-                "conceptId": "client.forged.concept",
-            },
-        )
+    unknown_concept = client.post(
+        "/api/v1/tutor/answers",
+        json={
+            "question": "What happens?",
+            "diagramId": "photosynthesis-cycle",
+            "conceptId": "client.forged.concept",
+        },
     )
     assert unknown_concept.status_code == 404
     assert unknown_concept.json()["error"]["code"] == "CONCEPT_NOT_FOUND"
 
 
 def test_tutor_empty_evidence_abstains_and_configured_model_failure_is_safe(tmp_path):
-    settings = make_settings(tmp_path)
+    settings = make_settings(tmp_path, tutor_base_url="http://localhost:8080/v1")
     app = create_app(settings)
-    empty = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/tutor/answers",
-            json={"question": "Explain evaporation."},
-        )
+    initialize_storage(app.state.settings.database_path)
+
+    # Create user first
+    username = "testuser_evidence"
+    create_user(
+        app.state.settings.database_path,
+        username,
+        hash_password("testpassword123"),
+        email=f"{username}@test.local",
+    )
+
+    client = TestClient(app)
+    csrf = client.get("/api/v1/auth/csrf-token").json()["csrfToken"]
+    client.headers.update({"X-CSRF-Token": csrf})
+    client.post(
+        "/api/v1/auth/login",
+        json={"username": username, "password": "testpassword123"},
+    )
+    empty = client.post(
+        "/api/v1/tutor/answers",
+        json={"question": "Explain evaporation."},
     )
     assert empty.status_code == 200
     assert empty.json()["status"] == "insufficient_evidence"
     assert empty.json()["answer"] is None
     assert empty.json()["citations"] == []
 
-    post_pdf(tmp_path, make_pdf("Evaporation changes liquid water into water vapor."))
-    unavailable = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/tutor/answers",
-            json={"question": "What is evaporation?"},
-        )
+    # Upload a document using the same client
+    pdf_content = make_pdf("Evaporation changes liquid water into water vapor.")
+    upload_response = client.post(
+        "/api/v1/documents",
+        files={"file": ("evaporation.pdf", pdf_content, "application/pdf")},
+    )
+    assert upload_response.status_code == 201
+
+    unavailable = client.post(
+        "/api/v1/tutor/answers",
+        json={"question": "What is evaporation?"},
     )
     assert unavailable.status_code == 503
     assert unavailable.json()["error"]["code"] == "TUTOR_MODEL_UNAVAILABLE"
 
 
 def test_quiz_attempts_persist_explain_with_real_citations_and_support_retry(tmp_path, monkeypatch):
-    uploaded = post_pdf(
+    uploaded, client, _, settings = post_pdf(
         tmp_path,
         make_pdf(
             "Chlorophyll absorbs light energy in leaves. Plants use this energy to make food."
         ),
     )
     document_id = uploaded.json()["documentId"]
-    settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
-    app = create_app(settings)
+    settings.tutor_base_url = "http://127.0.0.1:8080/v1"
     generated = {
         "questions": [
             {
@@ -397,17 +404,13 @@ def test_quiz_attempts_persist_explain_with_real_citations_and_support_retry(tmp
             )
 
     monkeypatch.setattr("app.tutor.build_opener", lambda *_: FakeOpener())
-    created = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/quizzes",
-            json={
-                "topic": "chlorophyll",
-                "questionCount": 2,
-                "documentIds": [document_id],
-            },
-        )
+    created = client.post(
+        "/api/v1/quizzes",
+        json={
+            "topic": "chlorophyll",
+            "questionCount": 2,
+            "documentIds": [document_id],
+        },
     )
     assert created.status_code == 200
     quiz = created.json()
@@ -418,15 +421,10 @@ def test_quiz_attempts_persist_explain_with_real_citations_and_support_retry(tmp
     assert first["explanation"] is None
     quiz_id = quiz["quizId"]
 
-    async def submit(question_id, answer):
-        return await request_with_lifespan(
-            app,
-            "POST",
-            f"/api/v1/quizzes/{quiz_id}/questions/{question_id}/attempts",
-            json={"answer": answer},
-        )
-
-    wrong = asyncio.run(submit(first["questionId"], "B"))
+    wrong = client.post(
+        f"/api/v1/quizzes/{quiz_id}/questions/{first['questionId']}/attempts",
+        json={"answer": "B"},
+    )
     assert wrong.status_code == 200
     wrong_body = wrong.json()
     assert wrong_body["outcome"] == "incorrect"
@@ -438,19 +436,23 @@ def test_quiz_attempts_persist_explain_with_real_citations_and_support_retry(tmp
     assert citation["pageNumber"] == 1
     assert citation["citationId"].startswith("chk_")
 
-    review = asyncio.run(
-        request_with_lifespan(app, "GET", f"/api/v1/quizzes/{quiz_id}?review_incorrect=true")
-    )
+    review = client.get(f"/api/v1/quizzes/{quiz_id}?review_incorrect=true")
     assert [item["questionId"] for item in review.json()["questions"]] == [first["questionId"]]
-    retry = asyncio.run(submit(first["questionId"], "A"))
+    retry = client.post(
+        f"/api/v1/quizzes/{quiz_id}/questions/{first['questionId']}/attempts",
+        json={"answer": "A"},
+    )
     assert retry.json()["outcome"] == "correct"
     assert retry.json()["attemptCount"] == 2
 
-    ambiguous = asyncio.run(submit(quiz["questions"][1]["questionId"], "chlorophyll uses energy"))
+    ambiguous = client.post(
+        f"/api/v1/quizzes/{quiz_id}/questions/{quiz['questions'][1]['questionId']}/attempts",
+        json={"answer": "chlorophyll uses energy"},
+    )
     assert ambiguous.json()["outcome"] == "ambiguous"
     assert ambiguous.json()["isCorrect"] is None
 
-    progress = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/progress"))
+    progress = client.get("/api/v1/progress")
     progress_body = progress.json()
     assert progress_body["totalAttempts"] == 3
     topic = progress_body["topics"][0]
@@ -460,20 +462,19 @@ def test_quiz_attempts_persist_explain_with_real_citations_and_support_retry(tmp
     assert topic["needsReview"] is True
     assert len(progress_body["recentAttempts"]) == 3
 
-    restarted_app = create_app(settings)
-    persisted = asyncio.run(request_with_lifespan(restarted_app, "GET", "/api/v1/progress"))
+    persisted = client.get("/api/v1/progress")
     assert persisted.json()["totalAttempts"] == 3
 
-    removed = asyncio.run(request_with_lifespan(app, "DELETE", f"/api/v1/documents/{document_id}"))
+    removed = client.delete(f"/api/v1/documents/{document_id}")
     assert removed.status_code == 200
-    forgotten = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/progress"))
+    forgotten = client.get("/api/v1/progress")
     assert forgotten.json()["totalAttempts"] == 0
 
 
 def test_release_journey_upload_to_diagram_quiz_coach_analytics_and_source_deletion(
     tmp_path, monkeypatch
 ):
-    upload = post_pdf(
+    upload, client, _, settings = post_pdf(
         tmp_path,
         make_pdf(
             "Chlorophyll absorbs light energy in leaves. "
@@ -483,23 +484,14 @@ def test_release_journey_upload_to_diagram_quiz_coach_analytics_and_source_delet
     )
     assert upload.status_code == 201
     document_id = upload.json()["documentId"]
-    settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
-    app = create_app(settings)
-    query = asyncio.run(
-        request_with_lifespan(
-            app, "POST", "/api/v1/retrieve", json={"query": "chlorophyll light", "limit": 5}
-        )
-    )
+    settings.tutor_base_url = "http://127.0.0.1:8080/v1"
+    query = client.post("/api/v1/retrieve", json={"query": "chlorophyll light", "limit": 5})
     assert query.status_code == 200
     assert query.json()["results"][0]["documentId"] == document_id
 
-    diagram_evidence = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/diagrams/photosynthesis-cycle/regions/chlorophyll/evidence",
-            json={"limit": 5},
-        )
+    diagram_evidence = client.post(
+        "/api/v1/diagrams/photosynthesis-cycle/regions/chlorophyll/evidence",
+        json={"limit": 5},
     )
     assert diagram_evidence.status_code == 200
     assert diagram_evidence.json()["results"][0]["pageNumber"] == 1
@@ -539,41 +531,29 @@ def test_release_journey_upload_to_diagram_quiz_coach_analytics_and_source_delet
             )
 
     monkeypatch.setattr("app.tutor.build_opener", lambda *_: FakeOpener())
-    quiz_response = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/quizzes",
-            json={"topic": "chlorophyll", "questionCount": 1, "documentIds": [document_id]},
-        )
+    quiz_response = client.post(
+        "/api/v1/quizzes",
+        json={"topic": "chlorophyll", "questionCount": 1, "documentIds": [document_id]},
     )
     assert quiz_response.status_code == 200
     quiz = quiz_response.json()
     question = quiz["questions"][0]
-    attempt = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            f"/api/v1/quizzes/{quiz['quizId']}/questions/{question['questionId']}/attempts",
-            json={"answer": "B"},
-        )
+    attempt = client.post(
+        f"/api/v1/quizzes/{quiz['quizId']}/questions/{question['questionId']}/attempts",
+        json={"answer": "B"},
     )
     assert attempt.status_code == 200
     assert attempt.json()["outcome"] == "incorrect"
     assert attempt.json()["citations"][0]["documentId"] == document_id
 
-    session = asyncio.run(
-        request_with_lifespan(app, "POST", "/api/v1/study-sessions", json={"topic": "chlorophyll"})
-    )
+    session = client.post("/api/v1/study-sessions", json={"topic": "chlorophyll"})
     assert session.status_code == 201
-    completed = asyncio.run(
-        request_with_lifespan(
-            app, "POST", f"/api/v1/study-sessions/{session.json()['sessionId']}/complete"
-        )
+    completed = client.post(
+        f"/api/v1/study-sessions/{session.json()['sessionId']}/complete",
     )
     assert completed.status_code == 200
 
-    plan = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/study-coach/plan"))
+    plan = client.get("/api/v1/study-coach/plan")
     assert plan.status_code == 200
     recommendation = plan.json()["recommendations"][0]
     assert recommendation["quizTopic"] == "chlorophyll"
@@ -582,27 +562,25 @@ def test_release_journey_upload_to_diagram_quiz_coach_analytics_and_source_delet
     assert any("incorrect" in reason for reason in recommendation["reasons"])
     assert any("study session" in reason for reason in recommendation["reasons"])
 
-    analytics = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/learning-analytics"))
+    analytics = client.get("/api/v1/learning-analytics")
     assert analytics.json()["totals"]["attemptCount"] == 1
     assert analytics.json()["totals"]["completedStudySessions"] == 1
-    removed = asyncio.run(request_with_lifespan(app, "DELETE", f"/api/v1/documents/{document_id}"))
+    removed = client.delete(f"/api/v1/documents/{document_id}")
     assert removed.status_code == 200
-    after_delete = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/study-coach/plan"))
+    after_delete = client.get("/api/v1/study-coach/plan")
     assert after_delete.json()["recommendations"] == []
-    after_analytics = asyncio.run(request_with_lifespan(app, "GET", "/api/v1/learning-analytics"))
+    after_analytics = client.get("/api/v1/learning-analytics")
     assert after_analytics.json()["totals"]["attemptCount"] == 0
     assert after_analytics.json()["totals"]["completedStudySessions"] == 1
 
 
 def test_quiz_without_retrieved_evidence_does_not_call_model(tmp_path):
-    app = create_app(make_settings(tmp_path))
-    response = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/quizzes",
-            json={"topic": "unsupported subject", "questionCount": 2},
-        )
+    _, client, _, settings = post_pdf(
+        tmp_path, make_pdf("The quick brown fox jumps over the lazy dog.")
+    )
+    response = client.post(
+        "/api/v1/quizzes",
+        json={"topic": "unsupported subject", "questionCount": 2},
     )
     assert response.status_code == 200
     assert response.json()["status"] == "insufficient_evidence"
@@ -610,15 +588,12 @@ def test_quiz_without_retrieved_evidence_does_not_call_model(tmp_path):
 
 
 def test_quiz_requires_local_model_when_evidence_exists(tmp_path):
-    post_pdf(tmp_path, make_pdf("Chlorophyll absorbs light energy in leaves."))
-    app = create_app(make_settings(tmp_path))
-    response = asyncio.run(
-        request_with_lifespan(
-            app,
-            "POST",
-            "/api/v1/quizzes",
-            json={"topic": "chlorophyll", "questionCount": 1},
-        )
+    _, client, _, settings = post_pdf(
+        tmp_path, make_pdf("Chlorophyll absorbs light energy in leaves.")
+    )
+    response = client.post(
+        "/api/v1/quizzes",
+        json={"topic": "chlorophyll", "questionCount": 1},
     )
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "TUTOR_MODEL_UNAVAILABLE"

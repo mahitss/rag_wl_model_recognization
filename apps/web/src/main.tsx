@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useRef, useState, type CSSProperties } from "react";
+import { StrictMode, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { CameraPanel } from "./CameraPanel";
 import { normalizedRegionStyle } from "./geometry";
@@ -189,7 +189,197 @@ async function readJson<T>(response: Response): Promise<T> {
   return body as T;
 }
 
+type SessionUser = { userId: string; username: string; expiresAt: string };
+
+let csrfToken: string | null = null;
+
+const fetch: typeof globalThis.fetch = async (input, init = {}) => {
+  const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
+  const url = input instanceof Request ? input.url : String(input);
+  const headers = new Headers(init.headers);
+  if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes(method)) {
+    if (!csrfToken) {
+      const tokenResponse = await globalThis.fetch("/api/v1/auth/csrf-token", {
+        credentials: "same-origin",
+      });
+      if (!tokenResponse.ok) throw new Error("Could not initialize request protection.");
+      const tokenBody = (await tokenResponse.json()) as { csrfToken?: string };
+      if (!tokenBody.csrfToken) throw new Error("Could not initialize request protection.");
+      csrfToken = tokenBody.csrfToken;
+    }
+    headers.set("X-CSRF-Token", csrfToken);
+  }
+
+  const response = await globalThis.fetch(input, {
+    ...init,
+    credentials: init.credentials ?? "same-origin",
+    headers,
+  });
+  if (response.status === 401 && !url.includes("/api/v1/auth/")) {
+    window.dispatchEvent(new Event("wonderlearn:session-expired"));
+  }
+  return response;
+};
+
+function AuthScreen() {
+  const [session, setSession] = useState<SessionUser | null>(null);
+  const [checkingSession, setCheckingSession] = useState(true);
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authMessage, setAuthMessage] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    const expired = () => {
+      csrfToken = null;
+      setSession(null);
+      setAuthMessage("Your session has expired. Please sign in again.");
+    };
+    window.addEventListener("wonderlearn:session-expired", expired);
+    void fetch("/api/v1/auth/me")
+      .then(async (response) => {
+        if (response.status === 401) return null;
+        return readJson<SessionUser>(response);
+      })
+      .then((current) => {
+        if (active) setSession(current);
+      })
+      .catch(() => {
+        if (active) setAuthError("Could not check your session. Please try again.");
+      })
+      .finally(() => {
+        if (active) setCheckingSession(false);
+      });
+    return () => {
+      active = false;
+      window.removeEventListener("wonderlearn:session-expired", expired);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!session) return;
+    const expiresAt = Date.parse(session.expiresAt);
+    let timer = 0;
+    const expireWhenDue = () => {
+      const remaining = expiresAt - Date.now();
+      if (remaining <= 0) {
+        window.dispatchEvent(new Event("wonderlearn:session-expired"));
+      } else {
+        timer = window.setTimeout(expireWhenDue, Math.min(remaining, 2_147_483_647));
+      }
+    };
+    expireWhenDue();
+    return () => window.clearTimeout(timer);
+  }, [session]);
+
+  async function submitCredentials(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setAuthError(null);
+    setAuthMessage(null);
+    try {
+      const response = await fetch(`/api/v1/auth/${mode === "login" ? "login" : "register"}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: username.trim(), password }),
+      });
+      if (mode === "register") {
+        if (!response.ok) throw new Error("Registration could not be completed.");
+        setMode("login");
+        setPassword("");
+        setAuthMessage("If the account can be registered, you can try signing in.");
+      } else if (!response.ok) {
+        setAuthError("Sign-in failed. Check your username and password.");
+      } else {
+        setSession(await response.json() as SessionUser);
+        setPassword("");
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Authentication could not be completed.");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function logout() {
+    try {
+      const response = await fetch("/api/v1/auth/logout", { method: "POST" });
+      if (!response.ok) throw new Error("Sign out could not be completed.");
+      csrfToken = null;
+      setSession(null);
+      setAuthMessage("You have signed out.");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Sign out could not be completed.");
+    }
+  }
+
+  if (checkingSession) {
+    return <main className="auth-shell" aria-live="polite">Checking your session…</main>;
+  }
+  if (session) return <LearningApp username={session.username} onLogout={() => void logout()} />;
+
+  return (
+    <main className="auth-shell">
+      <section className="auth-card" aria-labelledby="auth-title">
+        <p className="eyebrow">WonderLearn · private study space</p>
+        <h1 id="auth-title">{mode === "login" ? "Sign in" : "Create your account"}</h1>
+        <p className="muted">Your study materials and learning history are private to your account.</p>
+        {authMessage && <p className="notice" role="status">{authMessage}</p>}
+        {authError && <p className="notice notice--error" role="alert">{authError}</p>}
+        <form className="auth-form" onSubmit={(event) => void submitCredentials(event)}>
+          <label htmlFor="auth-username">Username</label>
+          <input
+            id="auth-username"
+            name="username"
+            autoComplete="username"
+            minLength={3}
+            maxLength={64}
+            required
+            value={username}
+            onChange={(event) => setUsername(event.currentTarget.value)}
+          />
+          <label htmlFor="auth-password">Password</label>
+          <input
+            id="auth-password"
+            name="password"
+            type="password"
+            autoComplete={mode === "login" ? "current-password" : "new-password"}
+            minLength={8}
+            maxLength={128}
+            required
+            value={password}
+            onChange={(event) => setPassword(event.currentTarget.value)}
+          />
+          <button type="submit" disabled={submitting}>
+            {submitting ? "Please wait…" : mode === "login" ? "Sign in" : "Register"}
+          </button>
+        </form>
+        <p>
+          {mode === "login" ? "New to WonderLearn?" : "Already registered?"}{" "}
+          <button
+            type="button"
+            className="text-button"
+            onClick={() => {
+              setMode(mode === "login" ? "register" : "login");
+              setAuthError(null);
+            }}
+          >
+            {mode === "login" ? "Create an account" : "Sign in instead"}
+          </button>
+        </p>
+      </section>
+    </main>
+  );
+}
+
 export function App() {
+  return <AuthScreen />;
+}
+
+function LearningApp({ username, onLogout }: { username: string; onLogout: () => void }) {
   const [diagram, setDiagram] = useState<Diagram | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<DiagramRegion | null>(null);
@@ -803,6 +993,10 @@ export function App() {
     <main className="page" id="main-content" tabIndex={-1}>
       <a href="#main-content" className="skip-link" onClick={(event) => { event.preventDefault(); document.getElementById("main-content")?.focus(); }}>Skip to main content</a>
       <header className="page-header">
+        <div className="session-controls">
+          <span>Signed in as <strong>{username}</strong></span>
+          <button type="button" onClick={onLogout}>Sign out</button>
+        </div>
         <p className="eyebrow">WonderLearn · curated diagram</p>
         <h1>Explore a concept</h1>
         <p className="description">

@@ -1,8 +1,8 @@
 import asyncio
 import io
 
-import httpx
 import pytest
+from auth_helpers import authenticated_request, prepare_test_account
 from PIL import Image
 
 from app.config import Settings
@@ -28,11 +28,7 @@ def make_settings(tmp_path, **overrides):
 
 
 async def request(app, method, path, **kwargs):
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            return await client.request(method, path, **kwargs)
+    return await authenticated_request(app, method, path, **kwargs)
 
 
 def upload(app, data, *, filename="lesson.png", media_type="image/png"):
@@ -131,6 +127,7 @@ def test_upload_validation_region_ocr_retrieval_provenance_and_deletion(tmp_path
     settings = make_settings(tmp_path)
     seed_document(settings.database_path)
     app = create_app(settings)
+    user_id = prepare_test_account(app)
     monkeypatch.setattr(
         "app.api.v1.routes.recognize_text", lambda _content: ("available", "water evaporates")
     )
@@ -260,7 +257,7 @@ def test_upload_validation_region_ocr_retrieval_provenance_and_deletion(tmp_path
     assert tutor.json()["regionId"] == region_id
     assert tutor.json()["citations"][0]["citationId"] == "chunk_image_source"
 
-    assert delete_document(settings.database_path, "doc_image_source")
+    assert delete_document(settings.database_path, "doc_image_source", user_id=user_id)
     after_source_delete = asyncio.run(request(app, "GET", f"/api/v1/images/{image_id}"))
     assert after_source_delete.status_code == 200
     assert after_source_delete.json()["regions"][0]["citations"] == []

@@ -1,7 +1,7 @@
 import asyncio
 
-import httpx
 import pytest
+from auth_helpers import authenticated_request
 from pydantic import ValidationError
 
 from app.config import Settings
@@ -27,11 +27,7 @@ def make_settings(tmp_path, **overrides):
 
 
 async def request_with_lifespan(app, method, path, **kwargs):
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            return await client.request(method, path, **kwargs)
+    return await authenticated_request(app, method, path, **kwargs)
 
 
 def seed_chunk(

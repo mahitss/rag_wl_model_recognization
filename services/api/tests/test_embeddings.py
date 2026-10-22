@@ -4,8 +4,8 @@ import math
 import sqlite3
 from datetime import UTC, datetime
 
-import httpx
 import pytest
+from auth_helpers import authenticated_request, prepare_test_account
 from pydantic import ValidationError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
@@ -429,17 +429,15 @@ def test_embedding_status_and_rebuild_endpoints_use_injected_offline_model(tmp_p
     app.state.embedding_service = service
 
     async def run():
-        async with app.router.lifespan_context(app):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                before = await client.get("/api/v1/embeddings/status")
-                rebuilt = await client.post("/api/v1/embeddings/rebuild", json={})
-                after = await client.get("/api/v1/embeddings/status")
-                semantic = await client.post(
-                    "/api/v1/retrieve",
-                    json={"query": "plants use sunlight", "mode": "semantic"},
-                )
+        before = await authenticated_request(app, "GET", "/api/v1/embeddings/status")
+        rebuilt = await authenticated_request(app, "POST", "/api/v1/embeddings/rebuild", json={})
+        after = await authenticated_request(app, "GET", "/api/v1/embeddings/status")
+        semantic = await authenticated_request(
+            app,
+            "POST",
+            "/api/v1/retrieve",
+            json={"query": "plants use sunlight", "mode": "semantic"},
+        )
         return before, rebuilt, after, semantic
 
     before, rebuilt, after, semantic = asyncio.run(run())
@@ -459,22 +457,21 @@ def test_semantic_mode_upload_attempts_embedding_without_breaking_ingestion(tmp_
     app.state.embedding_service = service
 
     async def run():
-        async with app.router.lifespan_context(app):
-            async with httpx.AsyncClient(
-                transport=httpx.ASGITransport(app=app), base_url="http://test"
-            ) as client:
-                return await client.post(
-                    "/api/v1/documents",
-                    files={
-                        "file": (
-                            "plant.pdf",
-                            make_text_pdf("Photosynthesis uses sunlight."),
-                            "application/pdf",
-                        )
-                    },
+        return await authenticated_request(
+            app,
+            "POST",
+            "/api/v1/documents",
+            files={
+                "file": (
+                    "plant.pdf",
+                    make_text_pdf("Photosynthesis uses sunlight."),
+                    "application/pdf",
                 )
+            },
+        )
 
     response = asyncio.run(run())
     assert response.status_code == 201
     assert response.json()["embeddingStatus"] == "indexed"
-    assert service.status(settings.database_path)["index"]["current_chunks"] == 1
+    user_id = prepare_test_account(app)
+    assert service.status(settings.database_path, user_id=user_id)["index"]["current_chunks"] == 1

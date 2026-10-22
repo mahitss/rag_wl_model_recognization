@@ -33,6 +33,64 @@ button {
   margin-bottom: 2.5rem;
 }
 
+.session-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+  font-size: 0.9rem;
+}
+
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 1.25rem;
+}
+
+.auth-card {
+  width: min(100%, 30rem);
+  padding: clamp(1.5rem, 5vw, 2.5rem);
+  border: 1px solid #d8ddd4;
+  border-radius: 1rem;
+  background: #fffefa;
+  box-shadow: 0 1rem 3rem rgb(24 51 45 / 8%);
+}
+
+.auth-card h1 {
+  font-size: clamp(2rem, 6vw, 3rem);
+}
+
+.auth-form {
+  display: grid;
+  gap: 0.65rem;
+  margin: 1.5rem 0 1rem;
+}
+
+.auth-form input {
+  min-height: 2.75rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid #83968d;
+  border-radius: 0.35rem;
+  color: inherit;
+  font: inherit;
+}
+
+.auth-form input:focus-visible {
+  outline: 3px solid #b96d23;
+  outline-offset: 2px;
+}
+
+.text-button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #205e49;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .eyebrow {
   margin: 0 0 0.65rem;
   color: #55766a;

@@ -150,7 +150,7 @@ class EmbeddingService:
             all_vectors.extend(vectors)
         return all_vectors
 
-    def status(self, database_path: Path) -> dict[str, Any]:
+    def status(self, database_path: Path, *, user_id: str | None = None) -> dict[str, Any]:
         return {
             "modelId": self.settings.embedding_model_id,
             "modelRevision": self.settings.embedding_model_revision,
@@ -160,10 +160,17 @@ class EmbeddingService:
                 database_path,
                 config_hash=embedding_config_hash(self.settings),
                 dimensions=self.settings.embedding_dimensions,
+                user_id=user_id,
             ),
         }
 
-    def rebuild(self, database_path: Path, *, force: bool = False) -> dict[str, Any]:
+    def rebuild(
+        self,
+        database_path: Path,
+        *,
+        force: bool = False,
+        user_id: str | None = None,
+    ) -> dict[str, Any]:
         config_hash = embedding_config_hash(self.settings)
         cursor: str | None = None
         indexed = 0
@@ -172,6 +179,7 @@ class EmbeddingService:
                 database_path,
                 after_chunk_id=cursor,
                 limit=self.settings.embedding_batch_size,
+                user_id=user_id,
             )
             if not batch:
                 break
@@ -200,9 +208,9 @@ class EmbeddingService:
                 }
                 for chunk, vector in zip(pending, vectors, strict=True)
             ]
-            store_chunk_embeddings(database_path, entries)
+            store_chunk_embeddings(database_path, entries, user_id=user_id)
             indexed += len(entries)
-        status = self.status(database_path)
+        status = self.status(database_path, user_id=user_id)
         status["indexedThisRun"] = indexed
         status["complete"] = status["index"]["missing_chunks"] == 0
         return status

@@ -60,6 +60,12 @@ and override as needed.  `.env` is gitignored — never commit it.
 | Variable | Default | Description |
 |---|---|---|
 | `WL_ENVIRONMENT` | `development` | `development` or `production`. Affects CORS rules and startup warnings. |
+| `WL_RATE_LIMIT_ENABLED` | `true` | Must remain enabled in production. Limits are per process and reset on restart. |
+| `WL_RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | General per-IP/path request budget. |
+| `WL_AUTH_RATE_LIMIT_REQUESTS_PER_MINUTE` | `10` | Per-IP/path budget for authentication endpoints. |
+| `WL_EXPENSIVE_RATE_LIMIT_REQUESTS_PER_MINUTE` | `10` | Per-IP/path budget for upload and expensive processing endpoints. |
+| `WL_MAX_REQUEST_BODY_BYTES` | `12582912` | Maximum streamed request size (12 MiB); production requires a finite value. |
+| `WL_SESSION_TTL_SECONDS` | `2592000` | Session lifetime (30 days). |
 | `WL_LOG_LEVEL` | `INFO` | Structured log level: `DEBUG`, `INFO`, `WARNING`, `ERROR`. |
 | `WL_API_HOST` | `127.0.0.1` | Host uvicorn binds to. Use `0.0.0.0` only behind a trusted reverse proxy. |
 | `WL_API_PORT` | `8000` | Port uvicorn listens on. |

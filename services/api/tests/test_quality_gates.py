@@ -147,9 +147,7 @@ def test_multi_chunk_queries_return_multiple_relevant_chunks(tmp_path):
         retrieved_ids = {row["citationId"] for row in response["results"]}
         expected = set(query_case["relevant"])
         overlap = retrieved_ids & expected
-        assert len(overlap) >= 2, (
-            "Multi-chunk query retrieved too few expected chunks"
-        )
+        assert len(overlap) >= 2, "Multi-chunk query retrieved too few expected chunks"
 
 
 def test_unanswerable_queries_abstain_when_no_results(tmp_path):
@@ -218,9 +216,7 @@ def test_page_provenance_queries_return_correct_page(tmp_path):
         response = _retrieve(settings, settings.database_path, query_case["query"])
         retrieved_ids = {row["citationId"] for row in response["results"]}
         expected = set(query_case["relevant"])
-        assert retrieved_ids & expected, (
-            "Page-provenance query missed expected chunks"
-        )
+        assert retrieved_ids & expected, "Page-provenance query missed expected chunks"
 
 
 def test_quiz_answer_keys_score_correct(tmp_path):

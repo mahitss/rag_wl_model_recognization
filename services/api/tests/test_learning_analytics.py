@@ -1,8 +1,8 @@
 import asyncio
 from datetime import UTC, datetime
 
-import httpx
 import pytest
+from auth_helpers import authenticated_request, prepare_test_account
 
 from app.config import Settings
 from app.learning_analytics import build_analytics, calculate_mastery
@@ -115,11 +115,7 @@ def test_analytics_empty_history_is_zero_and_review_due_boundary_is_inclusive():
 
 
 async def request(app, method, path, **kwargs):
-    async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
-            return await client.request(method, path, **kwargs)
+    return await authenticated_request(app, method, path, **kwargs)
 
 
 def seed_document(database_path):
@@ -186,6 +182,7 @@ def test_analytics_api_persists_attempts_sessions_citations_and_respects_source_
         created_at="2026-04-01T12:00:00+00:00",
     )
     app = create_app(settings)
+    user_id = prepare_test_account(app)
     rejected = asyncio.run(request(app, "POST", "/api/v1/study-sessions", json={"topic": "  "}))
     assert rejected.status_code == 422
     started = asyncio.run(
@@ -207,8 +204,8 @@ def test_analytics_api_persists_attempts_sessions_citations_and_respects_source_
     assert body["topics"][0]["citations"][0]["retrieval"]["rank"] == 1
     assert any(item["kind"] == "study_session" for item in body["recentActivity"])
 
-    assert delete_document(settings.database_path, "doc_analytics")
-    after_delete_data = get_learning_analytics_data(settings.database_path)
+    assert delete_document(settings.database_path, "doc_analytics", user_id=user_id)
+    after_delete_data = get_learning_analytics_data(settings.database_path, user_id=user_id)
     after_delete = build_analytics(
         attempts=after_delete_data["attempts"],
         sessions=after_delete_data["sessions"],

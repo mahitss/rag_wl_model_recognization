@@ -149,15 +149,37 @@ const coachPlanFixture: TestCoachPlan = {
   recommendations: [{ recommendationId: "coach-photo", planDate: "2026-10-19", topicId: "topic-photo", topic: "Photosynthesis", title: "Review Photosynthesis", priority: 140, reasons: ["1 review is overdue."], graphConceptId: null, relatedConceptIds: [], status: "planned", estimatedMinutes: 20, citations: evidenceResponse.results, quizTopic: "Photosynthesis" }],
 };
 
-function installFetchMock(configured = true, initialPlan: TestCoachPlan = { ...coachPlanFixture, recommendations: [], emptyReason: "No quiz attempts are recorded yet." }) {
+function installFetchMock(
+  configured = true,
+  initialPlan: TestCoachPlan = { ...coachPlanFixture, recommendations: [], emptyReason: "No quiz attempts are recorded yet." },
+  initiallySignedIn = true,
+) {
   let progressResult = emptyProgress;
   let analyticsResult = analyticsFixture;
   let coachPlan = structuredClone(initialPlan);
   let imageResult = { ...uploadedImageFixture, regions: [...uploadedImageFixture.regions] };
   let imageExists = false;
+  let signedIn = initiallySignedIn;
   let graphRelationshipStatus: "candidate" | "human_verified" = "candidate";
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
+    if (url === "/api/v1/auth/csrf-token") return jsonResponse({ csrfToken: "test-csrf-token" });
+    if (url === "/api/v1/auth/me") {
+      return signedIn
+        ? jsonResponse({ userId: "user-test", username: "learner", expiresAt: "2099-01-01T00:00:00+00:00" })
+        : { ok: false, status: 401, json: async () => ({ error: { message: "Unauthorized" } }) } as Response;
+    }
+    if (url === "/api/v1/auth/register") {
+      return { ...jsonResponse({ message: "If the account can be registered, you can try signing in." }), status: 202 } as Response;
+    }
+    if (url === "/api/v1/auth/login") {
+      signedIn = true;
+      return jsonResponse({ userId: "user-test", username: "learner", expiresAt: "2099-01-01T00:00:00+00:00" });
+    }
+    if (url === "/api/v1/auth/logout") {
+      signedIn = false;
+      return jsonResponse({ message: "Logged out." });
+    }
     if (url === "/api/v1/diagrams") return jsonResponse(diagramResponse);
     if (url === "/api/v1/documents") {
       return jsonResponse({ documents: [{ documentId: "doc_stored_003", displayFilename: "biology-notes.pdf" }] });
@@ -353,6 +375,7 @@ describe("camera selection evidence flow", () => {
         documentIds: ["doc_stored_003"],
       }),
     });
+
   });
 
   it("shows a clear unavailable state when no local model is configured", async () => {
@@ -426,7 +449,7 @@ describe("camera selection evidence flow", () => {
     const fetchMock = installFetchMock();
     render(<App />);
     await screen.findByRole("heading", { name: "Learning analytics" });
-    expect(screen.getByText("No scored answers")).not.toBeNull();
+    expect(await screen.findByText("No scored answers")).not.toBeNull();
     expect(screen.getByText(/No quiz attempts or completed study sessions are recorded yet/)).not.toBeNull();
     await user.type(screen.getByLabelText("Study session topic"), "Photosynthesis");
     await user.click(screen.getByRole("button", { name: "Start session" }));
@@ -442,6 +465,7 @@ describe("camera selection evidence flow", () => {
     const user = userEvent.setup();
     const fetchMock = installFetchMock();
     render(<App />);
+    await screen.findByRole("heading", { name: "Explore a concept" });
     const file = new File(["test image bytes"], "biology-diagram.png", { type: "image/png" });
     await user.upload(screen.getByLabelText("Upload an educational image"), file);
     expect(await screen.findByText(/Local OCR extracted text from this image/)).not.toBeNull();
@@ -460,6 +484,26 @@ describe("camera selection evidence flow", () => {
 
     await user.click(screen.getByRole("button", { name: "Delete uploaded image" }));
     expect(await screen.findByText(/Upload a PNG or JPEG image/)).not.toBeNull();
+  });
+
+  it("requires an account and supports registration before opening private study data", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock(true, undefined, false);
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Sign in" });
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/v1/documents")).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Create an account" }));
+    await user.type(screen.getByLabelText("Username"), "learner");
+    await user.type(screen.getByLabelText("Password"), "strong-password-123");
+    await user.click(screen.getByRole("button", { name: "Register" }));
+    expect((await screen.findByRole("status")).textContent).toContain(
+      "If the account can be registered, you can try signing in.",
+    );
+    await user.type(screen.getByLabelText("Password"), "strong-password-123");
+    await user.click(screen.getByRole("button", { name: "Sign in" }));
+    await screen.findByRole("heading", { name: "Explore a concept" });
+    expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/v1/documents")).toBe(true);
   });
 });
 
@@ -501,6 +545,7 @@ describe("accessibility", () => {
   it("exposes a skip-to-content link that reaches main content when activated", async () => {
     const user = userEvent.setup();
     render(<App />);
+    await screen.findByRole("heading", { name: "Explore a concept" });
 
     const skipLink = screen.getByRole("link", { name: "Skip to main content" });
     expect(skipLink).not.toBeNull();

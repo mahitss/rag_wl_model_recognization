@@ -68,6 +68,11 @@ Settings use the `WL_` prefix and load `.env` from the current working directory
 
 - `WL_DATABASE_PATH`: SQLite file path. Default: `data/local/wonderlearn.sqlite3`.
 - `WL_CORS_ORIGINS`: comma-separated local HTTP origins. Default allows Vite at localhost and 127.0.0.1 port 5173. Non-local origins are rejected.
+- `WL_ENVIRONMENT`: `development` by default; use `production` only behind HTTPS with HTTPS CORS origins.
+- `WL_RATE_LIMIT_ENABLED`: defaults to `true`; production refuses to start with rate limiting disabled.
+- `WL_RATE_LIMIT_REQUESTS_PER_MINUTE`, `WL_AUTH_RATE_LIMIT_REQUESTS_PER_MINUTE`, `WL_EXPENSIVE_RATE_LIMIT_REQUESTS_PER_MINUTE`: per-IP/path request budgets. Rate limiting is in-memory and per process.
+- `WL_MAX_REQUEST_BODY_BYTES`: defaults to 12 MiB; production requires a finite request-body limit.
+- `WL_SESSION_TTL_SECONDS`: session lifetime; defaults to 30 days.
 - `WL_MAX_UPLOAD_BYTES`: maximum PDF upload size. Default: 10485760 (10 MiB).
 - `WL_MAX_IMAGE_UPLOAD_BYTES`: maximum PNG/JPEG upload size. Default: 10485760 (10 MiB).
 - `WL_MAX_IMAGE_DIMENSION`: maximum width or height after EXIF orientation. Default: 4096 pixels.
@@ -87,6 +92,8 @@ Settings use the `WL_` prefix and load `.env` from the current working directory
 - `WL_SEMANTIC_MIN_SIMILARITY`: cosine cutoff used to abstain from weak semantic matches. Default: 0.60; this initial cutoff is based on a small synthetic set and is not a factual-confidence score.
 
 Lexical retrieval works with the default setup. To install optional semantic runtime support and explicitly cache its model, follow the [semantic retrieval guide](semantic-retrieval.md). No model is downloaded by normal setup or API startup.
+
+Authentication, CSRF, user-owned data, legacy database migration behavior, and deployment constraints are described in the [security guide](../security.md).
 
 ## Optional local AI tutor
 

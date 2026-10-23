@@ -118,6 +118,22 @@ type StudyCoachPlan = {
   planDate: string; recommendations: StudyCoachRecommendation[]; emptyReason: string | null; methodology: string;
 };
 
+type ProductAnalyticsFeature = {
+  feature: string;
+  eventCount: number;
+  successRate: number;
+  positiveOutcomes: number;
+};
+type ProductAnalyticsSummary = {
+  generatedAt: string;
+  enabled: boolean;
+  windowDays: number;
+  totals: { eventCount: number; successCount: number; failureCount: number; featureCount: number };
+  features: ProductAnalyticsFeature[];
+  trends: { date: string; eventCount: number; successCount: number; failureCount: number }[];
+  privacy: { retentionDays: number; rawContent: string; identifiers: string };
+};
+
 type NormalizedRegion = { x: number; y: number; width: number; height: number };
 type LearningImageRegion = {
   regionId: string;
@@ -187,6 +203,23 @@ async function readJson<T>(response: Response): Promise<T> {
     throw new Error(error.error?.message ?? `Request failed (${response.status}).`);
   }
   return body as T;
+}
+
+async function recordProductAnalyticsEvent(
+  eventName: string,
+  feature: string,
+  result: "success" | "failure" | "abstained" | "accepted" | "dismissed" | "started" | "completed",
+  metadata: Record<string, string | number | boolean | null> = {},
+) {
+  try {
+    await fetch("/api/v1/product-analytics/events", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ eventName, feature, result, metadata }),
+    });
+  } catch {
+    // Intentionally non-blocking: product analytics must never disrupt user workflows.
+  }
 }
 
 type SessionUser = { userId: string; username: string; expiresAt: string };
@@ -405,6 +438,7 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
   const [analytics, setAnalytics] = useState<LearningAnalytics | null>(null);
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
+  const [productAnalytics, setProductAnalytics] = useState<ProductAnalyticsSummary | null>(null);
   const [sessionTopic, setSessionTopic] = useState("");
   const [studyPlan, setStudyPlan] = useState<StudyCoachPlan | null>(null);
   const [studyPlanError, setStudyPlanError] = useState<string | null>(null);
@@ -495,6 +529,12 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
       .catch((error: unknown) => {
         if (active) setAnalyticsError(error instanceof Error ? error.message : "Could not load learning analytics.");
       });
+    fetch("/api/v1/product-analytics")
+      .then((response) => readJson<ProductAnalyticsSummary>(response))
+      .then((result) => { if (active) setProductAnalytics(result); })
+      .catch(() => {
+        if (active) setProductAnalytics(null);
+      });
     fetch("/api/v1/study-coach/plan")
       .then((response) => readJson<StudyCoachPlan>(response))
       .then((result) => { if (active) setStudyPlan(result); })
@@ -563,6 +603,11 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
       const document = await readJson<IndexedDocument>(response);
       setDocuments((current) => [document, ...current.filter((item) => item.documentId !== document.documentId)]);
       setSelectedDocumentId(document.documentId);
+      void recordProductAnalyticsEvent("document_upload_completed", "documents", "success", {
+        documentId: document.documentId,
+        filename: file.name,
+        byteSize: file.size,
+      });
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : "Could not upload the PDF.");
     } finally {
@@ -608,6 +653,11 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
       setSelectedImageRegionId(null);
       setImageEvidence(null);
       setImageTutorResult(null);
+      void recordProductAnalyticsEvent("image_upload_completed", "images", "success", {
+        imageId: image.imageId,
+        filename: file.name,
+        byteSize: file.size,
+      });
     } catch (error) {
       setImageError(error instanceof Error ? error.message : "Could not upload this image.");
     } finally {
@@ -1482,6 +1532,25 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
               )}
             </section>
           </section>
+        </section>
+      )}
+      {productAnalytics && (
+        <section className="analytics-panel" aria-labelledby="product-analytics-title">
+          <div className="analytics-heading">
+            <div>
+              <p className="eyebrow">Privacy-safe feature usage</p>
+              <h2 id="product-analytics-title">Product analytics snapshot</h2>
+            </div>
+          </div>
+          <p className="muted">{productAnalytics.totals.eventCount} product events tracked over the last {productAnalytics.windowDays} days.</p>
+          <ul className="progress-topics">
+            {productAnalytics.features.slice(0, 5).map((feature) => (
+              <li key={feature.feature}>
+                <span><strong>{feature.feature}</strong> · {feature.eventCount} events</span>
+                <span>{Math.round(feature.successRate * 100)}% success</span>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
       <section className="study-coach" aria-labelledby="study-coach-title">

@@ -1313,6 +1313,7 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "httpx" },
+    { name = "pytesseract" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -1333,6 +1334,7 @@ requires-dist = [
     { name = "pillow", specifier = "==11.3.0" },
     { name = "pydantic-settings", specifier = "==2.16.0" },
     { name = "pypdf", specifier = "==6.21.1" },
+    { name = "pytesseract", marker = "extra == 'dev'", specifier = "==0.3.13" },
     { name = "pytesseract", marker = "extra == 'ocr'", specifier = "==0.3.13" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.1.1" },
     { name = "python-multipart", specifier = "==0.0.32" },

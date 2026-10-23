@@ -2,12 +2,13 @@
 # ruff: noqa: E501
 
 import hashlib
+import json
 import math
 import secrets
 import sqlite3
 import struct
 from contextlib import closing
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +164,179 @@ def cleanup_expired_sessions(database_path: Path) -> int:
                 (datetime.now(UTC).isoformat(),),
             )
             return cursor.rowcount
+
+
+def _sanitize_product_analytics_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Keep analytics payloads limited to non-sensitive operational fields."""
+    if not isinstance(metadata, dict):
+        return {}
+    blocked = {
+        "password",
+        "passphrase",
+        "session",
+        "token",
+        "cookie",
+        "secret",
+        "answer",
+        "prompt",
+        "document_name",
+        "document_content",
+        "raw_text",
+        "image_data",
+        "camera",
+        "attachment",
+    }
+    sanitized: dict[str, Any] = {}
+    for key, value in metadata.items():
+        if not isinstance(key, str):
+            continue
+        normalized = key.lower().replace("-", "_")
+        if any(token in normalized for token in blocked):
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            sanitized[key] = value
+        elif isinstance(value, (list, tuple)):
+            sanitized[key] = [
+                item for item in value if isinstance(item, (str, int, float, bool)) or item is None
+            ]
+        elif isinstance(value, dict):
+            nested = _sanitize_product_analytics_metadata(value)
+            if nested:
+                sanitized[key] = nested
+    return sanitized
+
+
+def record_product_event(
+    database_path: Path,
+    *,
+    user_id: str | None,
+    event_name: str,
+    feature: str,
+    result: str,
+    category: str = "feature",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Persist a minimal, privacy-safe event for user-specific adoption metrics."""
+    safe_event = event_name.strip()
+    safe_feature = feature.strip()
+    if not safe_event or not safe_feature:
+        raise ValueError("event_name and feature must be non-empty")
+    if result not in {"success", "failure", "abstained", "accepted", "dismissed", "started", "completed"}:
+        raise ValueError("Unsupported analytics result")
+    payload = _sanitize_product_analytics_metadata(metadata)
+    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO product_events(
+                    event_id, user_id, event_name, feature, result, category, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"event_{secrets.token_urlsafe(16)}",
+                    user_id,
+                    safe_event,
+                    safe_feature,
+                    result,
+                    category,
+                    json.dumps(payload, separators=(",", ":"), sort_keys=True),
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+
+def prune_product_events(database_path: Path, *, retention_days: int) -> int:
+    """Delete expired product analytics rows while preserving the user-owned structure."""
+    if retention_days <= 0:
+        return 0
+    cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
+    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+        with connection:
+            cursor = connection.execute(
+                "DELETE FROM product_events WHERE created_at <= ?",
+                (cutoff,),
+            )
+            return cursor.rowcount
+
+
+def get_product_analytics_snapshot(database_path: Path, *, user_id: str, window_days: int = 30) -> dict[str, Any]:
+    """Return per-user aggregated product analytics without exposing raw content."""
+    window_days = max(1, window_days)
+    cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
+    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+        rows = connection.execute(
+            """
+            SELECT feature, event_name, result, COUNT(*) AS event_count
+            FROM product_events
+            WHERE user_id = ? AND created_at >= ?
+            GROUP BY feature, event_name, result
+            ORDER BY feature ASC, event_name ASC
+            """,
+            (user_id, cutoff),
+        ).fetchall()
+        daily_rows = connection.execute(
+            """
+            SELECT substr(created_at, 1, 10) AS event_date,
+                   COUNT(*) AS event_count,
+                   SUM(CASE WHEN result IN ('success', 'accepted', 'completed') THEN 1 ELSE 0 END) AS success_count,
+                   SUM(CASE WHEN result IN ('failure', 'dismissed') THEN 1 ELSE 0 END) AS failure_count
+            FROM product_events
+            WHERE user_id = ? AND created_at >= ?
+            GROUP BY substr(created_at, 1, 10)
+            ORDER BY event_date ASC
+            """,
+            (user_id, cutoff),
+        ).fetchall()
+    feature_totals: dict[str, dict[str, float | int]] = {}
+    for row in rows:
+        feature = row["feature"]
+        payload = feature_totals.setdefault(feature, {"event_count": 0, "success_count": 0})
+        payload["event_count"] = int(payload["event_count"]) + int(row["event_count"])
+        if row["result"] in {"success", "accepted", "completed"}:
+            payload["success_count"] = int(payload["success_count"]) + int(row["event_count"])
+    features = []
+    for feature_name, counts in sorted(feature_totals.items()):
+        total = int(counts["event_count"])
+        success_count = int(counts["success_count"])
+        features.append(
+            {
+                "feature": feature_name,
+                "event_count": total,
+                "success_rate": round((success_count / total) if total else 0.0, 4),
+                "positive_outcomes": success_count,
+            }
+        )
+    trend = [
+        {
+            "date": row["event_date"],
+            "event_count": int(row["event_count"]),
+            "success_count": int(row["success_count"] or 0),
+            "failure_count": int(row["failure_count"] or 0),
+        }
+        for row in daily_rows
+    ]
+    total_events = sum(item["event_count"] for item in features)
+    total_successes = sum(item["positive_outcomes"] for item in features)
+    return {
+        "generated_at": datetime.now(UTC).isoformat(),
+        "enabled": True,
+        "window_days": window_days,
+        "totals": {
+            "event_count": total_events,
+            "success_count": total_successes,
+            "failure_count": sum(
+                item["event_count"] - item["positive_outcomes"] for item in features
+            ),
+            "feature_count": len(features),
+        },
+        "features": features,
+        "trends": trend,
+        "privacy": {
+            "retention_days": window_days,
+            "raw_content": "not_collected",
+            "identifiers": "user_id_only_for_personalized_views",
+        },
+    }
 
 
 def initialize_storage(database_path: Path) -> None:
@@ -546,6 +720,29 @@ def initialize_storage(database_path: Path) -> None:
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_user_sessions_expires_at "
                 "ON user_sessions(expires_at)"
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS product_events (
+                    event_id TEXT PRIMARY KEY,
+                    user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE,
+                    event_name TEXT NOT NULL,
+                    feature TEXT NOT NULL,
+                    result TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_product_events_user_id ON product_events(user_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_product_events_created_at ON product_events(created_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_product_events_feature ON product_events(feature)"
             )
             # Indexes on user_id columns for query performance
             connection.execute(

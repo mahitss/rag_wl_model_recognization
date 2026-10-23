@@ -69,6 +69,54 @@ class ReadinessResponse(BaseModel):
     checks: StorageChecks
 
 
+class ProductAnalyticsPrivacy(ApiModel):
+    retention_days: int
+    raw_content: Literal["not_collected"] = "not_collected"
+    identifiers: Literal["user_id_only_for_personalized_views"] = (
+        "user_id_only_for_personalized_views"
+    )
+
+
+class ProductAnalyticsFeatureSummary(ApiModel):
+    feature: str
+    event_count: int
+    success_rate: float
+    positive_outcomes: int
+
+
+class ProductAnalyticsTrendPoint(ApiModel):
+    date: str
+    event_count: int
+    success_count: int
+    failure_count: int
+
+
+class ProductAnalyticsSummary(ApiModel):
+    generated_at: str
+    enabled: bool
+    window_days: int
+    totals: dict[str, int | float]
+    features: list[ProductAnalyticsFeatureSummary]
+    trends: list[ProductAnalyticsTrendPoint]
+    privacy: ProductAnalyticsPrivacy
+
+
+class ProductAnalyticsEventRequest(ApiModel):
+    event_name: str = Field(min_length=1, max_length=120)
+    feature: str = Field(min_length=1, max_length=60)
+    result: Literal[
+        "success",
+        "failure",
+        "abstained",
+        "accepted",
+        "dismissed",
+        "started",
+        "completed",
+    ]
+    category: Literal["feature", "workflow", "error", "recovery"] = "feature"
+    metadata: dict[str, object] = Field(default_factory=dict)
+
+
 class DocumentResponse(ApiModel):
     document_id: str
     display_filename: str

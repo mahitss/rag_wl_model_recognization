@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     diagnostics_token: str | None = None
+    analytics_enabled: bool = True
+    product_analytics_retention_days: int = 90
 
     @field_validator("database_path")
     @classmethod
@@ -169,6 +171,13 @@ class Settings(BaseSettings):
     def backup_retention_count_is_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("WL_BACKUP_RETENTION_COUNT must be positive")
+        return value
+
+    @field_validator("product_analytics_retention_days")
+    @classmethod
+    def product_analytics_retention_days_are_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_PRODUCT_ANALYTICS_RETENTION_DAYS must be positive")
         return value
 
     @field_validator("max_request_body_bytes", mode="before")

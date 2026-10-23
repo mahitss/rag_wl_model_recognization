@@ -71,6 +71,35 @@ data needs to become account-owned.
 - Logs omit request bodies and redact potentially sensitive HTTP-client
   arguments. Do not enable payload logging or expose local database files.
 
+## Product analytics and privacy controls
+
+WonderLearn records a small, self-hosted product-analytics feed for feature
+adoption and recovery checks. The analytics table stores only:
+
+- a per-user internal `user_id` for user-scoped reports,
+- a sanitized event name and feature label,
+- a result (such as `success`, `failure`, `accepted`, or `dismissed`),
+- an event timestamp, and
+- a small metadata payload limited to operational values such as duration, count,
+  mode, or a non-sensitive status flag.
+
+It never stores raw document contents, prompts, answers, passwords, session
+cookies, tokens, camera frames, or IP addresses. The backend enforces user
+isolation on every analytics read by querying only the authenticated user's
+records. If the user account is deleted, the related product-events rows are
+removed through the table's foreign-key cascade.
+
+The analytics subsystem is configured with:
+
+- `WL_ANALYTICS_ENABLED` (default `true`)
+- `WL_PRODUCT_ANALYTICS_RETENTION_DAYS` (default `90`)
+
+Records older than the retention window are pruned automatically. The local
+analytics dashboard shows only aggregated, per-user trends and never a raw event
+stream with sensitive content. Because the app stays local-first, there is no
+default external telemetry provider.
+
 No public deployment is performed by this milestone. Before public use, review
 proxy/TLS configuration, backup and restore procedures, registration abuse,
-password reset/account recovery, and multi-process rate limiting.
+password reset/account recovery, multi-process rate limiting, and the local data
+retention schedule for analytics.

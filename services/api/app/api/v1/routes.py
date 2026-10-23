@@ -57,6 +57,8 @@ from app.schemas import (
     LearningImageDetailResponse,
     LearningImageListResponse,
     LearningProgressResponse,
+    ProductAnalyticsEventRequest,
+    ProductAnalyticsSummary,
     QuizAttemptRequest,
     QuizAttemptResponse,
     QuizGenerateRequest,
@@ -90,12 +92,15 @@ from app.storage import (
     get_learning_image_region,
     get_learning_progress,
     get_or_create_study_coach_plan,
+    get_product_analytics_snapshot,
     get_quiz_question,
     get_quiz_set,
     knowledge_graph_chunks,
     list_documents,
     list_knowledge_concepts,
     list_learning_images,
+    prune_product_events,
+    record_product_event,
     record_quiz_attempt,
     replace_image_region_citations,
     start_study_session,
@@ -215,6 +220,56 @@ def health(request: Request) -> dict[str, Any]:
             "model_inference": settings.tutor_configured,
         },
     }
+
+
+@router.get("/product-analytics", response_model=ProductAnalyticsSummary, tags=["analytics"])
+def product_analytics(request: Request) -> dict[str, Any]:
+    settings = _settings(request)
+    current_user = require_auth(request)
+    if not settings.analytics_enabled:
+        return {
+            "generated_at": datetime.now(UTC).isoformat(),
+            "enabled": False,
+            "window_days": settings.product_analytics_retention_days,
+            "totals": {"event_count": 0, "success_count": 0, "failure_count": 0, "feature_count": 0},
+            "features": [],
+            "trends": [],
+            "privacy": {
+                "retention_days": settings.product_analytics_retention_days,
+                "raw_content": "not_collected",
+                "identifiers": "user_id_only_for_personalized_views",
+            },
+        }
+    prune_product_events(_database_path(request), retention_days=settings.product_analytics_retention_days)
+    snapshot = get_product_analytics_snapshot(
+        _database_path(request),
+        user_id=current_user.user_id,
+        window_days=settings.product_analytics_retention_days,
+    )
+    snapshot["privacy"]["retention_days"] = settings.product_analytics_retention_days
+    snapshot["enabled"] = True
+    return snapshot
+
+
+@router.post("/product-analytics/events", tags=["analytics"])
+def record_product_analytics_event(
+    request: Request,
+    payload: ProductAnalyticsEventRequest,
+) -> dict[str, str]:
+    current_user = require_auth(request)
+    settings = _settings(request)
+    if not settings.analytics_enabled:
+        return {"status": "disabled"}
+    record_product_event(
+        _database_path(request),
+        user_id=current_user.user_id,
+        event_name=payload.event_name,
+        feature=payload.feature,
+        result=payload.result,
+        category=payload.category,
+        metadata=payload.metadata,
+    )
+    return {"status": "recorded"}
 
 
 @router.get("/ready", response_model=ReadinessResponse, tags=["system"])

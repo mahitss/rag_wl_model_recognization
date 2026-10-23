@@ -17,7 +17,6 @@ from app.config import Settings
 from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
-from app.observability import OperationalMetrics
 from app.ingestion.image import (
     normalize_image,
     recognize_region,
@@ -27,6 +26,7 @@ from app.ingestion.image import (
 from app.ingestion.pdf import ingest_pdf
 from app.knowledge_graph import extract_chunk
 from app.learning_analytics import build_analytics
+from app.observability import OperationalMetrics
 from app.quiz import evaluate_answer, generate_quiz_questions
 from app.retrieval.service import answer_from_evidence, retrieve_with_mode
 from app.schemas import (

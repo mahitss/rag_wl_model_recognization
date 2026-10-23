@@ -6,13 +6,20 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   PYTHON_VERSION: "3.12"
   NODE_VERSION: "24"
 
 jobs:
   backend:
-    name: Backend tests & lint
+    name: Backend tests, format, contract & dependency audit
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -29,11 +36,24 @@ jobs:
       - name: Sync backend dependencies (dev + ocr extras)
         run: uv sync --project services/api --extra dev --extra ocr
 
+      - name: Validate Python formatting
+        run: uv run --project services/api --extra dev ruff format --check services/api
+
       - name: Run Ruff
         run: uv run --project services/api --extra dev ruff check services/api
 
+      - name: Validate API contract against frontend routes
+        working-directory: services/api
+        run: uv run --extra dev python app/contract_validation.py
+
       - name: Run backend test suite
         run: uv run --project services/api --extra dev pytest
+
+      - name: Run Python dependency audit
+        run: |
+          uv export --project services/api --format requirements-txt --no-hashes > /tmp/wonderlearn-backend-requirements.txt
+          python -m pip install --quiet pip-audit
+          python -m pip_audit -r /tmp/wonderlearn-backend-requirements.txt --desc
 
   frontend:
     name: Frontend tests, typecheck & build
@@ -57,6 +77,9 @@ jobs:
 
       - name: Run TypeScript typecheck
         run: npm run typecheck --prefix apps/web
+
+      - name: Run frontend dependency audit
+        run: npm audit --prefix apps/web --audit-level=high --omit=dev
 
       - name: Production frontend build
         run: npm run build --prefix apps/web

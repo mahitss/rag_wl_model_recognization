@@ -29,6 +29,7 @@ async def get_with_lifespan(app, path, *, headers=None):
 
 def test_metrics_endpoint_reports_privacy_safe_snapshot(tmp_path):
     app = make_app(tmp_path)
+
     async def invoke():
         return await get_with_lifespan(app, "/api/v1/metrics")
 
@@ -54,7 +55,9 @@ def test_diagnostics_require_valid_token(tmp_path):
     assert response.status_code == 401
 
     response = asyncio.run(
-        get_with_lifespan(app, "/api/v1/diagnostics", headers={"X-Diagnostics-Token": "supersecret-token"})
+        get_with_lifespan(
+            app, "/api/v1/diagnostics", headers={"X-Diagnostics-Token": "supersecret-token"}
+        )
     )
     assert response.status_code == 200
     assert response.json()["status"] == "ok"

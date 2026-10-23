@@ -6,7 +6,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
+
+def _prepare_module_path(project_root: Path) -> None:
+    script_dir = Path(__file__).resolve().parent
+    project_root = project_root.resolve()
+    sys.path[:] = [
+        entry for entry in sys.path if Path(entry).resolve() != script_dir if entry not in ("", ".")
+    ]
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
 
 
 def collect_frontend_api_paths(frontend_root: Path) -> set[str]:
@@ -26,7 +34,7 @@ def collect_openapi_api_paths(spec: dict[str, Any]) -> set[str]:
     return {path for path in spec.get("paths", {}) if path.startswith("/api/v1")}
 
 
-def validate_api_contract(app: FastAPI, frontend_root: Path | None = None) -> dict[str, list[str]]:
+def validate_api_contract(app, frontend_root: Path | None = None) -> dict[str, list[str]]:
     frontend_root = frontend_root or (Path(__file__).resolve().parents[3] / "apps" / "web" / "src")
     spec = app.openapi()
     openapi_paths = collect_openapi_api_paths(spec)
@@ -57,13 +65,24 @@ def validate_api_contract(app: FastAPI, frontend_root: Path | None = None) -> di
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate the app's FastAPI OpenAPI contract against the frontend fetch routes.")
-    parser.add_argument("--project", type=Path, default=Path(__file__).resolve().parents[1], help="Path to the API project root.")
+    parser = argparse.ArgumentParser(
+        description="Validate the app's FastAPI OpenAPI contract against the frontend fetch routes."
+    )
+    parser.add_argument(
+        "--project",
+        type=Path,
+        default=Path(__file__).resolve().parents[1],
+        help="Path to the API project root.",
+    )
     args = parser.parse_args()
 
     repo_root = args.project.resolve().parents[1]
-    sys.path.insert(0, str(args.project))
+    _prepare_module_path(args.project)
+    from fastapi import FastAPI
+
     from app.main import app
+
+    assert isinstance(app, FastAPI)
 
     frontend_root = repo_root / "apps" / "web" / "src"
     result = validate_api_contract(app, frontend_root)
@@ -74,7 +93,10 @@ def main() -> int:
             print(f" - {value}")
         return 1
     openapi_paths = collect_openapi_api_paths(app.openapi())
-    print(f"API contract validation passed: {len(openapi_paths)} OpenAPI routes and {len(collect_frontend_api_paths(frontend_root))} frontend fetch routes are aligned.")
+    print(
+        f"API contract validation passed: {len(openapi_paths)} OpenAPI routes and "
+        f"{len(collect_frontend_api_paths(frontend_root))} frontend fetch routes are aligned."
+    )
     return 0
 
 

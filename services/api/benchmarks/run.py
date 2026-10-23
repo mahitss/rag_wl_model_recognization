@@ -163,9 +163,7 @@ def main() -> int:
 
     # --- Set up medium DB for search benchmarks ---
     db_path, settings, _keep_tmp = fresh_db()
-    document_id = ingest_fixture(
-        db_path, settings, fixtures["medium"], "medium.pdf"
-    )
+    document_id = ingest_fixture(db_path, settings, fixtures["medium"], "medium.pdf")
 
     # --- FTS5 search benchmarks ---
     search_queries = ["chlorophyll", "photosynthesis", "Calvin cycle", "stomata oxygen glucose"]
@@ -179,9 +177,7 @@ def main() -> int:
     results["fts5_search_s"] = fts_results
 
     # --- Document list/get benchmarks ---
-    results["list_documents_s"] = bench(
-        lambda: list_documents(db_path), number=20, warmup=3
-    )
+    results["list_documents_s"] = bench(lambda: list_documents(db_path), number=20, warmup=3)
     results["get_document_s"] = bench(
         lambda: get_document(db_path, document_id), number=20, warmup=3
     )

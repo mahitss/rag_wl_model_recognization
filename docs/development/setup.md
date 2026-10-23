@@ -2,6 +2,16 @@
 
 The local application includes PDF ingestion and FTS5 retrieval, optional semantic retrieval, curated diagram selection, local camera tracking, an optional evidence-grounded tutor, and local educational-image region retrieval. Image OCR is optional and requires the Python `ocr` extra plus a local Tesseract executable on `PATH`. The tutor is disabled unless a loopback model server is configured. Nothing downloads a dataset/model automatically or calls a paid service.
 
+## Contract validation
+
+The API contract is validated with the actual FastAPI OpenAPI schema and the frontend `fetch()` routes. Run from the repository root:
+
+```powershell
+python -m app.contract_validation --project services/api
+```
+
+This exits non-zero if a frontend route is missing from the backend or if a required `/api/v1` route is absent from the OpenAPI schema. The project keeps a single `/api/v1` contract unless a backwards-incompatible schema change is required, in which case a dedicated `/api/v2` path and migration note are added.
+
 ## Verified toolchain and pinned packages
 
 The host reports Python 3.13.5, Node.js 24.11.0, npm 11.6.0, Git 2.52.0, and uv 0.12.15. `uv` selected Python 3.12.13 for the locked project environment. The backend declares Python `>=3.11,<3.14`, FastAPI 0.143.3, pydantic-settings 2.16.0, Uvicorn 0.54.0, pypdf 6.21.1 (BSD-3-Clause), Pillow 11.3.0, and python-multipart 0.0.32. The optional OCR extra pins pytesseract 0.3.13 and requires a separate local Tesseract executable. The optional semantic extra pins FastEmbed 0.9.0 (Apache-2.0); it uses CPU ONNX Runtime and does not install PyTorch. Development tools are pytest 9.1.1, HTTPX 0.28.1, and Ruff 0.17.1. Frontend dependencies are pinned exactly in `apps/web/package.json` and `package-lock.json` (React 19.3.1, Vite 8.3.4, TypeScript 7.0.2). `uv.lock` and `package-lock.json` capture resolved dependency trees.

@@ -25,6 +25,7 @@ from app.auth import (
     verify_password,
 )
 from app.config import Settings
+from app.schemas import CsrfTokenResponse, LogoutResponse, RegistrationResponse, SessionUserResponse
 from app.storage import create_user, get_user_by_username
 
 router = APIRouter(prefix="/api/v1/auth")
@@ -46,7 +47,12 @@ def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-@router.post("/register", status_code=status.HTTP_202_ACCEPTED, tags=["auth"])
+@router.post(
+    "/register",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=RegistrationResponse,
+    tags=["auth"],
+)
 def register(payload: Credentials, request: Request) -> dict[str, str]:
     """Create an account without revealing whether a username already exists."""
     password_hash = hash_password(payload.password)
@@ -61,7 +67,7 @@ def register(payload: Credentials, request: Request) -> dict[str, str]:
     return {"message": "If the account can be registered, you can try signing in."}
 
 
-@router.post("/login", tags=["auth"])
+@router.post("/login", response_model=SessionUserResponse, tags=["auth"])
 def login(payload: Credentials, request: Request, response: Response) -> dict[str, Any]:
     settings = _settings(request)
     user = get_user_by_username(settings.database_path, payload.username)
@@ -98,7 +104,7 @@ def _invalid_credentials() -> HTTPException:
     )
 
 
-@router.post("/logout", tags=["auth"])
+@router.post("/logout", response_model=LogoutResponse, tags=["auth"])
 def logout(request: Request, response: Response) -> dict[str, str]:
     settings = _settings(request)
     user = get_current_user(request)
@@ -113,7 +119,7 @@ def logout(request: Request, response: Response) -> dict[str, str]:
     return {"message": "Logged out."}
 
 
-@router.get("/me", tags=["auth"])
+@router.get("/me", response_model=SessionUserResponse, tags=["auth"])
 def current_user(request: Request) -> dict[str, Any]:
     user = require_auth(request)
     session_token = request.cookies.get(SESSION_COOKIE_NAME)
@@ -129,7 +135,7 @@ def current_user(request: Request) -> dict[str, Any]:
     }
 
 
-@router.get("/csrf-token", tags=["auth"])
+@router.get("/csrf-token", response_model=CsrfTokenResponse, tags=["auth"])
 def csrf_token(request: Request, response: Response) -> dict[str, str]:
     settings = _settings(request)
     token = generate_csrf_token()

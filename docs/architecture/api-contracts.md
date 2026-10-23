@@ -4,6 +4,8 @@ This document includes the broader product contract. Local PDF retrieval, option
 
 Base path `/api/v1`; JSON camelCase in browser and explicit Pydantic mapping at API boundary. All IDs are opaque strings. Enforce request-size and field limits. Local origins only in MVP; configure CORS narrowly.
 
+Versioning policy: this project maintains a single `/api/v1` surface while the app is still local-first and in active development. New capabilities are added without changing the base route unless a backwards-incompatible schema change is required; when that happens, introduce `/api/v2` only with a documented migration window and a compatibility fallback. The contract is validated against the UI by a deterministic script that compares the FastAPI OpenAPI routes to the frontend `fetch()` URLs and is run in CI.
+
 ## Endpoints
 
 | Method/path | Purpose |

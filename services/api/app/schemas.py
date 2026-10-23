@@ -28,6 +28,24 @@ class AnswerRequest(ApiModel):
     mode: Literal["lexical", "semantic", "hybrid"] | None = None
 
 
+class RegistrationResponse(ApiModel):
+    message: str
+
+
+class SessionUserResponse(ApiModel):
+    user_id: str
+    username: str
+    expires_at: str
+
+
+class CsrfTokenResponse(ApiModel):
+    csrf_token: str
+
+
+class LogoutResponse(ApiModel):
+    message: str
+
+
 class Capabilities(BaseModel):
     document_ingestion: bool
     retrieval: bool

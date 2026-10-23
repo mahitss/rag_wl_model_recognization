@@ -17,6 +17,7 @@ from app.config import Settings
 from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
 from app.errors import ApiError
+from app.observability import OperationalMetrics
 from app.ingestion.image import (
     normalize_image,
     recognize_region,
@@ -226,6 +227,39 @@ def readiness(request: Request) -> JSONResponse:
         status_code=200 if ready else 503,
         content={"status": "ready" if ready else "not_ready", "checks": checks},
     )
+
+
+@router.get("/metrics", tags=["system"])
+def metrics(request: Request) -> dict[str, Any]:
+    metrics_state: OperationalMetrics = request.app.state.metrics
+    return metrics_state.snapshot()
+
+
+@router.get("/diagnostics", tags=["system"])
+def diagnostics(request: Request) -> JSONResponse:
+    settings = _settings(request)
+    if not settings.diagnostics_token:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": {
+                    "code": "DIAGNOSTICS_DISABLED",
+                    "message": "Diagnostics are not enabled.",
+                }
+            },
+        )
+    provided = request.headers.get("X-Diagnostics-Token")
+    if not provided or not hasattr(request.app.state, "metrics"):
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "DIAGNOSTICS_UNAUTHORIZED", "message": "Unauthorized."}},
+        )
+    if provided != settings.diagnostics_token:
+        return JSONResponse(
+            status_code=401,
+            content={"error": {"code": "DIAGNOSTICS_UNAUTHORIZED", "message": "Unauthorized."}},
+        )
+    return JSONResponse(content={"status": "ok", "metrics": request.app.state.metrics.snapshot()})
 
 
 @router.post("/documents", status_code=201, response_model=DocumentResponse, tags=["documents"])

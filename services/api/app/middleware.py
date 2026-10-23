@@ -18,6 +18,7 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.logging import get_logger
+from app.observability import OperationalMetrics
 
 _LOGGER = get_logger("wonderlearn.access")
 
@@ -43,12 +44,14 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
         start = time.perf_counter()
         response: Response | None = None
         status_code = 500
+        error_category: str | None = None
         try:
             response = await call_next(request)
             status_code = response.status_code
             response.headers[_REQUEST_ID_HEADER] = request_id
             return response
         except Exception:
+            error_category = "unhandled_exception"
             _LOGGER.exception(
                 "unhandled_exception",
                 extra={
@@ -63,6 +66,14 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             if response is None:
                 response = Response(status_code=status_code)
                 response.headers[_REQUEST_ID_HEADER] = request_id
+            metrics: OperationalMetrics = request.app.state.metrics
+            metrics.record_request(
+                method=request.method,
+                route=request.url.path,
+                status_code=status_code,
+                duration_ms=duration_ms,
+                error_category=error_category,
+            )
             _LOGGER.info(
                 "request_handled",
                 extra={

@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
+    diagnostics_token: str | None = None
 
     @field_validator("database_path")
     @classmethod

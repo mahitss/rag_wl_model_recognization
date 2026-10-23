@@ -16,6 +16,7 @@ from app.embeddings.service import EmbeddingService
 from app.errors import ApiError
 from app.logging import configure_logging, get_logger
 from app.middleware import RequestIdMiddleware
+from app.observability import OperationalMetrics
 from app.security import (
     CSRFProtectionMiddleware,
     MaxBodySizeMiddleware,
@@ -67,6 +68,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     application.state.settings = configured
     application.state.embedding_service = EmbeddingService(configured)
+    application.state.metrics = OperationalMetrics()
 
     # All API state changes use cookie authentication and require CSRF validation.
     application.add_middleware(CSRFProtectionMiddleware)

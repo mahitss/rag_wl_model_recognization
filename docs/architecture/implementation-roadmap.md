@@ -62,6 +62,8 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 
 **M23 authentication and isolation update:** Local account registration, login, logout, and session retrieval use Argon2id password hashes, opaque digest-backed HttpOnly sessions, CSRF validation, bounded requests, and default-on rate limits. Protected routes pass the verified session owner into tenant-scoped storage. SQLite migrations preserve legacy rows as unowned and stop on conflicting ownership rather than exposing or deleting data. The auth gate and session-expiration handling are wired into the browser UI. See `docs/security.md` for the design, migration behavior, production requirements, and remaining deployment risks. This milestone is not authorization to deploy publicly.
 
+**M25 backup and recovery update:** A local CLI creates atomic, checksummed archives from SQLite's online backup API, validates database and schema integrity, restores only to a new destination, and applies directory-confined retention. Archives include database-backed content and indexes but exclude active sessions, environment secrets, and regenerable model caches. Restore, privacy, retention, and manual live-database recovery steps are documented in `docs/deployment.md`.
+
 ## Risks and sequencing
 
 The vertical slice validates ingestion, provenance, retrieval, and actual user value before detector/model work. Gesture and general vision require data collection and careful licensing, so they follow a supported diagram flow. Local LLM feasibility is an experiment, not a prerequisite. Retraining automation comes only after stable data and evaluation pipelines exist.

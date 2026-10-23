@@ -10,8 +10,8 @@ document and the configuration.
 - **Backend:** FastAPI + uvicorn, single-process, SQLite database file.
 - **Frontend:** React + Vite, static build, served from the same origin as the
   API or behind a reverse proxy.
-- **Database:** One SQLite file (`WL_DATABASE_PATH`).  No external database
-  service.  No managed backups — you are responsible for file-level backups.
+- **Database:** One SQLite file (`WL_DATABASE_PATH`). No external database or
+  managed/cloud backup service; the local SQLite backup CLI is documented below.
 - **Models:** Optional FastEmbed semantic model cached at
   `WL_EMBEDDING_CACHE_PATH` (~67 MB).  Optional tutor connects to a loopback
   OpenAI-compatible server (`WL_TUTOR_BASE_URL`); no model is bundled or
@@ -71,6 +71,8 @@ and override as needed.  `.env` is gitignored — never commit it.
 | `WL_API_PORT` | `8000` | Port uvicorn listens on. |
 | `WL_REQUEST_TIMEOUT_SECONDS` | `30` | Request timeout hint (documented; enforced by reverse proxy). |
 | `WL_DATABASE_PATH` | `data/local/wonderlearn.sqlite3` | SQLite file path. Parent directory is created at startup. |
+| `WL_BACKUP_DIRECTORY` | `backups` | Local directory for private `.wlbackup` archives. |
+| `WL_BACKUP_RETENTION_COUNT` | `30` | Number of newest generated archives to retain after backup creation. |
 | `WL_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated allowed CORS origins. Wildcard `*` rejected. HTTP only for loopback; HTTPS required for remote origins in production. |
 | `WL_MAX_UPLOAD_BYTES` | `10485760` | Max PDF upload size (bytes). |
 | `WL_MAX_IMAGE_UPLOAD_BYTES` | `10485760` | Max image upload size (bytes). |
@@ -166,35 +168,108 @@ API origin and ensure `WL_CORS_ORIGINS` includes the frontend origin (HTTPS).
 
 ## 4. Database persistence, backups, and recovery
 
-WonderLearn uses a single SQLite file at `WL_DATABASE_PATH`.  All data
-(documents, chunks, quiz attempts, analytics, knowledge graph, image regions)
-lives in that file.  Embeddings are stored in the same database; the FastEmbed
-model cache lives at `WL_EMBEDDING_CACHE_PATH`.
+WonderLearn persists application records, extracted document text and chunks,
+FTS5 data, embedding vectors, learning-image bytes, and related records in the
+SQLite database at `WL_DATABASE_PATH`. The optional FastEmbed model cache at
+`WL_EMBEDDING_CACHE_PATH` is reproducible from its pinned model configuration
+and is not required to restore saved vectors or lexical retrieval.
 
-### Backup procedure
+Create a timestamped, checksummed archive while the API is running:
 
-1. Stop the API (or ensure no writes are in flight — SQLite handles concurrent
-   reads safely, but file-level copies during writes can be inconsistent).
-2. Copy the SQLite file: `cp data/local/wonderlearn.sqlite3
-   backups/wonderlearn-$(date +%F).sqlite3`
-3. Copy the embedding cache directory if semantic retrieval is used:
-   `cp -r artifacts/embedding-models backups/embedding-models-$(date +%F)/`
-4. Verify the copy: `sqlite3 backups/...sqlite3 "PRAGMA quick_check;"`
+```powershell
+uv run --project services/api python -m app.backup create
+```
 
-### Recovery procedure
+The command uses SQLite's online backup API, so its snapshot is consistent
+with concurrent SQLite activity (unlike copying the database file while WAL
+writes are active). It writes one `.wlbackup` archive under
+`WL_BACKUP_DIRECTORY` and applies `WL_BACKUP_RETENTION_COUNT`. To override
+settings for a one-off backup:
 
-1. Stop the API.
-2. Restore the SQLite file to `WL_DATABASE_PATH`.
-3. Restore the embedding cache to `WL_EMBEDDING_CACHE_PATH` (if applicable).
-4. Start the API.  Run `GET /api/v1/ready` to confirm storage is healthy.
+```powershell
+uv run --project services/api python -m app.backup create `
+  --database data/local/wonderlearn.sqlite3 `
+  --backup-dir D:\WonderLearnBackups `
+  --retention-count 14
+```
 
-### Limitations
+On POSIX systems, the tool restricts the backup directory to mode `0700` and
+archives to `0600`. On Windows, it resets the target directory/archive ACL and
+grants access only to the current account SID; verify the result with
+`icacls D:\WonderLearnBackups`. Run the tool under the same account that will
+need to read or restore the archives. The tool does not upload backups to an
+external service.
 
-- SQLite is a single file on one disk.  There is no replication, failover, or
-  multi-region support.  For production, run on a volume with regular
-  snapshots (e.g., cloud provider block-storage snapshots).
-- WAL mode is not enabled by default.  If you need concurrent read/write
-  resilience, consider adding `PRAGMA journal_mode=WAL` to `storage.py`.
+Validate an archive before relying on it:
+
+```powershell
+uv run --project services/api python -m app.backup validate `
+  backups\wonderlearn-YYYYMMDDTHHMMSSZ-<uuid>.wlbackup
+```
+
+Validation checks the ZIP CRCs and exact member list, manifest, database size
+and SHA-256, SQLite `quick_check`, foreign keys, and schema compatibility.
+Older schema versions are accepted for the application's existing migrations;
+newer/unknown versions are rejected. Active session rows are omitted from
+backup snapshots, so all browser sessions must log in again after recovery.
+Password hashes (not plaintext passwords), usernames, and account email values
+remain in the database because they are required to preserve account ownership
+and login.
+
+### Restore and recovery
+
+Always restore to a **new, separate path** first. Restore refuses to overwrite
+any existing file, including the configured live database. A dry run validates
+the archive and destination without writing a database:
+
+```powershell
+$backup = "backups\wonderlearn-YYYYMMDDTHHMMSSZ-<uuid>.wlbackup"
+uv run --project services/api python -m app.backup restore $backup `
+  --database data\recovery\wonderlearn.sqlite3 --dry-run
+uv run --project services/api python -m app.backup restore $backup `
+  --database data\recovery\wonderlearn.sqlite3
+```
+
+Then check the restored database and ownership in an isolated environment:
+
+```powershell
+uv run --project services/api python -m app.backup validate $backup
+uv run --project services/api python -c "import sqlite3; c=sqlite3.connect(r'data\recovery\wonderlearn.sqlite3'); print(c.execute('PRAGMA quick_check').fetchone()[0]); print(c.execute('PRAGMA foreign_key_check').fetchall()); c.close()"
+```
+
+For recovery of the configured database, stop the API and frontend, preserve
+the current database and any `-wal`/`-shm` sidecars as a separate rollback
+copy, and restore the chosen archive to a new path. After validation, manually
+configure `WL_DATABASE_PATH` to that restored path and start the API. Do not
+replace a live database or copy a database over active SQLite sidecars. Keep
+the previous database untouched until readiness and representative
+user-scoped reads have been checked; roll back by stopping the API and
+re-pointing `WL_DATABASE_PATH` to the preserved database. A restore rolls
+application data back to the backup timestamp, so later changes may be lost.
+
+Retention removes only direct-child files matching WonderLearn's generated
+archive naming pattern in the configured backup directory. It does not follow
+symlinks or delete unrelated files. Run it manually if needed:
+
+```powershell
+uv run --project services/api python -m app.backup prune `
+  --backup-dir backups --retention-count 30
+```
+
+Backups contain private learner content and are not encrypted; protect the
+directory and any copies. Deleting a live user/document does not erase it from
+older archives. Expiration is governed by the configured retention count, and
+any copied archive must be deleted separately. Uploaded PDF source files are
+not retained by the current application, so only their extracted text,
+metadata, chunks, and derived records can be restored. Camera frames and
+environment files/secrets are not included. Re-download the pinned embedding
+model if needed; tutor model files are managed outside WonderLearn and are not
+included.
+
+SQLite is still a single-file, single-host persistence design without
+replication or point-in-time recovery. Keep at least one protected copy on a
+different physical device for device-loss recovery; this workflow deliberately
+does not configure automatic external backup services.
 
 ---
 
@@ -317,7 +392,8 @@ After any deployment, run these against the production URL:
 
 - Free-tier compute often sleeps after inactivity, causing cold starts.
 - Outbound bandwidth may be capped.
-- No managed backups — you must implement file-level backups yourself.
+- No managed/cloud backups or automatic scheduling; operators must run the local
+  backup command and protect a separate copy for device-loss recovery.
 - No uptime SLA.
 
 ### Unresolved blockers (honest list)

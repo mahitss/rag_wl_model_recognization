@@ -134,7 +134,9 @@ These are documented architectural constraints. They do not fail tests but bound
 - **Tutor/quiz quality unreviewed** — answer quality, quiz validity, graph extraction, and short-answer scoring need human review; not validated for learning outcomes.
 - **Camera tracking prototype** — works with the authored SVG; not validated on real camera footage.
 - **Synthetic evaluation only** — retrieval benchmarks use a small authored corpus; not product-quality claims.
-- **No automatic backups** — single SQLite file; operators must implement file-level backups/snapshots.
+- **No automatic/cloud backups** — the local `app.backup` CLI creates and
+  validates SQLite archives; operators must schedule it and protect a separate
+  copy for device-loss recovery.
 - **Large frontend bundle** — opencv.js (~15 MB gzipped ~4 MB) dominates the build; code-splitting is an outstanding optimization.
 
 ---

@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     expensive_rate_limit_requests_per_minute: int = 10
     max_request_body_bytes: int | None = 12 * 1024 * 1024
     database_path: Path = Path("data/local/wonderlearn.sqlite3")
+    backup_directory: Path = Path("backups")
+    backup_retention_count: int = 30
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
     max_upload_bytes: int = 10 * 1024 * 1024
     max_image_upload_bytes: int = 10 * 1024 * 1024
@@ -159,6 +161,13 @@ class Settings(BaseSettings):
     def authentication_limits_are_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("Authentication and session limits must be positive")
+        return value
+
+    @field_validator("backup_retention_count")
+    @classmethod
+    def backup_retention_count_is_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_BACKUP_RETENTION_COUNT must be positive")
         return value
 
     @field_validator("max_request_body_bytes", mode="before")

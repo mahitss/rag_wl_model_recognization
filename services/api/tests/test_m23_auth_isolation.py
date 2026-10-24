@@ -16,6 +16,7 @@ from app.config import Settings
 from app.knowledge_graph import parse_extraction
 from app.main import create_app
 from app.storage import (
+    SCHEMA_VERSION,
     complete_study_session,
     connect_database,
     create_quiz_set,
@@ -220,7 +221,7 @@ def test_legacy_database_migration_preserves_unowned_rows(tmp_path):
             ).fetchone()[0]
             == 1
         )
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 10
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION
 
 
 def test_user_data_apis_are_isolated_across_resource_types(tmp_path):

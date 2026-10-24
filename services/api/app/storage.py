@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -167,42 +167,20 @@ def cleanup_expired_sessions(database_path: Path) -> int:
 
 
 def _sanitize_product_analytics_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
-    """Keep analytics payloads limited to non-sensitive operational fields."""
+    """Keep only bounded numeric operational metadata; discard all free-form values."""
     if not isinstance(metadata, dict):
         return {}
-    blocked = {
-        "password",
-        "passphrase",
-        "session",
-        "token",
-        "cookie",
-        "secret",
-        "answer",
-        "prompt",
-        "document_name",
-        "document_content",
-        "raw_text",
-        "image_data",
-        "camera",
-        "attachment",
-    }
+    allowed = {"byte_size", "count", "duration_ms"}
     sanitized: dict[str, Any] = {}
     for key, value in metadata.items():
-        if not isinstance(key, str):
-            continue
-        normalized = key.lower().replace("-", "_")
-        if any(token in normalized for token in blocked):
-            continue
-        if isinstance(value, (str, int, float, bool)) or value is None:
+        if (
+            key in allowed
+            and isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and 0 <= value <= 1_000_000_000
+        ):
             sanitized[key] = value
-        elif isinstance(value, (list, tuple)):
-            sanitized[key] = [
-                item for item in value if isinstance(item, (str, int, float, bool)) or item is None
-            ]
-        elif isinstance(value, dict):
-            nested = _sanitize_product_analytics_metadata(value)
-            if nested:
-                sanitized[key] = nested
     return sanitized
 
 
@@ -217,12 +195,26 @@ def record_product_event(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     """Persist a minimal, privacy-safe event for user-specific adoption metrics."""
-    safe_event = event_name.strip()
-    safe_feature = feature.strip()
-    if not safe_event or not safe_feature:
-        raise ValueError("event_name and feature must be non-empty")
-    if result not in {"success", "failure", "abstained", "accepted", "dismissed", "started", "completed"}:
-        raise ValueError("Unsupported analytics result")
+    supported_events = {
+        "document_upload_completed": ("documents", "success"),
+        "document_upload_failed": ("documents", "failure"),
+        "image_upload_completed": ("images", "success"),
+        "image_upload_failed": ("images", "failure"),
+        "tutor_request_completed": ("tutor", "success"),
+        "tutor_request_abstained": ("tutor", "abstained"),
+        "tutor_request_failed": ("tutor", "failure"),
+        "quiz_started": ("quizzes", "started"),
+        "quiz_completed": ("quizzes", "completed"),
+        "quiz_failed": ("quizzes", "failure"),
+        "study_session_completed": ("study_sessions", "completed"),
+        "study_session_failed": ("study_sessions", "failure"),
+        "study_coach_recommendation_accepted": ("study_coach", "accepted"),
+        "study_coach_recommendation_dismissed": ("study_coach", "dismissed"),
+    }
+    if supported_events.get(event_name) != (feature, result):
+        raise ValueError("Unsupported product analytics event")
+    if category not in {"feature", "workflow", "error", "recovery"}:
+        raise ValueError("Unsupported analytics category")
     payload = _sanitize_product_analytics_metadata(metadata)
     with closing(sqlite3.connect(database_path, timeout=5)) as connection:
         with connection:
@@ -235,8 +227,8 @@ def record_product_event(
                 (
                     f"event_{secrets.token_urlsafe(16)}",
                     user_id,
-                    safe_event,
-                    safe_feature,
+                    event_name,
+                    feature,
                     result,
                     category,
                     json.dumps(payload, separators=(",", ":"), sort_keys=True),
@@ -259,11 +251,14 @@ def prune_product_events(database_path: Path, *, retention_days: int) -> int:
             return cursor.rowcount
 
 
-def get_product_analytics_snapshot(database_path: Path, *, user_id: str, window_days: int = 30) -> dict[str, Any]:
+def get_product_analytics_snapshot(
+    database_path: Path, *, user_id: str, window_days: int = 30
+) -> dict[str, Any]:
     """Return per-user aggregated product analytics without exposing raw content."""
     window_days = max(1, window_days)
     cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
     with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+        connection.row_factory = sqlite3.Row
         rows = connection.execute(
             """
             SELECT feature, event_name, result, COUNT(*) AS event_count
@@ -279,7 +274,7 @@ def get_product_analytics_snapshot(database_path: Path, *, user_id: str, window_
             SELECT substr(created_at, 1, 10) AS event_date,
                    COUNT(*) AS event_count,
                    SUM(CASE WHEN result IN ('success', 'accepted', 'completed') THEN 1 ELSE 0 END) AS success_count,
-                   SUM(CASE WHEN result IN ('failure', 'dismissed') THEN 1 ELSE 0 END) AS failure_count
+                   SUM(CASE WHEN result = 'failure' THEN 1 ELSE 0 END) AS failure_count
             FROM product_events
             WHERE user_id = ? AND created_at >= ?
             GROUP BY substr(created_at, 1, 10)
@@ -287,23 +282,37 @@ def get_product_analytics_snapshot(database_path: Path, *, user_id: str, window_
             """,
             (user_id, cutoff),
         ).fetchall()
-    feature_totals: dict[str, dict[str, float | int]] = {}
+    feature_totals: dict[str, dict[str, int]] = {}
+    successful_events = 0
+    failed_events = 0
     for row in rows:
         feature = row["feature"]
-        payload = feature_totals.setdefault(feature, {"event_count": 0, "success_count": 0})
-        payload["event_count"] = int(payload["event_count"]) + int(row["event_count"])
+        count = int(row["event_count"])
+        payload = feature_totals.setdefault(
+            feature, {"event_count": 0, "positive_count": 0, "negative_count": 0}
+        )
+        payload["event_count"] += count
         if row["result"] in {"success", "accepted", "completed"}:
-            payload["success_count"] = int(payload["success_count"]) + int(row["event_count"])
+            payload["positive_count"] += count
+        elif row["result"] in {"failure", "dismissed"}:
+            payload["negative_count"] += count
+        if row["result"] in {"success", "accepted", "completed"}:
+            successful_events += count
+        elif row["result"] == "failure":
+            failed_events += count
     features = []
     for feature_name, counts in sorted(feature_totals.items()):
         total = int(counts["event_count"])
-        success_count = int(counts["success_count"])
+        positive_count = int(counts["positive_count"])
+        outcome_count = positive_count + int(counts["negative_count"])
         features.append(
             {
                 "feature": feature_name,
                 "event_count": total,
-                "success_rate": round((success_count / total) if total else 0.0, 4),
-                "positive_outcomes": success_count,
+                "positive_outcome_rate": (
+                    round(positive_count / outcome_count, 4) if outcome_count else None
+                ),
+                "positive_outcomes": positive_count,
             }
         )
     trend = [
@@ -316,17 +325,14 @@ def get_product_analytics_snapshot(database_path: Path, *, user_id: str, window_
         for row in daily_rows
     ]
     total_events = sum(item["event_count"] for item in features)
-    total_successes = sum(item["positive_outcomes"] for item in features)
     return {
         "generated_at": datetime.now(UTC).isoformat(),
         "enabled": True,
         "window_days": window_days,
         "totals": {
             "event_count": total_events,
-            "success_count": total_successes,
-            "failure_count": sum(
-                item["event_count"] - item["positive_outcomes"] for item in features
-            ),
+            "success_count": successful_events,
+            "failure_count": failed_events,
             "feature_count": len(features),
         },
         "features": features,

@@ -231,7 +231,12 @@ def product_analytics(request: Request) -> dict[str, Any]:
             "generated_at": datetime.now(UTC).isoformat(),
             "enabled": False,
             "window_days": settings.product_analytics_retention_days,
-            "totals": {"event_count": 0, "success_count": 0, "failure_count": 0, "feature_count": 0},
+            "totals": {
+                "event_count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "feature_count": 0,
+            },
             "features": [],
             "trends": [],
             "privacy": {
@@ -240,7 +245,9 @@ def product_analytics(request: Request) -> dict[str, Any]:
                 "identifiers": "user_id_only_for_personalized_views",
             },
         }
-    prune_product_events(_database_path(request), retention_days=settings.product_analytics_retention_days)
+    prune_product_events(
+        _database_path(request), retention_days=settings.product_analytics_retention_days
+    )
     snapshot = get_product_analytics_snapshot(
         _database_path(request),
         user_id=current_user.user_id,
@@ -266,7 +273,7 @@ def record_product_analytics_event(
         event_name=payload.event_name,
         feature=payload.feature,
         result=payload.result,
-        category=payload.category,
+        category="error" if payload.result == "failure" else "feature",
         metadata=payload.metadata,
     )
     return {"status": "recorded"}

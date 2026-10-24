@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CameraPanel } from "./CameraPanel";
 import { createDiagramTracker } from "./opencvTracker";
+import { useDiagramTracking } from "./useDiagramTracking";
 
 vi.mock("./opencvTracker", () => ({
   createDiagramTracker: vi.fn().mockResolvedValue({ detect: () => null, dispose: vi.fn() }),
@@ -233,6 +234,49 @@ describe("camera alignment panel", () => {
     });
     expect(screen.getByRole("button", { name: "Confirm manual alignment" })).not.toBeNull();
     expect(screen.getByText(/Manual alignment active/)).not.toBeNull();
+  });
+
+  it("ignores queued tracking callbacks after unmounting", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    let intervalCallback: (() => void) | undefined;
+    vi.spyOn(window, "setInterval").mockImplementation((handler: TimerHandler) => {
+      intervalCallback = handler as () => void;
+      return 1 as unknown as number;
+    });
+
+    const tracker = {
+      detect: vi.fn(() => ({
+        matrix: [0.5, 0, 0, 0, 0.5, 0, 0, 0, 1],
+        inliers: 18,
+        referenceWidth: 1000,
+        referenceHeight: 640,
+        frameWidth: 500,
+        frameHeight: 320,
+      })),
+      dispose: vi.fn(),
+    };
+    vi.mocked(createDiagramTracker).mockResolvedValue(tracker as never);
+
+    const videoRef = { current: { readyState: HTMLMediaElement.HAVE_CURRENT_DATA, videoWidth: 500, videoHeight: 320 } as HTMLVideoElement };
+    const stageRef = { current: { clientWidth: 500, clientHeight: 320 } as HTMLDivElement };
+
+    function HookHarness() {
+      useDiagramTracking(videoRef, stageRef, diagram.imageUrl, true);
+      return <div>tracking</div>;
+    }
+
+    const { unmount } = render(<HookHarness />);
+    await waitFor(() => expect(createDiagramTracker).toHaveBeenCalledWith(diagram.imageUrl));
+    unmount();
+
+    act(() => {
+      if (intervalCallback) intervalCallback();
+    });
+
+    expect(errorSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining("state update on an unmounted component"),
+    );
+    expect(tracker.dispose).toHaveBeenCalledTimes(1);
   });
 
   it("enables regions after detection, pauses on loss, and recovers after reacquisition", async () => {

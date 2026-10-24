@@ -1,6 +1,6 @@
 """Validated API input models for retrieval and evidence-only answers."""
 
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -80,7 +80,7 @@ class ProductAnalyticsPrivacy(ApiModel):
 class ProductAnalyticsFeatureSummary(ApiModel):
     feature: str
     event_count: int
-    success_rate: float
+    positive_outcome_rate: float | None
     positive_outcomes: int
 
 
@@ -91,19 +91,48 @@ class ProductAnalyticsTrendPoint(ApiModel):
     failure_count: int
 
 
+class ProductAnalyticsTotals(ApiModel):
+    event_count: int
+    success_count: int
+    failure_count: int
+    feature_count: int
+
+
 class ProductAnalyticsSummary(ApiModel):
     generated_at: str
     enabled: bool
     window_days: int
-    totals: dict[str, int | float]
+    totals: ProductAnalyticsTotals
     features: list[ProductAnalyticsFeatureSummary]
     trends: list[ProductAnalyticsTrendPoint]
     privacy: ProductAnalyticsPrivacy
 
 
 class ProductAnalyticsEventRequest(ApiModel):
-    event_name: str = Field(min_length=1, max_length=120)
-    feature: str = Field(min_length=1, max_length=60)
+    event_name: Literal[
+        "document_upload_completed",
+        "document_upload_failed",
+        "image_upload_completed",
+        "image_upload_failed",
+        "tutor_request_completed",
+        "tutor_request_abstained",
+        "tutor_request_failed",
+        "quiz_started",
+        "quiz_completed",
+        "quiz_failed",
+        "study_session_completed",
+        "study_session_failed",
+        "study_coach_recommendation_accepted",
+        "study_coach_recommendation_dismissed",
+    ]
+    feature: Literal[
+        "documents",
+        "images",
+        "tutor",
+        "quizzes",
+        "study_sessions",
+        "study_coach",
+    ]
     result: Literal[
         "success",
         "failure",
@@ -113,8 +142,29 @@ class ProductAnalyticsEventRequest(ApiModel):
         "started",
         "completed",
     ]
-    category: Literal["feature", "workflow", "error", "recovery"] = "feature"
     metadata: dict[str, object] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def event_identity_is_consistent(self) -> Self:
+        expected = {
+            "document_upload_completed": ("documents", "success"),
+            "document_upload_failed": ("documents", "failure"),
+            "image_upload_completed": ("images", "success"),
+            "image_upload_failed": ("images", "failure"),
+            "tutor_request_completed": ("tutor", "success"),
+            "tutor_request_abstained": ("tutor", "abstained"),
+            "tutor_request_failed": ("tutor", "failure"),
+            "quiz_started": ("quizzes", "started"),
+            "quiz_completed": ("quizzes", "completed"),
+            "quiz_failed": ("quizzes", "failure"),
+            "study_session_completed": ("study_sessions", "completed"),
+            "study_session_failed": ("study_sessions", "failure"),
+            "study_coach_recommendation_accepted": ("study_coach", "accepted"),
+            "study_coach_recommendation_dismissed": ("study_coach", "dismissed"),
+        }
+        if expected[self.event_name] != (self.feature, self.result):
+            raise ValueError("Event name, feature, and result must describe a supported event.")
+        return self
 
 
 class DocumentResponse(ApiModel):

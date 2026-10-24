@@ -133,6 +133,15 @@ const analyticsFixture: TestAnalytics = {
   topics: [], dailyActivity: [], recentActivity: [], reviewHistory: [], activeSessions: [],
   methodology: { mastery: "Recency weighted latest scored outcomes.", recencyHalfLifeDays: 30, weakTopicThreshold: 0.6, reviewIntervalsDays: { correct: 7, incorrect: 1, ambiguous: 1 }, reviewDueBoundary: "dueAt <= current UTC time" },
 };
+const productAnalyticsFixture = {
+  generatedAt: "2026-10-20T12:00:00+00:00",
+  enabled: false,
+  windowDays: 90,
+  totals: { eventCount: 0, successCount: 0, failureCount: 0, featureCount: 0 },
+  features: [],
+  trends: [],
+  privacy: { retentionDays: 90, rawContent: "not_collected", identifiers: "user_id_only_for_personalized_views" },
+};
 
 const uploadedImageFixture = {
   imageId: "img_test_001", displayFilename: "biology-diagram.png", contentType: "image/png" as const,
@@ -189,6 +198,8 @@ function installFetchMock(
     }
     if (url === "/api/v1/progress") return jsonResponse(progressResult);
     if (url === "/api/v1/learning-analytics") return jsonResponse(analyticsResult);
+    if (url === "/api/v1/product-analytics") return jsonResponse(productAnalyticsFixture);
+    if (url === "/api/v1/product-analytics/events") return jsonResponse({ status: "recorded" });
     if (url === "/api/v1/study-coach/plan") return jsonResponse(coachPlan);
     if (url === "/api/v1/study-coach/recommendations/coach-photo" && init?.method === "PATCH") {
       const payload = JSON.parse(String(init.body)) as { action: "accept" | "edit" | "dismiss" | "complete"; title?: string; estimatedMinutes?: number };
@@ -459,6 +470,15 @@ describe("camera selection evidence flow", () => {
     const analyticsCall = fetchMock.mock.calls.find(([url]) => String(url) === "/api/v1/learning-analytics");
     expect(analyticsCall).toBeDefined();
     expect(fetchMock.mock.calls.some(([url]) => String(url) === "/api/v1/study-sessions/session-1/complete")).toBe(true);
+    const eventCall = fetchMock.mock.calls.find(([url, init]) =>
+      String(url) === "/api/v1/product-analytics/events"
+      && String(init?.body).includes("study_session_completed"));
+    expect(eventCall).toBeDefined();
+    expect(JSON.parse(String(eventCall?.[1]?.body))).toEqual({
+      eventName: "study_session_completed",
+      feature: "study_sessions",
+      result: "completed",
+    });
   });
 
   it("uploads a local image, creates an accessible region, and shows grounded citations", async () => {
@@ -469,6 +489,14 @@ describe("camera selection evidence flow", () => {
     const file = new File(["test image bytes"], "biology-diagram.png", { type: "image/png" });
     await user.upload(screen.getByLabelText("Upload an educational image"), file);
     expect(await screen.findByText(/Local OCR extracted text from this image/)).not.toBeNull();
+    const uploadEvent = fetchMock.mock.calls.find(([url, init]) =>
+      String(url) === "/api/v1/product-analytics/events"
+      && String(init?.body).includes("image_upload_completed"));
+    expect(JSON.parse(String(uploadEvent?.[1]?.body))).toEqual({
+      eventName: "image_upload_completed",
+      feature: "images",
+      result: "success",
+    });
 
     await user.selectOptions(
       screen.getByLabelText("Optional curated concept"),

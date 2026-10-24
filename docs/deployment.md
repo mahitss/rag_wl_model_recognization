@@ -73,6 +73,8 @@ and override as needed.  `.env` is gitignored — never commit it.
 | `WL_DATABASE_PATH` | `data/local/wonderlearn.sqlite3` | SQLite file path. Parent directory is created at startup. |
 | `WL_BACKUP_DIRECTORY` | `backups` | Local directory for private `.wlbackup` archives. |
 | `WL_BACKUP_RETENTION_COUNT` | `30` | Number of newest generated archives to retain after backup creation. |
+| `WL_ANALYTICS_ENABLED` | `false` | Opt in to self-hosted, authenticated-user-scoped product events. Keep disabled unless collection is appropriate for your consent requirements. |
+| `WL_PRODUCT_ANALYTICS_RETENTION_DAYS` | `90` | Product-event retention window; expired rows are pruned when a summary is requested. |
 | `WL_CORS_ORIGINS` | `http://localhost:5173,http://127.0.0.1:5173` | Comma-separated allowed CORS origins. Wildcard `*` rejected. HTTP only for loopback; HTTPS required for remote origins in production. |
 | `WL_MAX_UPLOAD_BYTES` | `10485760` | Max PDF upload size (bytes). |
 | `WL_MAX_IMAGE_UPLOAD_BYTES` | `10485760` | Max image upload size (bytes). |

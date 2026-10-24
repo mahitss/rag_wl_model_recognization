@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     diagnostics_token: str | None = None
-    analytics_enabled: bool = True
+    analytics_enabled: bool = False
     product_analytics_retention_days: int = 90
 
     @field_validator("database_path")

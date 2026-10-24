@@ -121,7 +121,7 @@ type StudyCoachPlan = {
 type ProductAnalyticsFeature = {
   feature: string;
   eventCount: number;
-  successRate: number;
+  positiveOutcomeRate: number | null;
   positiveOutcomes: number;
 };
 type ProductAnalyticsSummary = {
@@ -206,16 +206,29 @@ async function readJson<T>(response: Response): Promise<T> {
 }
 
 async function recordProductAnalyticsEvent(
-  eventName: string,
-  feature: string,
+  eventName:
+    | "document_upload_completed"
+    | "document_upload_failed"
+    | "image_upload_completed"
+    | "image_upload_failed"
+    | "tutor_request_completed"
+    | "tutor_request_abstained"
+    | "tutor_request_failed"
+    | "quiz_started"
+    | "quiz_completed"
+    | "quiz_failed"
+    | "study_session_completed"
+    | "study_session_failed"
+    | "study_coach_recommendation_accepted"
+    | "study_coach_recommendation_dismissed",
+  feature: "documents" | "images" | "tutor" | "quizzes" | "study_sessions" | "study_coach",
   result: "success" | "failure" | "abstained" | "accepted" | "dismissed" | "started" | "completed",
-  metadata: Record<string, string | number | boolean | null> = {},
 ) {
   try {
     await fetch("/api/v1/product-analytics/events", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ eventName, feature, result, metadata }),
+      body: JSON.stringify({ eventName, feature, result }),
     });
   } catch {
     // Intentionally non-blocking: product analytics must never disrupt user workflows.
@@ -439,6 +452,7 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
   const [analyticsError, setAnalyticsError] = useState<string | null>(null);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
   const [productAnalytics, setProductAnalytics] = useState<ProductAnalyticsSummary | null>(null);
+  const [productAnalyticsError, setProductAnalyticsError] = useState<string | null>(null);
   const [sessionTopic, setSessionTopic] = useState("");
   const [studyPlan, setStudyPlan] = useState<StudyCoachPlan | null>(null);
   const [studyPlanError, setStudyPlanError] = useState<string | null>(null);
@@ -531,9 +545,17 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
       });
     fetch("/api/v1/product-analytics")
       .then((response) => readJson<ProductAnalyticsSummary>(response))
-      .then((result) => { if (active) setProductAnalytics(result); })
-      .catch(() => {
-        if (active) setProductAnalytics(null);
+      .then((result) => {
+        if (active) {
+          setProductAnalytics(result);
+          setProductAnalyticsError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setProductAnalytics(null);
+          setProductAnalyticsError(error instanceof Error ? error.message : "Could not load product analytics.");
+        }
       });
     fetch("/api/v1/study-coach/plan")
       .then((response) => readJson<StudyCoachPlan>(response))
@@ -603,12 +625,9 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
       const document = await readJson<IndexedDocument>(response);
       setDocuments((current) => [document, ...current.filter((item) => item.documentId !== document.documentId)]);
       setSelectedDocumentId(document.documentId);
-      void recordProductAnalyticsEvent("document_upload_completed", "documents", "success", {
-        documentId: document.documentId,
-        filename: file.name,
-        byteSize: file.size,
-      });
+      void recordProductAnalyticsEvent("document_upload_completed", "documents", "success");
     } catch (error) {
+      void recordProductAnalyticsEvent("document_upload_failed", "documents", "failure");
       setUploadError(error instanceof Error ? error.message : "Could not upload the PDF.");
     } finally {
       setUploading(false);
@@ -653,12 +672,9 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
       setSelectedImageRegionId(null);
       setImageEvidence(null);
       setImageTutorResult(null);
-      void recordProductAnalyticsEvent("image_upload_completed", "images", "success", {
-        imageId: image.imageId,
-        filename: file.name,
-        byteSize: file.size,
-      });
+      void recordProductAnalyticsEvent("image_upload_completed", "images", "success");
     } catch (error) {
+      void recordProductAnalyticsEvent("image_upload_failed", "images", "failure");
       setImageError(error instanceof Error ? error.message : "Could not upload this image.");
     } finally {
       setImageLoading(false);
@@ -761,10 +777,17 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
           body: JSON.stringify({ question: imageQuestion, limit: 5 }),
         },
       );
-      setImageTutorResult(await readJson<ImageTutorResult>(response));
+      const result = await readJson<ImageTutorResult>(response);
+      setImageTutorResult(result);
+      void recordProductAnalyticsEvent(
+        result.status === "answered" ? "tutor_request_completed" : "tutor_request_abstained",
+        "tutor",
+        result.status === "answered" ? "success" : "abstained",
+      );
       await loadLearningImage(selectedLearningImage.imageId);
       setSelectedImageRegionId(selectedImageRegionId);
     } catch (error) {
+      void recordProductAnalyticsEvent("tutor_request_failed", "tutor", "failure");
       setImageError(error instanceof Error ? error.message : "The tutor could not answer for this image region.");
     } finally {
       setImageLoading(false);
@@ -811,8 +834,15 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      setTutorResult(await readJson<TutorResult>(response));
+      const result = await readJson<TutorResult>(response);
+      setTutorResult(result);
+      void recordProductAnalyticsEvent(
+        result.status === "answered" ? "tutor_request_completed" : "tutor_request_abstained",
+        "tutor",
+        result.status === "answered" ? "success" : "abstained",
+      );
     } catch (error) {
+      void recordProductAnalyticsEvent("tutor_request_failed", "tutor", "failure");
       setTutorError(error instanceof Error ? error.message : "The tutor could not answer right now.");
     } finally {
       setTutorLoading(false);
@@ -903,6 +933,19 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
         body: JSON.stringify({ action, ...(fields ?? {}) }),
       });
       await readJson<StudyCoachRecommendation>(response);
+      if (action === "accept") {
+        void recordProductAnalyticsEvent(
+          "study_coach_recommendation_accepted",
+          "study_coach",
+          "accepted",
+        );
+      } else if (action === "dismiss") {
+        void recordProductAnalyticsEvent(
+          "study_coach_recommendation_dismissed",
+          "study_coach",
+          "dismissed",
+        );
+      }
       await refreshStudyPlan();
     } catch (error) {
       setStudyPlanError(error instanceof Error ? error.message : "Could not update the study recommendation.");
@@ -943,8 +986,10 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
     try {
       const response = await fetch(`/api/v1/study-sessions/${encodeURIComponent(sessionId)}/complete`, { method: "POST" });
       await readJson<{ sessionId: string }>(response);
+      void recordProductAnalyticsEvent("study_session_completed", "study_sessions", "completed");
       await refreshAnalytics();
     } catch (error) {
+      void recordProductAnalyticsEvent("study_session_failed", "study_sessions", "failure");
       setAnalyticsError(error instanceof Error ? error.message : "Could not complete the study session.");
     } finally { setAnalyticsLoading(false); }
   }
@@ -982,8 +1027,13 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      setQuiz(await readJson<QuizSet>(response));
+      const result = await readJson<QuizSet>(response);
+      setQuiz(result);
+      if (result.status === "ready") {
+        void recordProductAnalyticsEvent("quiz_started", "quizzes", "started");
+      }
     } catch (error) {
+      void recordProductAnalyticsEvent("quiz_failed", "quizzes", "failure");
       setQuizError(error instanceof Error ? error.message : "Could not generate a quiz.");
     } finally {
       setQuizLoading(false);
@@ -1011,8 +1061,15 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
           ? { ...item, latestOutcome: result.outcome, attemptCount: result.attemptCount, explanation: result.explanation, citations: result.citations }
           : item),
       }));
+      const otherQuestionsComplete = question.latestOutcome === null && quiz.questions
+        .filter((item) => item.questionId !== question.questionId)
+        .every((item) => item.latestOutcome !== null);
+      if (otherQuestionsComplete) {
+        void recordProductAnalyticsEvent("quiz_completed", "quizzes", "completed");
+      }
       await refreshProgress();
     } catch (error) {
+      void recordProductAnalyticsEvent("quiz_failed", "quizzes", "failure");
       setQuizError(error instanceof Error ? error.message : "Could not record that answer.");
     } finally {
       setQuizLoading(false);
@@ -1534,7 +1591,7 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
           </section>
         </section>
       )}
-      {productAnalytics && (
+      {(productAnalytics || productAnalyticsError) && (
         <section className="analytics-panel" aria-labelledby="product-analytics-title">
           <div className="analytics-heading">
             <div>
@@ -1542,15 +1599,24 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
               <h2 id="product-analytics-title">Product analytics snapshot</h2>
             </div>
           </div>
-          <p className="muted">{productAnalytics.totals.eventCount} product events tracked over the last {productAnalytics.windowDays} days.</p>
-          <ul className="progress-topics">
-            {productAnalytics.features.slice(0, 5).map((feature) => (
-              <li key={feature.feature}>
-                <span><strong>{feature.feature}</strong> · {feature.eventCount} events</span>
-                <span>{Math.round(feature.successRate * 100)}% success</span>
-              </li>
-            ))}
-          </ul>
+          {productAnalyticsError && <p className="notice notice--error" role="alert">{productAnalyticsError}</p>}
+          {productAnalytics && !productAnalytics.enabled && <p className="muted" role="status">Product analytics are disabled by configuration. No usage events are being recorded.</p>}
+          {productAnalytics?.enabled && productAnalytics.totals.eventCount === 0 && <p className="muted" role="status">No product activity is recorded in the last {productAnalytics.windowDays} days.</p>}
+          {productAnalytics?.enabled && productAnalytics.totals.eventCount > 0 && (
+            <>
+              <p className="muted">{productAnalytics.totals.eventCount} product events tracked over the last {productAnalytics.windowDays} days.</p>
+              <ul className="progress-topics">
+                {productAnalytics.features.slice(0, 5).map((feature) => (
+                  <li key={feature.feature}>
+                    <span><strong>{feature.feature}</strong> · {feature.eventCount} events</span>
+                    <span>{feature.positiveOutcomeRate === null
+                      ? "No outcome data"
+                      : `${Math.round(feature.positiveOutcomeRate * 100)}% positive outcomes`}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
         </section>
       )}
       <section className="study-coach" aria-labelledby="study-coach-title">

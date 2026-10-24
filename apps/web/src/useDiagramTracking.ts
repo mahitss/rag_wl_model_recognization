@@ -41,6 +41,8 @@ export function useDiagramTracking(
     setView({ status: "loading", transform: null, inliers: 0, message: null });
 
     const sample = () => {
+      if (disposed) return;
+
       const video = videoRef.current;
       const stage = stageRef.current;
       if (!tracker || !video || !stage || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
@@ -77,10 +79,12 @@ export function useDiagramTracking(
         : null;
       progress = advanceTracking(progress, transform !== null);
       if (!detection || !transform || progress.status !== "tracking") {
+        if (disposed) return;
         smoothedMatrix = transform ? matrix : null;
         setView({ status: progress.status, transform: null, inliers: 0, message: null });
         return;
       }
+      if (disposed) return;
       smoothedMatrix = matrix;
       setView({
         status: "tracking",

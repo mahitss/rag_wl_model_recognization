@@ -89,15 +89,22 @@ isolation on every analytics read by querying only the authenticated user's
 records. If the user account is deleted, the related product-events rows are
 removed through the table's foreign-key cascade.
 
-The analytics subsystem is configured with:
+Product analytics is **off by default**. An operator must explicitly opt in
+through the local configuration; there is no per-user opt-in UI yet, so the
+feature must remain disabled for deployments where operator opt-in does not
+meet the applicable consent requirements. When enabled, the analytics
+subsystem is configured with:
 
-- `WL_ANALYTICS_ENABLED` (default `true`)
+- `WL_ANALYTICS_ENABLED` (default `false`)
 - `WL_PRODUCT_ANALYTICS_RETENTION_DAYS` (default `90`)
 
-Records older than the retention window are pruned automatically. The local
-analytics dashboard shows only aggregated, per-user trends and never a raw event
-stream with sensitive content. Because the app stays local-first, there is no
-default external telemetry provider.
+Records older than the retention window are pruned when a summary is requested.
+The local analytics dashboard shows only aggregated, per-user trends and never
+a raw event stream with sensitive content. Because the app stays local-first,
+there is no external telemetry provider.
+Pruning or deleting an account from the live database does not remove those
+records from already-created backup archives; the configured backup retention
+policy controls how long those archives remain.
 
 No public deployment is performed by this milestone. Before public use, review
 proxy/TLS configuration, backup and restore procedures, registration abuse,

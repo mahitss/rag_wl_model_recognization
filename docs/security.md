@@ -106,6 +106,29 @@ Pruning or deleting an account from the live database does not remove those
 records from already-created backup archives; the configured backup retention
 policy controls how long those archives remain.
 
+## Private beta feedback and administrator review
+
+WonderLearn also includes a private-beta feedback feature for authenticated
+accounts. Feedback rows store only the submitter's internal account ID, a
+sanitized category, a short title, the description text, and a review status.
+The API never stores raw document contents, session tokens, password material,
+images, or camera frames in feedback records. They are kept private to the
+owner and administrators who have an explicit `is_admin` flag set in the local
+user record or an allowlist configured with `WL_ADMIN_USERNAMES`.
+
+The workflow is intentionally conservative:
+
+- A user may submit, edit, and withdraw their own feedback while the item is
+  still active.
+- Only an administrator may list all feedback or change its review status.
+- Client-supplied role or user IDs are ignored; server-side authorization is
+  derived from the authenticated session and the database state.
+
+Because the feature is private-beta only, it is kept local and does not send
+telemetry externally. Existing backup and retention rules still apply to the
+feedback table, and an operator must explicitly configure the admin allowlist
+before using the admin review flow.
+
 No public deployment is performed by this milestone. Before public use, review
 proxy/TLS configuration, backup and restore procedures, registration abuse,
 password reset/account recovery, multi-process rate limiting, and the local data

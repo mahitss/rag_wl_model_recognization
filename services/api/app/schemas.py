@@ -36,6 +36,7 @@ class SessionUserResponse(ApiModel):
     user_id: str
     username: str
     expires_at: str
+    is_admin: bool = False
 
 
 class CsrfTokenResponse(ApiModel):
@@ -44,6 +45,43 @@ class CsrfTokenResponse(ApiModel):
 
 class LogoutResponse(ApiModel):
     message: str
+
+
+class FeedbackCategory(str):
+    pass
+
+
+class FeedbackCreateRequest(ApiModel):
+    category: Literal["bug", "usability", "feature_request", "other"]
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4_000)
+
+
+class FeedbackUpdateRequest(ApiModel):
+    category: Literal["bug", "usability", "feature_request", "other"] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=1, max_length=4_000)
+    status: Literal["new", "reviewing", "planned", "resolved", "withdrawn"] | None = None
+
+
+class FeedbackAdminStatusRequest(ApiModel):
+    status: Literal["new", "reviewing", "planned", "resolved", "withdrawn"]
+
+
+class FeedbackItem(ApiModel):
+    feedback_id: str
+    user_id: str
+    username: str | None = None
+    category: Literal["bug", "usability", "feature_request", "other"]
+    title: str
+    description: str
+    status: Literal["new", "reviewing", "planned", "resolved", "withdrawn"]
+    created_at: str
+    updated_at: str
+
+
+class FeedbackListResponse(ApiModel):
+    feedback: list[FeedbackItem]
 
 
 class Capabilities(BaseModel):

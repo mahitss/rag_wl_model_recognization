@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -54,7 +54,12 @@ def _ensure_column(connection, table_name: str, column_name: str, column_definit
 
 
 def create_user(
-    database_path: Path, username: str, password_hash: str, email: str | None = None
+    database_path: Path,
+    username: str,
+    password_hash: str,
+    email: str | None = None,
+    *,
+    is_admin: bool = False,
 ) -> str:
     """Create a new user and return the user_id."""
 
@@ -63,13 +68,14 @@ def create_user(
         with connection:
             connection.execute(
                 """INSERT INTO users(
-                       user_id, username, email, password_hash, created_at
-                   ) VALUES (?, ?, ?, ?, ?)""",
+                       user_id, username, email, password_hash, is_admin, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?)""",
                 (
                     user_id,
                     username,
                     email or f"{user_id}@users.wonderlearn.invalid",
                     password_hash,
+                    int(is_admin),
                     datetime.now(UTC).isoformat(),
                 ),
             )
@@ -80,7 +86,7 @@ def get_user_by_id(database_path: Path, user_id: str) -> dict[str, Any] | None:
     """Return a user record by user_id, or None if not found."""
     with closing(connect_database(database_path)) as connection:
         row = connection.execute(
-            "SELECT user_id, username, email, password_hash, created_at "
+            "SELECT user_id, username, email, password_hash, is_admin, created_at "
             "FROM users WHERE user_id = ?",
             (user_id,),
         ).fetchone()
@@ -91,6 +97,7 @@ def get_user_by_id(database_path: Path, user_id: str) -> dict[str, Any] | None:
         "username": row["username"],
         "email": row["email"],
         "password_hash": row["password_hash"],
+        "is_admin": bool(row["is_admin"]),
         "created_at": row["created_at"],
     }
 
@@ -99,7 +106,7 @@ def get_user_by_username(database_path: Path, username: str) -> dict[str, Any] |
     """Return a user record by username, or None if not found."""
     with closing(connect_database(database_path)) as connection:
         row = connection.execute(
-            "SELECT user_id, username, email, password_hash, created_at "
+            "SELECT user_id, username, email, password_hash, is_admin, created_at "
             "FROM users WHERE username = ?",
             (username,),
         ).fetchone()
@@ -110,8 +117,200 @@ def get_user_by_username(database_path: Path, username: str) -> dict[str, Any] |
         "username": row["username"],
         "email": row["email"],
         "password_hash": row["password_hash"],
+        "is_admin": bool(row["is_admin"]),
         "created_at": row["created_at"],
     }
+
+
+def mark_user_admin(database_path: Path, user_id: str, *, is_admin: bool) -> None:
+    """Persist the account's admin flag without trusting client-supplied role state."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "UPDATE users SET is_admin = ? WHERE user_id = ?",
+                (int(is_admin), user_id),
+            )
+
+
+def create_feedback_item(
+    database_path: Path,
+    *,
+    user_id: str,
+    category: str,
+    title: str,
+    description: str,
+    status: str = "new",
+) -> dict[str, Any]:
+    """Create a feedback item and return its stored record."""
+    feedback_id = f"feedback_{secrets.token_urlsafe(12)}"
+    created_at = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO feedback_items(
+                    feedback_id, user_id, category, title, description, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    user_id,
+                    category,
+                    title,
+                    description,
+                    status,
+                    created_at,
+                    created_at,
+                ),
+            )
+    return get_feedback_item(database_path, feedback_id) or {
+        "feedback_id": feedback_id,
+        "user_id": user_id,
+        "category": category,
+        "title": title,
+        "description": description,
+        "status": status,
+        "created_at": created_at,
+        "updated_at": created_at,
+        "username": None,
+    }
+
+
+def get_feedback_item(database_path: Path, feedback_id: str) -> dict[str, Any] | None:
+    """Return one feedback item, including the submitter's username if available."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT f.feedback_id, f.user_id, f.category, f.title, f.description,
+                   f.status, f.created_at, f.updated_at, u.username
+            FROM feedback_items AS f
+            LEFT JOIN users AS u ON u.user_id = f.user_id
+            WHERE f.feedback_id = ?
+            """,
+            (feedback_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "feedback_id": row["feedback_id"],
+        "user_id": row["user_id"],
+        "category": row["category"],
+        "title": row["title"],
+        "description": row["description"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "username": row["username"],
+    }
+
+
+def list_feedback_for_user(database_path: Path, user_id: str) -> list[dict[str, Any]]:
+    """Return all feedback submitted by a user ordered by the newest update first."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT f.feedback_id, f.user_id, f.category, f.title, f.description,
+                   f.status, f.created_at, f.updated_at, u.username
+            FROM feedback_items AS f
+            LEFT JOIN users AS u ON u.user_id = f.user_id
+            WHERE f.user_id = ?
+            ORDER BY f.updated_at DESC, f.created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "feedback_id": row["feedback_id"],
+            "user_id": row["user_id"],
+            "category": row["category"],
+            "title": row["title"],
+            "description": row["description"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "username": row["username"],
+        }
+        for row in rows
+    ]
+
+
+def list_feedback_for_admin(database_path: Path) -> list[dict[str, Any]]:
+    """Return all feedback items for administrator review."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT f.feedback_id, f.user_id, f.category, f.title, f.description,
+                   f.status, f.created_at, f.updated_at, u.username
+            FROM feedback_items AS f
+            LEFT JOIN users AS u ON u.user_id = f.user_id
+            ORDER BY f.updated_at DESC, f.created_at DESC
+            """
+        ).fetchall()
+    return [
+        {
+            "feedback_id": row["feedback_id"],
+            "user_id": row["user_id"],
+            "category": row["category"],
+            "title": row["title"],
+            "description": row["description"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "username": row["username"],
+        }
+        for row in rows
+    ]
+
+
+def update_feedback_item(
+    database_path: Path,
+    *,
+    feedback_id: str,
+    user_id: str | None = None,
+    category: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a feedback item, enforcing ownership unless the caller is an admin."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT feedback_id, user_id, category, title, description, status FROM feedback_items WHERE feedback_id = ?",
+                (feedback_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            if user_id is not None and existing["user_id"] != user_id:
+                raise PermissionError("You do not own this feedback item.")
+
+            values: list[Any] = []
+            updates: list[str] = []
+            if category is not None:
+                updates.append("category = ?")
+                values.append(category)
+            if title is not None:
+                updates.append("title = ?")
+                values.append(title)
+            if description is not None:
+                updates.append("description = ?")
+                values.append(description)
+            if status is not None:
+                updates.append("status = ?")
+                values.append(status)
+
+            if not updates:
+                return get_feedback_item(database_path, feedback_id)
+
+            updates.append("updated_at = ?")
+            values.extend([datetime.now(UTC).isoformat()])
+            values.extend([feedback_id])
+            connection.execute(
+                f"UPDATE feedback_items SET {', '.join(updates)} WHERE feedback_id = ?",
+                tuple(values),
+            )
+
+    return get_feedback_item(database_path, feedback_id)
 
 
 def get_user_by_session(database_path: Path, session_token: str) -> dict[str, Any] | None:
@@ -121,7 +320,7 @@ def get_user_by_session(database_path: Path, session_token: str) -> dict[str, An
     """
     with closing(sqlite3.connect(database_path, timeout=5)) as connection:
         row = connection.execute(
-            """SELECT u.user_id, u.username, u.email, u.password_hash, u.created_at
+            """SELECT u.user_id, u.username, u.email, u.password_hash, u.is_admin, u.created_at
                FROM users u
                JOIN user_sessions s ON s.user_id = u.user_id
                WHERE s.session_id = ?""",
@@ -704,9 +903,16 @@ def initialize_storage(database_path: Path) -> None:
                     username TEXT NOT NULL UNIQUE,
                     email TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
+                    is_admin INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL
                 )
                 """
+            )
+            _ensure_column(
+                connection,
+                "users",
+                "is_admin",
+                "is_admin INTEGER NOT NULL DEFAULT 0",
             )
             # User sessions table
             connection.execute(
@@ -740,6 +946,26 @@ def initialize_storage(database_path: Path) -> None:
                     created_at TEXT NOT NULL
                 )
                 """
+            )
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS feedback_items (
+                    feedback_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                    category TEXT NOT NULL CHECK (category IN ('bug', 'usability', 'feature_request', 'other')),
+                    title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                    description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                    status TEXT NOT NULL CHECK (status IN ('new', 'reviewing', 'planned', 'resolved', 'withdrawn')),
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_feedback_items_user_id ON feedback_items(user_id)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_feedback_items_status ON feedback_items(status)"
             )
             connection.execute(
                 "CREATE INDEX IF NOT EXISTS idx_product_events_user_id ON product_events(user_id)"

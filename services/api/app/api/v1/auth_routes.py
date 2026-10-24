@@ -55,12 +55,15 @@ def _settings(request: Request) -> Settings:
 )
 def register(payload: Credentials, request: Request) -> dict[str, str]:
     """Create an account without revealing whether a username already exists."""
+    settings = _settings(request)
     password_hash = hash_password(payload.password)
+    admin_flag = payload.username.strip().lower() in settings.configured_admin_usernames
     try:
         create_user(
-            _settings(request).database_path,
+            settings.database_path,
             payload.username,
             password_hash,
+            is_admin=admin_flag,
         )
     except sqlite3.IntegrityError:
         pass
@@ -90,10 +93,14 @@ def login(payload: Credentials, request: Request, response: Response) -> dict[st
         is_production=settings.is_production,
         max_age=settings.session_ttl_seconds,
     )
+    is_admin = bool(user["is_admin"]) or (
+        user["username"].lower() in settings.configured_admin_usernames
+    )
     return {
         "userId": user["user_id"],
         "username": user["username"],
         "expiresAt": expires_at.isoformat(),
+        "isAdmin": is_admin,
     }
 
 
@@ -128,10 +135,14 @@ def current_user(request: Request) -> dict[str, Any]:
     )
     if session is None:
         raise _invalid_credentials()
+    is_admin = (
+        user.is_admin or user.username.lower() in _settings(request).configured_admin_usernames
+    )
     return {
         "userId": user.user_id,
         "username": user.username,
         "expiresAt": session["expires_at"],
+        "isAdmin": is_admin,
     }
 
 

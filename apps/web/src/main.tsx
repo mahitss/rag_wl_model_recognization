@@ -186,6 +186,20 @@ type Evidence = {
   fallbackReason: string | null;
 };
 
+type FeedbackCategory = "bug" | "usability" | "feature_request" | "other";
+type FeedbackStatus = "new" | "reviewing" | "planned" | "resolved" | "withdrawn";
+type FeedbackItem = {
+  feedbackId: string;
+  userId: string;
+  username: string | null;
+  category: FeedbackCategory;
+  title: string;
+  description: string;
+  status: FeedbackStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
 type GraphConcept = { conceptId: string; name: string; aliases: string[]; evidenceCount: number; relationshipCount: number };
 type GraphDetail = GraphConcept & {
   evidence: { chunkId: string; documentId: string; displayFilename: string; pageNumber: number; supportingText: string }[];
@@ -235,7 +249,7 @@ async function recordProductAnalyticsEvent(
   }
 }
 
-type SessionUser = { userId: string; username: string; expiresAt: string };
+type SessionUser = { userId: string; username: string; expiresAt: string; isAdmin: boolean };
 
 let csrfToken: string | null = null;
 
@@ -365,7 +379,7 @@ function AuthScreen() {
   if (checkingSession) {
     return <main className="auth-shell" aria-live="polite">Checking your session…</main>;
   }
-  if (session) return <LearningApp username={session.username} onLogout={() => void logout()} />;
+  if (session) return <LearningApp username={session.username} isAdmin={session.isAdmin} onLogout={() => void logout()} />;
 
   return (
     <main className="auth-shell">
@@ -425,7 +439,7 @@ export function App() {
   return <AuthScreen />;
 }
 
-function LearningApp({ username, onLogout }: { username: string; onLogout: () => void }) {
+function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmin: boolean; onLogout: () => void }) {
   const [diagram, setDiagram] = useState<Diagram | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<DiagramRegion | null>(null);
@@ -478,6 +492,23 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
   const [graphCursorScope, setGraphCursorScope] = useState<string | null>(null);
   const [graphDoneScope, setGraphDoneScope] = useState<string | null>(null);
   const requestNumber = useRef(0);
+
+  // --- Private beta feedback state ---
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [feedbackCategory, setFeedbackCategory] = useState<FeedbackCategory>("bug");
+  const [feedbackTitle, setFeedbackTitle] = useState("");
+  const [feedbackDescription, setFeedbackDescription] = useState("");
+  const [myFeedback, setMyFeedback] = useState<FeedbackItem[]>([]);
+  const [myFeedbackLoading, setMyFeedbackLoading] = useState(false);
+  const [editingFeedbackId, setEditingFeedbackId] = useState<string | null>(null);
+  const [editFeedbackCategory, setEditFeedbackCategory] = useState<FeedbackCategory>("bug");
+  const [editFeedbackTitle, setEditFeedbackTitle] = useState("");
+  const [editFeedbackDescription, setEditFeedbackDescription] = useState("");
+  const [adminFeedback, setAdminFeedback] = useState<FeedbackItem[]>([]);
+  const [adminFeedbackLoading, setAdminFeedbackLoading] = useState(false);
+  const [adminFeedbackError, setAdminFeedbackError] = useState<string | null>(null);
 
   useEffect(() => {
     const section = quiz?.status === "ready" ? `Quiz: ${quiz.topic}`
@@ -582,6 +613,8 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
       .catch((error: unknown) => {
         if (active) setImageError(error instanceof Error ? error.message : "Could not load saved images.");
       });
+    void loadMyFeedback();
+    if (isAdmin) void loadAdminFeedback();
     return () => {
       active = false;
     };
@@ -962,6 +995,100 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
     } catch (error) {
       setCoachExplanationError((current) => ({ ...current, [recommendationId]: error instanceof Error ? error.message : "The local tutor could not explain this recommendation." }));
     } finally { setStudyPlanLoading(false); }
+  }
+
+  // --- Private beta feedback ---
+  async function submitFeedback(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setFeedbackSubmitting(true);
+    setFeedbackError(null);
+    setFeedbackSubmitted(false);
+    try {
+      const response = await fetch("/api/v1/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: feedbackCategory, title: feedbackTitle.trim(), description: feedbackDescription.trim() }),
+      });
+      await readJson<{ feedback: FeedbackItem; message: string }>(response);
+      setFeedbackSubmitted(true);
+      setFeedbackTitle("");
+      setFeedbackDescription("");
+      await loadMyFeedback();
+    } catch (error) {
+      setFeedbackError(error instanceof Error ? error.message : "Could not send your feedback.");
+    } finally { setFeedbackSubmitting(false); }
+  }
+
+  async function loadMyFeedback() {
+    setMyFeedbackLoading(true);
+    setFeedbackError(null);
+    try {
+      const response = await fetch("/api/v1/feedback");
+      const result = await readJson<{ feedback: FeedbackItem[] }>(response);
+      setMyFeedback(result.feedback);
+    } catch (error) {
+      setFeedbackError(error instanceof Error ? error.message : "Could not load your feedback.");
+    } finally { setMyFeedbackLoading(false); }
+  }
+
+  async function updateMyFeedback(feedbackId: string, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setFeedbackError(null);
+    try {
+      const response = await fetch(`/api/v1/feedback/${encodeURIComponent(feedbackId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ category: editFeedbackCategory, title: editFeedbackTitle.trim(), description: editFeedbackDescription.trim() }),
+      });
+      const result = await readJson<{ feedback: FeedbackItem }>(response);
+      setMyFeedback((current) => current.map((item) => item.feedbackId === result.feedback.feedbackId ? result.feedback : item));
+      setEditingFeedbackId(null);
+    } catch (error) {
+      setFeedbackError(error instanceof Error ? error.message : "Could not update your feedback.");
+    }
+  }
+
+  async function withdrawFeedback(feedbackId: string) {
+    setFeedbackError(null);
+    try {
+      const response = await fetch(`/api/v1/feedback/${encodeURIComponent(feedbackId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "withdrawn" }),
+      });
+      const result = await readJson<{ feedback: FeedbackItem }>(response);
+      setMyFeedback((current) => current.map((item) => item.feedbackId === result.feedback.feedbackId ? result.feedback : item));
+    } catch (error) {
+      setFeedbackError(error instanceof Error ? error.message : "Could not withdraw your feedback.");
+    }
+  }
+
+  async function loadAdminFeedback() {
+    if (!isAdmin) return;
+    setAdminFeedbackLoading(true);
+    setAdminFeedbackError(null);
+    try {
+      const response = await fetch("/api/v1/feedback/admin");
+      const result = await readJson<{ feedback: FeedbackItem[] }>(response);
+      setAdminFeedback(result.feedback);
+    } catch (error) {
+      setAdminFeedbackError(error instanceof Error ? error.message : "Could not load feedback for review.");
+    } finally { setAdminFeedbackLoading(false); }
+  }
+
+  async function updateAdminFeedbackStatus(feedbackId: string, status: FeedbackStatus) {
+    setAdminFeedbackError(null);
+    try {
+      const response = await fetch(`/api/v1/feedback/${encodeURIComponent(feedbackId)}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status }),
+      });
+      const result = await readJson<{ feedback: FeedbackItem }>(response);
+      setAdminFeedback((current) => current.map((item) => item.feedbackId === result.feedback.feedbackId ? result.feedback : item));
+    } catch (error) {
+      setAdminFeedbackError(error instanceof Error ? error.message : "Could not update feedback status.");
+    }
   }
 
   async function beginStudySession(event: React.FormEvent<HTMLFormElement>) {
@@ -1780,6 +1907,198 @@ function LearningApp({ username, onLogout }: { username: string; onLogout: () =>
               <ul className="graph-relations">{selectedGraphConcept.evidence.map((item) => <li key={`${item.chunkId}-${item.supportingText}`}><blockquote>{item.supportingText}</blockquote><p className="citation-meta"><strong>{item.displayFilename}</strong> · page {item.pageNumber} · chunk <code>{item.chunkId}</code> · document <code>{item.documentId}</code></p></li>)}</ul>
             </article>}
           </div>
+        )}
+      </section>
+
+      <section className="feedback-panel" aria-labelledby="feedback-title">
+        <div className="feedback-heading">
+          <div>
+            <p className="eyebrow">Private beta · help us improve</p>
+            <h2 id="feedback-title">Send feedback</h2>
+            <p className="muted">Your report is stored only on this device and is visible to you and authorized administrators. No documents, tutor conversations, or camera frames are attached.</p>
+          </div>
+        </div>
+
+        <form className="feedback-form" onSubmit={(event) => void submitFeedback(event)}>
+          <fieldset>
+            <legend>Category</legend>
+            <label>
+              <input type="radio" name="feedbackCategory" value="bug" checked={feedbackCategory === "bug"} onChange={() => setFeedbackCategory("bug")} />
+              Bug report
+            </label>
+            <label>
+              <input type="radio" name="feedbackCategory" value="usability" checked={feedbackCategory === "usability"} onChange={() => setFeedbackCategory("usability")} />
+              Usability
+            </label>
+            <label>
+              <input type="radio" name="feedbackCategory" value="feature_request" checked={feedbackCategory === "feature_request"} onChange={() => setFeedbackCategory("feature_request")} />
+              Feature request
+            </label>
+            <label>
+              <input type="radio" name="feedbackCategory" value="other" checked={feedbackCategory === "other"} onChange={() => setFeedbackCategory("other")} />
+              Other
+            </label>
+          </fieldset>
+
+          <label className="document-control" htmlFor="feedback-title">
+            Title
+            <input
+              id="feedback-title"
+              maxLength={200}
+              minLength={1}
+              required
+              value={feedbackTitle}
+              onChange={(event) => setFeedbackTitle(event.currentTarget.value)}
+              placeholder="What did you notice?"
+              aria-invalid={feedbackError ? true : undefined}
+              aria-describedby={feedbackError ? "feedback-error" : undefined}
+            />
+          </label>
+
+          <label className="document-control" htmlFor="feedback-description">
+            Description
+            <textarea
+              id="feedback-description"
+              maxLength={4000}
+              minLength={1}
+              required
+              rows={5}
+              value={feedbackDescription}
+              onChange={(event) => setFeedbackDescription(event.currentTarget.value)}
+              placeholder="Describe what happened, what you expected, and how to reproduce it."
+              aria-invalid={feedbackError ? true : undefined}
+              aria-describedby={feedbackError ? "feedback-error" : undefined}
+            />
+          </label>
+
+          {feedbackError && <p id="feedback-error" className="notice notice--error" role="alert">{feedbackError}</p>}
+
+          <button
+            className="camera-action camera-action--primary"
+            type="submit"
+            disabled={feedbackSubmitting}
+          >
+            {feedbackSubmitting ? "Sending…" : "Send feedback"}
+          </button>
+        </form>
+
+        {feedbackSubmitted && (
+          <p className="notice" role="status">Your feedback was saved. Thank you for helping improve WonderLearn.</p>
+        )}
+
+        <section className="feedback-list" aria-labelledby="my-feedback-title">
+          <h3 id="my-feedback-title">Your feedback</h3>
+          {myFeedbackLoading && <p className="muted" role="status">Loading your feedback…</p>}
+          {myFeedback.length === 0 && !myFeedbackLoading && <p className="muted">You have not submitted any feedback yet.</p>}
+          {myFeedback.length > 0 && (
+            <ul className="feedback-items">
+              {myFeedback.map((item) => (
+                <li key={item.feedbackId} className={`feedback-item feedback-item--${item.status}`}>
+                  <div className="feedback-item-header">
+                    <span className="feedback-item-category">{item.category.replaceAll("_", " ")}</span>
+                    <span className={`feedback-item-status feedback-item-status--${item.status}`}>{item.status}</span>
+                  </div>
+                  <h4>{item.title}</h4>
+                  <p>{item.description}</p>
+                  <p className="feedback-item-meta">
+                    <time dateTime={item.createdAt}>{new Date(item.createdAt).toLocaleString()}</time>{" "}
+                    {item.updatedAt !== item.createdAt && <span> · updated {new Date(item.updatedAt).toLocaleString()}</span>}
+                  </p>
+                  {item.status !== "withdrawn" && (
+                    <div className="feedback-item-actions">
+                      {editingFeedbackId === item.feedbackId ? (
+                        <form className="feedback-edit-form" onSubmit={(event) => void updateMyFeedback(item.feedbackId, event)}>
+                          <label>
+                            Category
+                            <select value={editFeedbackCategory} onChange={(event) => setEditFeedbackCategory(event.currentTarget.value as FeedbackCategory)}>
+                              <option value="bug">Bug report</option>
+                              <option value="usability">Usability</option>
+                              <option value="feature_request">Feature request</option>
+                              <option value="other">Other</option>
+                            </select>
+                          </label>
+                          <label>
+                            Title
+                            <input maxLength={200} minLength={1} required value={editFeedbackTitle} onChange={(event) => setEditFeedbackTitle(event.currentTarget.value)} />
+                          </label>
+                          <label>
+                            Description
+                            <textarea maxLength={4000} minLength={1} required rows={4} value={editFeedbackDescription} onChange={(event) => setEditFeedbackDescription(event.currentTarget.value)} />
+                          </label>
+                          <button type="submit" className="camera-action">Save changes</button>
+                          <button type="button" className="camera-action" onClick={() => setEditingFeedbackId(null)}>Cancel</button>
+                        </form>
+                      ) : (
+                        <>
+                          <button type="button" className="text-action" onClick={() => {
+                            setEditingFeedbackId(item.feedbackId);
+                            setEditFeedbackCategory(item.category);
+                            setEditFeedbackTitle(item.title);
+                            setEditFeedbackDescription(item.description);
+                          }}>Edit</button>
+                          <button type="button" className="camera-action" onClick={() => void withdrawFeedback(item.feedbackId)}>Withdraw</button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        {isAdmin && (
+          <section className="feedback-admin" aria-labelledby="admin-feedback-title">
+            <h3 id="admin-feedback-title">Admin review</h3>
+            <p className="muted">List all beta feedback and update review status. Only administrators can access this view.</p>
+            {adminFeedbackLoading && <p className="muted" role="status">Loading feedback for review…</p>}
+            {adminFeedbackError && <p className="notice notice--error" role="alert">{adminFeedbackError}</p>}
+            {adminFeedback.length === 0 && !adminFeedbackLoading && <p className="muted">No feedback has been submitted yet.</p>}
+            {adminFeedback.length > 0 && (
+              <table className="feedback-admin-table">
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Submitted by</th>
+                    <th>Category</th>
+                    <th>Status</th>
+                    <th>Updated</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {adminFeedback.map((item) => (
+                    <tr key={item.feedbackId}>
+                      <td>{item.title}</td>
+                      <td>{item.username ?? item.userId}</td>
+                      <td>{item.category.replaceAll("_", " ")}</td>
+                      <td>
+                        <select
+                          value={item.status}
+                          onChange={(event) => void updateAdminFeedbackStatus(item.feedbackId, event.currentTarget.value as FeedbackStatus)}
+                        >
+                          <option value="new">New</option>
+                          <option value="reviewing">Reviewing</option>
+                          <option value="planned">Planned</option>
+                          <option value="resolved">Resolved</option>
+                          <option value="withdrawn">Withdrawn</option>
+                        </select>
+                      </td>
+                      <td><time dateTime={item.updatedAt}>{new Date(item.updatedAt).toLocaleString()}</time></td>
+                      <td>
+                        {item.description && (
+                          <details>
+                            <summary>View description</summary>
+                            <blockquote>{item.description}</blockquote>
+                          </details>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
         )}
       </section>
     </main>

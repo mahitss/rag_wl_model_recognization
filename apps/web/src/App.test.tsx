@@ -143,6 +143,22 @@ const productAnalyticsFixture = {
   privacy: { retentionDays: 90, rawContent: "not_collected", identifiers: "user_id_only_for_personalized_views" },
 };
 
+type FeedbackCategory = "bug" | "usability" | "feature_request" | "other";
+type FeedbackStatus = "new" | "reviewing" | "planned" | "resolved" | "withdrawn";
+type FeedbackItem = {
+  feedbackId: string;
+  userId: string;
+  username: string | null;
+  category: FeedbackCategory;
+  title: string;
+  description: string;
+  status: FeedbackStatus;
+  createdAt: string;
+  updatedAt: string;
+};
+
+let feedbackItems: FeedbackItem[] = [];
+
 const uploadedImageFixture = {
   imageId: "img_test_001", displayFilename: "biology-diagram.png", contentType: "image/png" as const,
   width: 100, height: 80, byteSize: 120, sha256: "a".repeat(64), createdAt: "2026-05-01T10:00:00Z",
@@ -162,7 +178,9 @@ function installFetchMock(
   configured = true,
   initialPlan: TestCoachPlan = { ...coachPlanFixture, recommendations: [], emptyReason: "No quiz attempts are recorded yet." },
   initiallySignedIn = true,
+  isAdminUser = false,
 ) {
+  feedbackItems = [];
   let progressResult = emptyProgress;
   let analyticsResult = analyticsFixture;
   let coachPlan = structuredClone(initialPlan);
@@ -175,7 +193,7 @@ function installFetchMock(
     if (url === "/api/v1/auth/csrf-token") return jsonResponse({ csrfToken: "test-csrf-token" });
     if (url === "/api/v1/auth/me") {
       return signedIn
-        ? jsonResponse({ userId: "user-test", username: "learner", expiresAt: "2099-01-01T00:00:00+00:00" })
+        ? jsonResponse({ userId: "user-test", username: "learner", expiresAt: "2099-01-01T00:00:00+00:00", isAdmin: isAdminUser })
         : { ok: false, status: 401, json: async () => ({ error: { message: "Unauthorized" } }) } as Response;
     }
     if (url === "/api/v1/auth/register") {
@@ -260,6 +278,63 @@ function installFetchMock(
     if (url === "/api/v1/knowledge-graph/relationships/rel-1/verify" && init?.method === "POST") {
       graphRelationshipStatus = "human_verified";
       return jsonResponse({ relationshipId: "rel-1", status: graphRelationshipStatus });
+    }
+    if (url === "/api/v1/feedback" && (init?.method ?? "GET") === "POST") {
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { category?: string; title?: string; description?: string };
+      if (!payload.title || !payload.description) {
+        return { ok: false, status: 422, json: async () => ({ error: { message: "Validation failed" } }) } as Response;
+      }
+      const newFeedback: FeedbackItem = {
+        feedbackId: "feedback_test_001",
+        userId: "user-test",
+        username: "learner",
+        category: (payload.category ?? "bug") as FeedbackCategory,
+        title: payload.title,
+        description: payload.description,
+        status: "new",
+        createdAt: "2026-10-20T12:00:00+00:00",
+        updatedAt: "2026-10-20T12:00:00+00:00",
+      };
+      feedbackItems.push(newFeedback);
+      return jsonResponse({ feedback: newFeedback, message: "Your feedback was saved." });
+    }
+    if (url === "/api/v1/feedback" && (init?.method ?? "GET") === "GET") {
+      return jsonResponse({ feedback: feedbackItems });
+    }
+    if (url.startsWith("/api/v1/feedback/") && (init?.method ?? "GET") === "PATCH" && !url.endsWith("/status")) {
+      const feedbackId = url.split("/").pop()!;
+      const index = feedbackItems.findIndex((item) => item.feedbackId === feedbackId);
+      if (index === -1) {
+        return { ok: false, status: 404, json: async () => ({ error: { message: "Not found" } }) } as Response;
+      }
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { category?: string; title?: string; description?: string; status?: string };
+      const existing = feedbackItems[index];
+      feedbackItems[index] = {
+        ...existing,
+        ...(payload.category !== undefined && { category: payload.category as FeedbackCategory }),
+        ...(payload.title !== undefined && { title: payload.title }),
+        ...(payload.description !== undefined && { description: payload.description }),
+        ...(payload.status !== undefined && { status: payload.status as FeedbackStatus }),
+        updatedAt: "2026-10-20T12:00:01+00:00",
+      };
+      return jsonResponse({ feedback: feedbackItems[index], message: "Feedback updated." });
+    }
+    if (url === "/api/v1/feedback/admin" && (init?.method ?? "GET") === "GET") {
+      return jsonResponse({ feedback: feedbackItems });
+    }
+    if (url.startsWith("/api/v1/feedback/") && url.endsWith("/status") && (init?.method ?? "GET") === "PATCH") {
+      const feedbackId = url.split("/").pop()!.replace("/status", "");
+      const index = feedbackItems.findIndex((item) => item.feedbackId === feedbackId);
+      if (index === -1) {
+        return { ok: false, status: 404, json: async () => ({ error: { message: "Not found" } }) } as Response;
+      }
+      const payload = JSON.parse(String(init?.body ?? "{}")) as { status?: string };
+      feedbackItems[index] = {
+        ...feedbackItems[index],
+        ...(payload.status !== undefined && { status: payload.status as FeedbackStatus }),
+        updatedAt: "2026-10-20T12:00:01+00:00",
+      };
+      return jsonResponse({ feedback: feedbackItems[index], message: "Feedback status updated." });
     }
     if (url === "/api/v1/quizzes") {
       const payload = JSON.parse(String(init?.body ?? "{}")) as { topic?: string };
@@ -657,5 +732,81 @@ describe("accessibility", () => {
     const parent = tutorAnswer.parentElement;
     expect(parent).not.toBeNull();
     expect(parent?.getAttribute("aria-live")).toBe("polite");
+  });
+});
+
+describe("private beta feedback", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    installFetchMock();
+  });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it("submits feedback and calls the API", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Send feedback" });
+
+    await user.type(screen.getByPlaceholderText("What did you notice?"), "Feedback title");
+    await user.type(screen.getByPlaceholderText("Describe what happened, what you expected, and how to reproduce it."), "Feedback description.");
+    await user.click(screen.getByRole("button", { name: "Send feedback" }));
+
+    expect(fetchMock.mock.calls.some(([url, init]) =>
+      String(url) === "/api/v1/feedback" && String(init?.method) === "POST")).toBe(true);
+    const postCall = fetchMock.mock.calls.find(([url, init]) => String(url) === "/api/v1/feedback" && String(init?.method) === "POST");
+    const body = JSON.parse(String((postCall?.[1] as any)?.body));
+    expect(body.title).toBe("Feedback title");
+    expect(body.category).toBe("bug");
+  });
+
+  it("edits and withdraws own feedback", async () => {
+    const user = userEvent.setup();
+    const fetchMock = installFetchMock();
+    render(<App />);
+
+    await screen.findByRole("heading", { name: "Send feedback" });
+    await user.type(screen.getByPlaceholderText("What did you notice?"), "Original title");
+    await user.type(screen.getByPlaceholderText("Describe what happened, what you expected, and how to reproduce it."), "Original description.");
+    await user.click(screen.getByRole("button", { name: "Send feedback" }));
+    const postCalls = fetchMock.mock.calls.filter(([url, init]) => String(url) === "/api/v1/feedback" && String(init?.method) === "POST");
+    expect(postCalls.length).toBeGreaterThanOrEqual(1);
+
+    // Edit form appears when clicking Edit; verify the PATCH call is made.
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByPlaceholderText("What did you notice?"));
+    await user.type(screen.getByPlaceholderText("What did you notice?"), "Updated title");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    const patchCalls = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).startsWith("/api/v1/feedback/") && !String(url).endsWith("/status") && String(init?.method) === "PATCH");
+    expect(patchCalls.length).toBeGreaterThanOrEqual(1);
+
+    await user.click(screen.getByRole("button", { name: "Withdraw" }));
+    const withdrawCalls = fetchMock.mock.calls.filter(([url, init]) =>
+      String(url).startsWith("/api/v1/feedback/") && !String(url).endsWith("/status") && String(init?.method) === "PATCH");
+    expect(withdrawCalls.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("shows admin review panel for administrators", async () => {
+    installFetchMock(true, undefined, true, true);
+    feedbackItems.push({
+      feedbackId: "feedback_admin_001",
+      userId: "user-other",
+      username: "beta-tester",
+      category: "bug",
+      title: "Admin-visible bug",
+      description: "A bug for administrators to review.",
+      status: "new",
+      createdAt: "2026-10-20T10:00:00+00:00",
+      updatedAt: "2026-10-20T10:00:00+00:00",
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Send feedback" });
+
+    await screen.findByRole("heading", { name: "Admin review" });
+    expect(screen.getAllByText("Admin-visible bug").length).toBeGreaterThanOrEqual(1);
+    expect(await screen.findByText("beta-tester")).not.toBeNull();
   });
 });

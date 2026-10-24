@@ -12,7 +12,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
-from app.auth import AuthUser, get_current_user, require_auth
+from app.auth import AuthUser, get_current_user, require_admin, require_auth
 from app.config import Settings
 from app.diagrams.catalog import DIAGRAMS, get_diagram, resolve_region
 from app.embeddings.service import EmbeddingService, ModelUnavailable
@@ -43,6 +43,10 @@ from app.schemas import (
     DocumentResponse,
     DocumentsResponse,
     EmbeddingStatusResponse,
+    FeedbackAdminStatusRequest,
+    FeedbackCreateRequest,
+    FeedbackListResponse,
+    FeedbackUpdateRequest,
     HealthResponse,
     ImageEvidenceResponse,
     ImageRegionCreateRequest,
@@ -80,6 +84,7 @@ from app.schemas import (
 )
 from app.storage import (
     complete_study_session,
+    create_feedback_item,
     create_learning_image_region,
     create_quiz_set,
     delete_document,
@@ -97,6 +102,8 @@ from app.storage import (
     get_quiz_set,
     knowledge_graph_chunks,
     list_documents,
+    list_feedback_for_admin,
+    list_feedback_for_user,
     list_knowledge_concepts,
     list_learning_images,
     prune_product_events,
@@ -106,6 +113,7 @@ from app.storage import (
     start_study_session,
     store_knowledge_extraction,
     store_learning_image,
+    update_feedback_item,
     update_study_coach_recommendation,
     verify_knowledge_relationship,
 )
@@ -220,6 +228,97 @@ def health(request: Request) -> dict[str, Any]:
             "model_inference": settings.tutor_configured,
         },
     }
+
+
+@router.post("/feedback", response_model=dict[str, Any], tags=["beta"])
+def create_feedback(
+    request: Request,
+    payload: FeedbackCreateRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Create a private beta feedback report for the authenticated account."""
+    item = create_feedback_item(
+        _database_path(request),
+        user_id=current_user.user_id,
+        category=payload.category,
+        title=payload.title.strip(),
+        description=payload.description.strip(),
+    )
+    return {
+        "feedback": item,
+        "message": "Your feedback was saved.",
+    }
+
+
+@router.get("/feedback", response_model=FeedbackListResponse, tags=["beta"])
+def list_feedback(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, list[dict[str, Any]]]:
+    """List the current user's feedback submissions."""
+    return {"feedback": list_feedback_for_user(_database_path(request), current_user.user_id)}
+
+
+@router.patch("/feedback/{feedback_id}", response_model=dict[str, Any], tags=["beta"])
+def update_feedback(
+    request: Request,
+    feedback_id: str,
+    payload: FeedbackUpdateRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Allow an owner to update or withdraw their own feedback when suitable."""
+    updates: dict[str, Any] = {}
+    if payload.category is not None:
+        updates["category"] = payload.category
+    if payload.title is not None:
+        updates["title"] = payload.title.strip()
+    if payload.description is not None:
+        updates["description"] = payload.description.strip()
+    if payload.status is not None:
+        updates["status"] = payload.status
+
+    if not updates:
+        raise ApiError(400, "EMPTY_FEEDBACK_UPDATE", "No updates were provided.")
+
+    try:
+        existing = update_feedback_item(
+            _database_path(request),
+            feedback_id=feedback_id,
+            user_id=current_user.user_id,
+            **updates,
+        )
+    except PermissionError as exc:
+        raise ApiError(403, "FEEDBACK_FORBIDDEN", "You do not own this feedback item.") from exc
+    if existing is None:
+        raise ApiError(404, "FEEDBACK_NOT_FOUND", "Feedback item was not found.")
+    return {"feedback": existing, "message": "Feedback updated."}
+
+
+@router.get("/feedback/admin", response_model=FeedbackListResponse, tags=["beta"])
+def list_feedback_admin(
+    request: Request,
+    _: AuthUser = Depends(require_admin),
+) -> dict[str, list[dict[str, Any]]]:
+    """List all feedback for private-beta review by administrators."""
+    return {"feedback": list_feedback_for_admin(_database_path(request))}
+
+
+@router.patch("/feedback/{feedback_id}/status", response_model=dict[str, Any], tags=["beta"])
+def update_feedback_status(
+    request: Request,
+    feedback_id: str,
+    payload: FeedbackAdminStatusRequest,
+    _: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Allow administrators to move feedback through its review lifecycle."""
+    existing = update_feedback_item(
+        _database_path(request),
+        feedback_id=feedback_id,
+        status=payload.status,
+    )
+    if existing is None:
+        raise ApiError(404, "FEEDBACK_NOT_FOUND", "Feedback item was not found.")
+    return {"feedback": existing, "message": "Feedback status updated."}
 
 
 @router.get("/product-analytics", response_model=ProductAnalyticsSummary, tags=["analytics"])

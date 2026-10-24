@@ -57,6 +57,7 @@ class Settings(BaseSettings):
 
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
+    admin_usernames: str = ""
     diagnostics_token: str | None = None
     analytics_enabled: bool = False
     product_analytics_retention_days: int = 90
@@ -243,6 +244,14 @@ class Settings(BaseSettings):
     @property
     def tutor_configured(self) -> bool:
         return self.tutor_base_url is not None
+
+    @property
+    def configured_admin_usernames(self) -> set[str]:
+        return {
+            value.strip().lower()
+            for value in self.admin_usernames.split(",")
+            if value and value.strip()
+        }
 
     @property
     def is_production(self) -> bool:

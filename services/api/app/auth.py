@@ -179,9 +179,10 @@ def cleanup_expired_sessions(database_path: Path) -> int:
 class AuthUser:
     """Authenticated user information available on ``request.state.user``."""
 
-    def __init__(self, user_id: str, username: str) -> None:
+    def __init__(self, user_id: str, username: str, *, is_admin: bool = False) -> None:
         self.user_id = user_id
         self.username = username
+        self.is_admin = is_admin
 
 
 def get_current_user(request: Request) -> AuthUser | None:
@@ -206,7 +207,10 @@ def get_current_user(request: Request) -> AuthUser | None:
     user = get_user_by_id(database_path, session["user_id"])
     if user is None:
         return None
-    return AuthUser(user_id=user["user_id"], username=user["username"])
+    is_admin = bool(user.get("is_admin", False)) or (
+        user.get("username", "").lower() in settings.configured_admin_usernames
+    )
+    return AuthUser(user_id=user["user_id"], username=user["username"], is_admin=is_admin)
 
 
 def require_auth(request: Request) -> AuthUser:
@@ -221,6 +225,17 @@ def require_auth(request: Request) -> AuthUser:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Authentication required",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user
+
+
+def require_admin(request: Request) -> AuthUser:
+    """Require an authenticated administrator account for sensitive review flows."""
+    user = require_auth(request)
+    if not user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Administrator access required.",
         )
     return user
 

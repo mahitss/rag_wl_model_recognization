@@ -1014,3 +1014,92 @@ textarea:focus-visible,
   outline: 3px solid #b96d23;
   outline-offset: 2px;
 }
+
+/* --- M33: Onboarding --- */
+.onboarding {
+  margin: 1.5rem 0;
+  padding: clamp(1rem, 3vw, 2rem);
+  border: 1px solid #d7e1d8;
+  border-radius: 1rem;
+  background: #fff;
+}
+.onboarding-card {
+  max-width: 56rem;
+}
+.onboarding-heading h2 {
+  margin: 0.2rem 0 0.5rem;
+  font-size: 1.35rem;
+}
+.onboarding-heading .muted {
+  margin: 0 0 1rem;
+}
+.onboarding-step {
+  margin: 1.25rem 0;
+  padding: 1rem;
+  border-radius: 0.8rem;
+  background: #f7faf6;
+}
+.onboarding-step h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+.onboarding-step p {
+  margin: 0;
+  line-height: 1.6;
+}
+.onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem;
+  margin-top: 1.25rem;
+  align-items: center;
+}
+.camera-action.camera-action--quiet {
+  background: transparent;
+  border-color: transparent;
+  color: #205e49;
+}
+.camera-action.camera-action--quiet:hover {
+  background: #f3f7f1;
+}
+
+/* --- M33: Getting-started checklist --- */
+.onboarding-checklist {
+  margin: 1.5rem 0;
+  padding: clamp(1rem, 3vw, 1.5rem);
+  border: 1px solid #d7e1d8;
+  border-radius: 1rem;
+  background: #fff;
+}
+.onboarding-checklist h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.35rem;
+}
+.checklist {
+  display: grid;
+  gap: 0.55rem;
+  margin: 0.75rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+.checklist-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid #e0e6de;
+  border-radius: 0.7rem;
+  background: #fbfcf8;
+}
+.checklist-item--done {
+  border-color: #b9d4c4;
+  background: #f0f7f1;
+}
+.checklist-item strong {
+  display: block;
+  margin-bottom: 0.2rem;
+}
+.checklist-item .muted {
+  margin-top: 0.2rem;
+  font-size: 0.85rem;
+}

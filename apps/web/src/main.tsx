@@ -583,6 +583,38 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [linkTaskFeedbackId, setLinkTaskFeedbackId] = useState<string | null>(null);
   const [selectedLinkTaskId, setSelectedLinkTaskId] = useState<string | null>(null);
 
+  // --- M33: Onboarding state ---
+  const [onboardingStep, setOnboardingStep] = useState<number>(0);
+  const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(false);
+  const [onboardingSkipped, setOnboardingSkipped] = useState<boolean>(false);
+
+  const ONBOARDING_STEPS = [
+    {
+      title: "What WonderLearn does",
+      body:
+        "WonderLearn is a local-first visual learning assistant. You upload PDFs, choose a concept from a curated diagram, and find evidence in your own materials. Answers always cite the exact passage they came from — nothing is invented.",
+    },
+    {
+      title: "Your data stays on this device",
+      body:
+        "PDFs, images, and learning records are stored in a local SQLite database on your device. Camera frames are never saved. No documents, tutor conversations, or camera frames are sent to external services. Feedback and analytics are private to your account and administrators.",
+    },
+    {
+      title: "Upload your first document",
+      body:
+        "Upload a PDF through 'Add a learning PDF.' Once indexed, you can choose a diagram region to find supporting passages in your material.",
+    },
+    {
+      title: "Ask a grounded question",
+      body:
+        "After uploading, ask a question about your materials. Answers are built only from retrieved evidence, with citations showing the source document, page, and exact passage.",
+    },
+    {
+      title: "Try a quiz and plan study",
+      body:
+        "Generate an evidence-backed quiz from a topic, record your answers, and start a study session. Local analytics track your progress and schedule reviews.",
+    },
+  ];
   useEffect(() => {
     const section = quiz?.status === "ready" ? `Quiz: ${quiz.topic}`
       : selectedGraphConcept ? `Knowledge graph: ${selectedGraphConcept.name}`
@@ -690,6 +722,20 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     if (isAdmin) {
       void loadAdminFeedback();
       void loadImprovementTasks();
+    }
+    // Load onboarding state for the current user from localStorage.
+    if (username) {
+      try {
+        const stored = localStorage.getItem(`wl-onboarding-${username}-v1`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setOnboardingCompleted(parsed.completed ?? false);
+          setOnboardingSkipped(parsed.skipped ?? false);
+          setOnboardingStep(parsed.step ?? 0);
+        }
+      } catch {
+        // Ignore localStorage parse errors; onboarding will show by default.
+      }
     }
     return () => {
       active = false;
@@ -1316,6 +1362,123 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     }
   }
 
+  // --- M33: Onboarding helpers ---
+
+  function saveOnboardingState() {
+    if (!username) return;
+    try {
+      const state = {
+        step: onboardingStep,
+        completed: onboardingCompleted,
+        skipped: onboardingSkipped,
+      };
+      localStorage.setItem(`wl-onboarding-${username}-v1`, JSON.stringify(state));
+    } catch {
+      // Ignore localStorage write errors.
+    }
+  }
+
+  function computeChecklist() {
+    const documentUploaded = (documents ?? []).length > 0;
+    const questionsAnswered =
+      (progress?.totalAttempts ?? 0) > 0 ||
+      evidence?.status === "evidence_found" ||
+      tutorResult?.status === "answered";
+    const quizCompleted =
+      quiz?.questions.some((question) => question.latestOutcome !== null) ?? false;
+    const sessionCompleted = (analytics?.totals.completedStudySessions ?? 0) > 0;
+
+    return [
+      {
+        id: "account",
+        label: "Account ready",
+        done: true,
+        hint: "Signed in as " + username,
+      },
+      {
+        id: "document",
+        label: "First document uploaded and processed",
+        done: documentUploaded,
+        hint: documentUploaded ? "Indexed and ready for evidence lookup" : "Upload a PDF to get started",
+      },
+      {
+        id: "evidence",
+        label: "First grounded question answered",
+        done: questionsAnswered,
+        hint: questionsAnswered
+          ? "Evidence-backed answer received"
+          : "Ask a question about your uploaded materials",
+      },
+      {
+        id: "quiz",
+        label: "First quiz completed",
+        done: quizCompleted,
+        hint: quizCompleted ? "Quiz answers recorded" : "Generate and complete a quiz",
+      },
+      {
+        id: "session",
+        label: "First study session completed",
+        done: sessionCompleted,
+        hint: sessionCompleted ? "Study session recorded" : "Start and complete a study session",
+      },
+    ];
+  }
+
+  const samplePdfContent = `%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R>>endobj
+4 0 obj<</Length 98>>stream
+BT/F1 12 Tf 72 712 Td(Photosynthesis is the process by which green plants,Tj ET
+BT/F1 12 Tf 72 700 Td(algae, and some bacteria convert light energy,Tj ET
+BT/F1 12 Tf 72 688 Td(into chemical energy stored in glucose.)Tj ET
+BT/F1 12 Tf 72 676 Td(Carbon dioxide and water are the inputs; oxygen,Tj ET
+BT/F1 12 Tf 72 664 Td(is released as a byproduct.)Tj ET
+endstream endobj
+xref 0 5
+0000000000 65535 f 
+0000000010 00000 n 
+0000000058 00000 n 
+0000000113 00000 n 
+0000000196 00000 n 
+trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
+
+  function downloadSamplePdf() {
+    const blob = new Blob([samplePdfContent], { type: "application/pdf" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "wonderlearn-sample-photosynthesis.pdf";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+  }
+
+  function nextOnboardingStep() {
+    if (onboardingStep < ONBOARDING_STEPS.length - 1) {
+      setOnboardingStep((current) => current + 1);
+      saveOnboardingState();
+    } else {
+      setOnboardingCompleted(true);
+      setOnboardingStep(ONBOARDING_STEPS.length - 1);
+      saveOnboardingState();
+    }
+  }
+
+  function skipOnboarding() {
+    setOnboardingSkipped(true);
+    setOnboardingCompleted(true);
+    saveOnboardingState();
+  }
+
+  function restartOnboarding() {
+    setOnboardingCompleted(false);
+    setOnboardingSkipped(false);
+    setOnboardingStep(0);
+    saveOnboardingState();
+  }
+
   async function beginStudySession(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setAnalyticsLoading(true);
@@ -1454,6 +1617,11 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       <header className="page-header">
         <div className="session-controls">
           <span>Signed in as <strong>{username}</strong></span>
+          {(onboardingCompleted || onboardingSkipped) && (
+            <button type="button" className="text-action" onClick={restartOnboarding}>
+              Show onboarding again
+            </button>
+          )}
           <button type="button" onClick={onLogout}>Sign out</button>
         </div>
         <p className="eyebrow">WonderLearn · curated diagram</p>
@@ -1463,6 +1631,88 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
           with a pointer or use Tab and Enter.
         </p>
       </header>
+
+      {!onboardingCompleted && !onboardingSkipped && (
+        <section className="onboarding" aria-labelledby="onboarding-title">
+          <div className="onboarding-card">
+            <div className="onboarding-heading">
+              <p className="eyebrow">Welcome to WonderLearn</p>
+              <h2 id="onboarding-title">Get started in {ONBOARDING_STEPS.length} steps</h2>
+              <p className="muted">
+                Step {onboardingStep + 1} of {ONBOARDING_STEPS.length}
+              </p>
+            </div>
+            <div className="onboarding-step">
+              <h3>{ONBOARDING_STEPS[onboardingStep].title}</h3>
+              <p>{ONBOARDING_STEPS[onboardingStep].body}</p>
+            </div>
+            <div className="onboarding-actions">
+              {onboardingStep > 0 && (
+                <button type="button" className="camera-action" onClick={() => setOnboardingStep((current) => current - 1)}>
+                  Back
+                </button>
+              )}
+              {onboardingStep < ONBOARDING_STEPS.length - 1 ? (
+                <>
+                  <button type="button" className="text-action" onClick={skipOnboarding}>
+                    Skip tour
+                  </button>
+                  {onboardingStep === 2 && (
+                    <button type="button" className="camera-action" onClick={downloadSamplePdf}>
+                      Download sample PDF
+                    </button>
+                  )}
+                  <button type="button" className="camera-action camera-action--primary" onClick={nextOnboardingStep}>
+                    Next
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button type="button" className="text-action" onClick={skipOnboarding}>
+                    Skip tour
+                  </button>
+                  <button type="button" className="camera-action camera-action--primary" onClick={nextOnboardingStep}>
+                    Finish
+                  </button>
+                </>
+              )}
+            </div>
+            <button type="button" className="camera-action camera-action--quiet" onClick={restartOnboarding}>
+              Restart tour
+            </button>
+          </div>
+        </section>
+      )}
+
+      <section className="onboarding-checklist" aria-labelledby="checklist-title">
+        <h2 id="checklist-title">Getting started checklist</h2>
+        <p className="muted">
+          Progress is derived from your actual saved records — nothing is marked complete unless
+          you have done it.
+        </p>
+        <ul className="checklist" role="none">
+          {computeChecklist().map((item) => (
+            <li key={item.id} role="none" className={`checklist-item${item.done ? " checklist-item--done" : ""}`}>
+              <span aria-hidden="true">{item.done ? "☑" : "☐"}</span>
+              <span>
+                <strong>{item.label}</strong>
+                {item.done ? <span className="muted"> — {item.hint}</span> : <span className="muted"> — {item.hint}</span>}
+              </span>
+            </li>
+          ))}
+        </ul>
+        {!onboardingCompleted && !onboardingSkipped && (
+          <p className="notice" role="status">
+            New to WonderLearn? The onboarding tour above walks you through each step. You can
+            restart it anytime using "Restart tour."
+          </p>
+        )}
+        {onboardingSkipped && (
+          <p className="notice" role="status">
+            You skipped the onboarding tour. Use "Restart tour" below to view it again.
+          </p>
+        )}
+      </section>
 
       {pageError && (
         <p className="notice notice--error" role="alert">

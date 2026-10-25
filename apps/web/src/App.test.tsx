@@ -379,6 +379,95 @@ function installFetchMock(
       }
       return tutorAnswerResponse();
     }
+    if (url === "/api/v1/workspaces") {
+      if (init?.method === "POST") {
+        const payload = JSON.parse(String(init.body)) as { title?: string; description?: string; learningObjective?: string };
+        return jsonResponse({
+          spaceId: "space_test_001",
+          ownerId: "user-test",
+          title: payload.title ?? "New space",
+          description: payload.description ?? "",
+          learningObjective: payload.learningObjective ?? null,
+          status: "active",
+          memberCount: 1,
+          createdAt: "2026-10-25T12:00:00+00:00",
+          updatedAt: "2026-10-25T12:00:00+00:00",
+          userRole: "owner",
+        });
+      }
+      return jsonResponse({ spaces: [{ spaceId: "space_test_001", ownerId: "user-test", title: "Test space", description: "A test space.", learningObjective: null, status: "active", memberCount: 1, createdAt: "2026-10-25T12:00:00+00:00", updatedAt: "2026-10-25T12:00:00+00:00", userRole: "owner" }] });
+    }
+    if (url === "/api/v1/workspaces/space_test_001") {
+      if (init?.method === "PATCH") {
+        const payload = JSON.parse(String(init.body)) as { title?: string; description?: string; learningObjective?: string; status?: string };
+        return jsonResponse({
+          spaceId: "space_test_001",
+          ownerId: "user-test",
+          title: payload.title ?? "Test space",
+          description: payload.description ?? "A test space.",
+          learningObjective: payload.learningObjective ?? null,
+          status: payload.status ?? "active",
+          memberCount: 2,
+          createdAt: "2026-10-25T12:00:00+00:00",
+          updatedAt: "2026-10-25T12:00:01+00:00",
+          userRole: "owner",
+        });
+      }
+      return jsonResponse({
+        spaceId: "space_test_001",
+        ownerId: "user-test",
+        title: "Test space",
+        description: "A test space.",
+        learningObjective: null,
+        status: "active",
+        memberCount: 2,
+        createdAt: "2026-10-25T12:00:00+00:00",
+        updatedAt: "2026-10-25T12:00:00+00:00",
+        userRole: "owner",
+      });
+    }
+    if (url === "/api/v1/workspaces/space_test_001/members") {
+      if (init?.method === "POST") {
+        return jsonResponse({ userId: "user-test-2", username: "invited-user", role: "member", joinedAt: "2026-10-25T12:00:00+00:00" });
+      }
+      return jsonResponse([
+        { userId: "user-test", username: "learner", role: "owner", joinedAt: "2026-10-25T12:00:00+00:00" },
+        { userId: "user-test-2", username: "invited-user", role: "member", joinedAt: "2026-10-25T12:00:00+00:00" },
+      ]);
+    }
+    if (url === "/api/v1/workspaces/space_test_001/members/user-test-2" && init?.method === "DELETE") {
+      return jsonResponse({ userId: "user-test-2", removed: true });
+    }
+    if (url === "/api/v1/workspaces/space_test_001/documents") {
+      if (init?.method === "POST") {
+        return jsonResponse({ documentId: "doc_shared_001", displayFilename: "shared.pdf", sha256: "a".repeat(64), byteSize: 100, pageCount: 1, chunkCount: 1, createdAt: "2026-10-25T12:00:00+00:00", parserVersion: "pypdf/6.0.0", sharedAt: "2026-10-25T12:00:00+00:00", sharedBy: "user-test", sharedByUsername: "learner" });
+      }
+      return jsonResponse({ documents: [{ documentId: "doc_shared_001", displayFilename: "shared.pdf", sha256: "a".repeat(64), byteSize: 100, pageCount: 1, chunkCount: 1, createdAt: "2026-10-25T12:00:00+00:00", parserVersion: "pypdf/6.0.0", sharedAt: "2026-10-25T12:00:00+00:00", sharedBy: "user-test", sharedByUsername: "learner" }] });
+    }
+    if (url === "/api/v1/workspaces/space_test_001/documents/doc_shared_001" && init?.method === "DELETE") {
+      return jsonResponse({ documentId: "doc_shared_001", removed: true });
+    }
+    if (url === "/api/v1/workspaces/space_test_001/quizzes") {
+      if (init?.method === "POST") {
+        return jsonResponse({ quizId: "quiz_shared_001", topicId: "topic_shared", topic: "Shared quiz", createdAt: "2026-10-25T12:00:00+00:00", sharedAt: "2026-10-25T12:00:00+00:00", sharedBy: "user-test", sharedByUsername: "learner" });
+      }
+      return jsonResponse({ quizzes: [{ quizId: "quiz_shared_001", topicId: "topic_shared", topic: "Shared quiz", createdAt: "2026-10-25T12:00:00+00:00", sharedAt: "2026-10-25T12:00:00+00:00", sharedBy: "user-test", sharedByUsername: "learner" }] });
+    }
+    if (url === "/api/v1/workspaces/space_test_001/quizzes/quiz_shared_001" && init?.method === "DELETE") {
+      return jsonResponse({ quizId: "quiz_shared_001", removed: true });
+    }
+    if (url === "/api/v1/workspaces/space_test_001/discussions") {
+      if (init?.method === "POST") {
+        return jsonResponse({ discussionId: "disc_test_001", spaceId: "space_test_001", userId: "user-test", username: "learner", content: "Test discussion", createdAt: "2026-10-25T12:00:00+00:00" });
+      }
+      return jsonResponse({ discussions: [{ discussionId: "disc_test_001", spaceId: "space_test_001", userId: "user-test", username: "learner", content: "Test discussion", createdAt: "2026-10-25T12:00:00+00:00" }] });
+    }
+    if (url === "/api/v1/workspaces/space_test_001/discussions/disc_test_001/replies") {
+      if (init?.method === "POST") {
+        return jsonResponse({ replyId: "reply_test_001", discussionId: "disc_test_001", userId: "user-test", username: "learner", content: "Test reply", createdAt: "2026-10-25T12:00:00+00:00" });
+      }
+      return jsonResponse({ replies: [{ replyId: "reply_test_001", discussionId: "disc_test_001", userId: "user-test", username: "learner", content: "Test reply", createdAt: "2026-10-25T12:00:00+00:00" }] });
+    }
     throw new Error(`Unexpected test request: ${url}`);
   });
   vi.stubGlobal("fetch", mock);
@@ -808,5 +897,80 @@ describe("private beta feedback", () => {
     await screen.findByRole("heading", { name: "Admin review" });
     expect(screen.getAllByText("Admin-visible bug").length).toBeGreaterThanOrEqual(1);
     expect(await screen.findByText("beta-tester")).not.toBeNull();
+  });
+});
+
+describe("shared study spaces", () => {
+  beforeEach(() => {
+    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
+    installFetchMock();
+  });
+  afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+
+  it("creates a workspace and lists it", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Explore a concept" });
+    await screen.findByText("Your spaces");
+
+    await user.click(screen.getByRole("button", { name: "Create space" }));
+
+    expect(await screen.findByRole("heading", { name: "Create a study space" })).not.toBeNull();
+    await user.type(screen.getByPlaceholderText("For example, Biology study group"), "Biology study group");
+    await user.type(screen.getByPlaceholderText("What is this space for?"), "Shared biology notes.");
+    await user.click(screen.getByRole("button", { name: "Create space" }));
+
+    const fetchMock = fetch as unknown as ReturnType<typeof vi.fn>;
+    const createCall = fetchMock.mock.calls.find(([url, init]) =>
+      String(url) === "/api/v1/workspaces" && String(init?.method) === "POST");
+    expect(createCall).toBeDefined();
+    const body = JSON.parse(String((createCall?.[1] as any)?.body));
+    expect(body.title).toBe("Biology study group");
+    expect(body.description).toBe("Shared biology notes.");
+  });
+
+  it("opens a workspace and shows members, documents, quizzes, and discussions", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Explore a concept" });
+    await screen.findByText("Test space");
+
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    await screen.findByRole("heading", { name: "Test space" });
+    expect(await screen.findByText("shared.pdf")).not.toBeNull();
+    expect(await screen.findByText("Shared quiz")).not.toBeNull();
+    expect(await screen.findByText("Test discussion")).not.toBeNull();
+  });
+
+  it("invites a member and shares a document", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Explore a concept" });
+    await screen.findByText("Test space");
+
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    await screen.findByRole("heading", { name: "Test space" });
+    await screen.findByText("invited-user");
+    await user.type(screen.getByLabelText("Share a document by ID"), "doc_shared_001");
+    await user.click(screen.getByRole("button", { name: "Share document" }));
+    expect(await screen.findByText("shared.pdf")).not.toBeNull();
+  });
+
+  it("creates a discussion and reply", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await screen.findByRole("heading", { name: "Explore a concept" });
+    await screen.findByText("Test space");
+
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    await screen.findByRole("heading", { name: "Test space" });
+    await user.type(screen.getByLabelText("Start a discussion"), "What should we study?");
+    await user.click(screen.getByRole("button", { name: "Post" }));
+    expect(await screen.findByText("Test discussion")).not.toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Replies" }));
+    await user.type(screen.getByLabelText("Reply"), "Photosynthesis next week.");
+    await user.click(screen.getByRole("button", { name: "Post reply" }));
+    expect(await screen.findByText("Test reply")).not.toBeNull();
   });
 });

@@ -14,7 +14,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 16
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -2056,6 +2056,115 @@ def initialize_storage(database_path: Path) -> None:
                         PRIMARY KEY (objective_id, activity_type, activity_id)
                     )
                     """
+                )
+
+            if version < 15:
+                # M36: Shared study spaces (private collaboration workspaces).
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_spaces (
+                        space_id TEXT PRIMARY KEY,
+                        owner_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        learning_objective TEXT,
+                        status TEXT NOT NULL CHECK (status IN ('active', 'archived')),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_spaces_owner_id "
+                    "ON study_spaces(owner_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_spaces_status "
+                    "ON study_spaces(status)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS workspace_members (
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id) ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN ('owner', 'member')),
+                        joined_at TEXT NOT NULL,
+                        PRIMARY KEY (space_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id "
+                    "ON workspace_members(user_id)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS workspace_documents (
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id) ON DELETE CASCADE,
+                        document_id TEXT NOT NULL REFERENCES documents(document_id) ON DELETE CASCADE,
+                        shared_by TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        shared_at TEXT NOT NULL,
+                        PRIMARY KEY (space_id, document_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workspace_documents_document_id "
+                    "ON workspace_documents(document_id)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS workspace_discussions (
+                        discussion_id TEXT PRIMARY KEY,
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id) ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 4000),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workspace_discussions_space_id "
+                    "ON workspace_discussions(space_id, created_at DESC)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS workspace_discussion_replies (
+                        reply_id TEXT PRIMARY KEY,
+                        discussion_id TEXT NOT NULL REFERENCES workspace_discussions(discussion_id) ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 4000),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workspace_discussion_replies_discussion_id "
+                    "ON workspace_discussion_replies(discussion_id, created_at)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS workspace_quizzes (
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id) ON DELETE CASCADE,
+                        quiz_id TEXT NOT NULL REFERENCES quiz_sets(quiz_id) ON DELETE CASCADE,
+                        shared_by TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        shared_at TEXT NOT NULL,
+                        PRIMARY KEY (space_id, quiz_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workspace_quizzes_quiz_id "
+                    "ON workspace_quizzes(quiz_id)"
+                )
+
+            if version < 16:
+                # M36: Optional learning objective on shared study spaces.
+                _ensure_column(
+                    connection,
+                    "study_spaces",
+                    "learning_objective",
+                    "learning_objective TEXT",
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -4742,3 +4851,643 @@ def _get_user_topic_sources(database_path: Path, user_id: str) -> dict[str, list
             }
         )
     return result
+
+
+# ---------------------------------------------------------------------------
+# M36: Shared study spaces (private collaboration workspaces).
+# ---------------------------------------------------------------------------
+
+def _workspace_exists(database_path: Path, space_id: str) -> dict[str, Any] | None:
+    with closing(connect_database(database_path)) as connection:
+        return connection.execute(
+            "SELECT space_id, owner_id, title, description, learning_objective, status, created_at, updated_at "
+            "FROM study_spaces WHERE space_id = ?",
+            (space_id,),
+        ).fetchone()
+
+
+def _workspace_member_row(database_path: Path, space_id: str, user_id: str) -> dict[str, Any] | None:
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT space_id, user_id, role, joined_at FROM workspace_members WHERE space_id = ? AND user_id = ?",
+            (space_id, user_id),
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def _is_workspace_member(database_path: Path, space_id: str, user_id: str) -> bool:
+    return _workspace_member_row(database_path, space_id, user_id) is not None
+
+
+def _is_workspace_owner(database_path: Path, space_id: str, user_id: str) -> bool:
+    row = _workspace_member_row(database_path, space_id, user_id)
+    return row is not None and row["role"] == "owner"
+
+
+def create_study_space(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    description: str,
+    learning_objective: str | None = None,
+) -> dict[str, Any]:
+    """Create a study space owned by ``user_id`` and register them as owner member."""
+    import secrets
+
+    space_id = f"space_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = description.strip()
+    learning_objective = (learning_objective or "").strip() or None
+    if learning_objective is not None and len(learning_objective) > 1000:
+        raise ValueError("Learning objective must not exceed 1000 characters.")
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO study_spaces(
+                    space_id, owner_id, title, description, learning_objective, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (space_id, user_id, title, description, learning_objective, now, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO workspace_members(space_id, user_id, role, joined_at)
+                VALUES (?, ?, 'owner', ?)
+                """,
+                (space_id, user_id, now),
+            )
+    return {
+        "spaceId": space_id,
+        "ownerId": user_id,
+        "title": title,
+        "description": description,
+        "learningObjective": learning_objective,
+        "status": "active",
+        "memberCount": 1,
+        "createdAt": now,
+        "updatedAt": now,
+        "userRole": "owner",
+    }
+
+
+def list_study_spaces(database_path: Path, *, user_id: str, status: str | None = None) -> list[dict[str, Any]]:
+    """List study spaces the user owns or is a member of, newest first."""
+    query = """
+        SELECT s.space_id, s.owner_id, s.title, s.description, s.learning_objective,
+               s.status, s.created_at, s.updated_at,
+               m.role AS user_role,
+               (SELECT COUNT(*) FROM workspace_members wm WHERE wm.space_id = s.space_id) AS member_count
+        FROM study_spaces AS s
+        JOIN workspace_members AS m ON m.space_id = s.space_id AND m.user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if status is not None:
+        query += " AND s.status = ?"
+        params.append(status)
+    query += " ORDER BY s.updated_at DESC, s.created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [_space_row_to_public(row) for row in rows]
+
+
+def _space_row_to_public(row: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "spaceId": row["space_id"],
+        "ownerId": row["owner_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "learningObjective": row["learning_objective"],
+        "status": row["status"],
+        "memberCount": row["member_count"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "userRole": row["user_role"],
+    }
+
+
+def get_study_space(database_path: Path, *, space_id: str, user_id: str) -> dict[str, Any] | None:
+    """Return a study space if the user is a member; None otherwise."""
+    row = _workspace_exists(database_path, space_id)
+    if row is None:
+        return None
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    return {
+        "spaceId": row["space_id"],
+        "ownerId": row["owner_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "learningObjective": row["learning_objective"],
+        "status": row["status"],
+        "memberCount": 0,
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "userRole": _workspace_member_row(database_path, space_id, user_id)["role"],
+    }
+
+
+def update_study_space(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    learning_objective: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable study-space fields. Only the owner may update."""
+    if not _is_workspace_owner(database_path, space_id, user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    updates: list[str] = []
+    values: list[Any] = []
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise ValueError("Title must not be blank.")
+        updates.append("title = ?")
+        values.append(title)
+    if description is not None:
+        description = description.strip()
+        if not description:
+            raise ValueError("Description must not be blank.")
+        updates.append("description = ?")
+        values.append(description)
+    if learning_objective is not None:
+        learning_objective = learning_objective.strip() or None
+        if learning_objective is not None and len(learning_objective) > 1000:
+            raise ValueError("Learning objective must not exceed 1000 characters.")
+        updates.append("learning_objective = ?")
+        values.append(learning_objective)
+    if status is not None:
+        if status not in {"active", "archived"}:
+            raise ValueError("Status must be 'active' or 'archived'.")
+        updates.append("status = ?")
+        values.append(status)
+    if not updates:
+        return get_study_space(database_path, space_id=space_id, user_id=user_id)
+    updates.append("updated_at = ?")
+    values.append(datetime.now(UTC).isoformat())
+    values.append(space_id)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                f"UPDATE study_spaces SET {', '.join(updates)} WHERE space_id = ?",
+                tuple(values),
+            )
+    return get_study_space(database_path, space_id=space_id, user_id=user_id)
+
+
+def delete_study_space(database_path: Path, *, space_id: str, user_id: str) -> bool:
+    """Delete a study space. Only the owner may delete; cascades members/docs/quizzes/discussions."""
+    if not _is_workspace_owner(database_path, space_id, user_id):
+        return False
+    row = _workspace_exists(database_path, space_id)
+    if row is None:
+        return False
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute("DELETE FROM study_spaces WHERE space_id = ?", (space_id,))
+    return True
+
+
+def list_workspace_members(database_path: Path, *, space_id: str, user_id: str) -> list[dict[str, Any]] | None:
+    """List members of a space if the caller is a member; None if unauthorized."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.user_id, m.role, m.joined_at, u.username
+            FROM workspace_members AS m
+            JOIN users AS u ON u.user_id = m.user_id
+            WHERE m.space_id = ?
+            ORDER BY m.role DESC, u.username COLLATE NOCASE
+            """,
+            (space_id,),
+        ).fetchall()
+    return [
+        {
+            "userId": row["user_id"],
+            "username": row["username"],
+            "role": row["role"],
+            "joinedAt": row["joined_at"],
+        }
+        for row in rows
+    ]
+
+
+def add_workspace_member(
+    database_path: Path,
+    *,
+    space_id: str,
+    inviter_user_id: str,
+    target_username: str,
+) -> dict[str, Any] | None:
+    """Invite a user to a workspace by username. Only the owner may invite."""
+    if not _is_workspace_owner(database_path, space_id, inviter_user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    target_username = target_username.strip()
+    with closing(connect_database(database_path)) as connection:
+        target = connection.execute(
+            "SELECT user_id, username FROM users WHERE username = ?", (target_username,)
+        ).fetchone()
+        if target is None:
+            return None
+        if _is_workspace_member(database_path, space_id, target["user_id"]):
+            return None
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO workspace_members(space_id, user_id, role, joined_at)
+                VALUES (?, ?, 'member', ?)
+                """,
+                (space_id, target["user_id"], now),
+            )
+    return {
+        "userId": target["user_id"],
+        "username": target["username"],
+        "role": "member",
+        "joinedAt": now,
+    }
+
+
+def remove_workspace_member(
+    database_path: Path,
+    *,
+    space_id: str,
+    actor_user_id: str,
+    target_user_id: str,
+) -> bool:
+    """Remove a member from a space. Only the owner may remove; owner cannot remove themselves."""
+    if not _is_workspace_owner(database_path, space_id, actor_user_id):
+        return False
+    if actor_user_id == target_user_id:
+        return False
+    if _workspace_exists(database_path, space_id) is None:
+        return False
+    if not _is_workspace_member(database_path, space_id, target_user_id):
+        return False
+    row = _workspace_member_row(database_path, space_id, target_user_id)
+    if row is not None and row["role"] == "owner":
+        return False
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "DELETE FROM workspace_members WHERE space_id = ? AND user_id = ?",
+                (space_id, target_user_id),
+            )
+    return True
+
+
+def share_document_with_workspace(
+    database_path: Path,
+    *,
+    space_id: str,
+    actor_user_id: str,
+    document_id: str,
+) -> dict[str, Any] | None:
+    """Share an owned document with a workspace. Only the owner/members of the space may share."""
+    if not _is_workspace_member(database_path, space_id, actor_user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        doc = connection.execute(
+            "SELECT document_id, display_name, sha256, byte_size, page_count, chunk_count, created_at, parser_version, user_id FROM documents WHERE document_id = ?",
+            (document_id,),
+        ).fetchone()
+        if doc is None:
+            return None
+        if doc["user_id"] != actor_user_id and doc["user_id"] is not None:
+            return None
+        existing = connection.execute(
+            "SELECT 1 FROM workspace_documents WHERE space_id = ? AND document_id = ?",
+            (space_id, document_id),
+        ).fetchone()
+        if existing is not None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO workspace_documents(space_id, document_id, shared_by, shared_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (space_id, document_id, actor_user_id, now),
+            )
+    return {
+        "documentId": doc["document_id"],
+        "displayFilename": doc["display_name"],
+        "sha256": doc["sha256"],
+        "byteSize": doc["byte_size"],
+        "pageCount": doc["page_count"],
+        "chunkCount": doc["chunk_count"],
+        "createdAt": doc["created_at"],
+        "parserVersion": doc["parser_version"],
+        "sharedAt": now,
+        "sharedBy": actor_user_id,
+        "sharedByUsername": None,
+    }
+
+
+def list_workspace_documents(
+    database_path: Path, *, space_id: str, user_id: str
+) -> list[dict[str, Any]] | None:
+    """List documents shared with a workspace if the caller is a member; None if unauthorized."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT wd.document_id, d.display_name, d.sha256, d.byte_size, d.page_count,
+                   d.chunk_count, d.created_at, d.parser_version, wd.shared_at, wd.shared_by, u.username
+            FROM workspace_documents AS wd
+            JOIN documents AS d ON d.document_id = wd.document_id
+            JOIN users AS u ON u.user_id = wd.shared_by
+            WHERE wd.space_id = ?
+            ORDER BY wd.shared_at DESC
+            """,
+            (space_id,),
+        ).fetchall()
+    return [
+        {
+            "documentId": row["document_id"],
+            "displayFilename": row["display_name"],
+            "sha256": row["sha256"],
+            "byteSize": row["byte_size"],
+            "pageCount": row["page_count"],
+            "chunkCount": row["chunk_count"],
+            "createdAt": row["created_at"],
+            "parserVersion": row["parser_version"],
+            "sharedAt": row["shared_at"],
+            "sharedBy": row["shared_by"],
+            "sharedByUsername": row["username"],
+        }
+        for row in rows
+    ]
+
+
+def remove_workspace_document(
+    database_path: Path, *, space_id: str, actor_user_id: str, document_id: str
+) -> bool:
+    """Unshare a document from a workspace. Only the sharer or space owner may unshare."""
+    if not _is_workspace_member(database_path, space_id, actor_user_id):
+        return False
+    if _workspace_exists(database_path, space_id) is None:
+        return False
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT shared_by FROM workspace_documents WHERE space_id = ? AND document_id = ?",
+            (space_id, document_id),
+        ).fetchone()
+        if row is None:
+            return False
+        is_owner = _is_workspace_owner(database_path, space_id, actor_user_id)
+        if not is_owner and row["shared_by"] != actor_user_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM workspace_documents WHERE space_id = ? AND document_id = ?",
+                (space_id, document_id),
+            )
+    return True
+
+
+def share_quiz_with_workspace(
+    database_path: Path,
+    *,
+    space_id: str,
+    actor_user_id: str,
+    quiz_id: str,
+) -> dict[str, Any] | None:
+    """Share an owned quiz with a workspace. Only space members may share."""
+    if not _is_workspace_member(database_path, space_id, actor_user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        quiz = connection.execute(
+            "SELECT quiz_id, user_id FROM quiz_sets WHERE quiz_id = ?",
+            (quiz_id,),
+        ).fetchone()
+        if quiz is None:
+            return None
+        if quiz["user_id"] != actor_user_id and quiz["user_id"] is not None:
+            return None
+        existing = connection.execute(
+            "SELECT 1 FROM workspace_quizzes WHERE space_id = ? AND quiz_id = ?",
+            (space_id, quiz_id),
+        ).fetchone()
+        if existing is not None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO workspace_quizzes(space_id, quiz_id, shared_by, shared_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (space_id, quiz_id, actor_user_id, now),
+            )
+    return {
+        "spaceId": space_id,
+        "quizId": quiz_id,
+        "sharedBy": actor_user_id,
+        "sharedAt": now,
+    }
+
+
+def list_workspace_quizzes(
+    database_path: Path, *, space_id: str, user_id: str
+) -> list[dict[str, Any]] | None:
+    """List quizzes shared with a workspace if the caller is a member; None if unauthorized."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT wq.quiz_id, qs.topic_id, qs.topic, qs.created_at, wq.shared_at, wq.shared_by, u.username
+            FROM workspace_quizzes AS wq
+            JOIN quiz_sets AS qs ON qs.quiz_id = wq.quiz_id
+            JOIN users AS u ON u.user_id = wq.shared_by
+            WHERE wq.space_id = ?
+            ORDER BY wq.shared_at DESC
+            """,
+            (space_id,),
+        ).fetchall()
+    return [
+        {
+            "quizId": row["quiz_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "createdAt": row["created_at"],
+            "sharedAt": row["shared_at"],
+            "sharedBy": row["shared_by"],
+            "sharedByUsername": row["username"],
+        }
+        for row in rows
+    ]
+
+
+def create_workspace_discussion(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+    content: str,
+) -> dict[str, Any] | None:
+    """Create a discussion thread in a workspace. Only members may create."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    import secrets
+
+    content = content.strip()
+    if not content:
+        raise ValueError("Discussion content must not be blank.")
+    if len(content) > 4000:
+        raise ValueError("Discussion content must not exceed 4000 characters.")
+    discussion_id = f"disc_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO workspace_discussions(discussion_id, space_id, user_id, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (discussion_id, space_id, user_id, content, now),
+            )
+    return {
+        "discussionId": discussion_id,
+        "spaceId": space_id,
+        "userId": user_id,
+        "content": content,
+        "createdAt": now,
+    }
+
+
+def list_workspace_discussions(
+    database_path: Path, *, space_id: str, user_id: str
+) -> list[dict[str, Any]] | None:
+    """List discussion threads in a workspace if the caller is a member; None if unauthorized."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT d.discussion_id, d.space_id, d.user_id, d.content, d.created_at, u.username
+            FROM workspace_discussions AS d
+            JOIN users AS u ON u.user_id = d.user_id
+            WHERE d.space_id = ?
+            ORDER BY d.created_at DESC
+            """,
+            (space_id,),
+        ).fetchall()
+    return [
+        {
+            "discussionId": row["discussion_id"],
+            "spaceId": row["space_id"],
+            "userId": row["user_id"],
+            "username": row["username"],
+            "content": row["content"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_workspace_discussion_reply(
+    database_path: Path,
+    *,
+    space_id: str,
+    discussion_id: str,
+    user_id: str,
+    content: str,
+) -> dict[str, Any] | None:
+    """Reply to a discussion thread. Only members may reply."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    import secrets
+
+    content = content.strip()
+    if not content:
+        raise ValueError("Reply content must not be blank.")
+    if len(content) > 4000:
+        raise ValueError("Reply content must not exceed 4000 characters.")
+    reply_id = f"reply_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            discussion = connection.execute(
+                "SELECT discussion_id FROM workspace_discussions WHERE discussion_id = ? AND space_id = ?",
+                (discussion_id, space_id),
+            ).fetchone()
+            if discussion is None:
+                return None
+            connection.execute(
+                """
+                INSERT INTO workspace_discussion_replies(reply_id, discussion_id, user_id, content, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (reply_id, discussion_id, user_id, content, now),
+            )
+    return {
+        "replyId": reply_id,
+        "discussionId": discussion_id,
+        "userId": user_id,
+        "content": content,
+        "createdAt": now,
+    }
+
+
+def list_workspace_discussion_replies(
+    database_path: Path, *, space_id: str, discussion_id: str, user_id: str
+) -> list[dict[str, Any]] | None:
+    """List replies to a discussion if the caller is a member; None if unauthorized."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    if _workspace_exists(database_path, space_id) is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        discussion = connection.execute(
+            "SELECT discussion_id FROM workspace_discussions WHERE discussion_id = ? AND space_id = ?",
+            (discussion_id, space_id),
+        ).fetchone()
+        if discussion is None:
+            return None
+        rows = connection.execute(
+            """
+            SELECT r.reply_id, r.discussion_id, r.user_id, r.content, r.created_at, u.username
+            FROM workspace_discussion_replies AS r
+            JOIN users AS u ON u.user_id = r.user_id
+            WHERE r.discussion_id = ?
+            ORDER BY r.created_at ASC
+            """,
+            (discussion_id,),
+        ).fetchall()
+    return [
+        {
+            "replyId": row["reply_id"],
+            "discussionId": row["discussion_id"],
+            "userId": row["user_id"],
+            "username": row["username"],
+            "content": row["content"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]

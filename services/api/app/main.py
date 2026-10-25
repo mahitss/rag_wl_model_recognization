@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.auth_routes import router as auth_router
 from app.api.v1.routes import make_error_response, router
+from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
 from app.errors import ApiError
@@ -102,6 +103,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(auth_router)
     # Main API router (all user-facing endpoints require authentication)
     application.include_router(router)
+    # Workspace router (shared study spaces require membership)
+    application.include_router(workspaces_router)
 
     @application.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> Any:

@@ -245,6 +245,63 @@ type GraphDetail = GraphConcept & {
   }[];
 };
 
+type Workspace = {
+  spaceId: string;
+  ownerId: string;
+  title: string;
+  description: string;
+  learningObjective: string | null;
+  status: "active" | "archived";
+  memberCount: number;
+  createdAt: string;
+  updatedAt: string;
+  userRole: "owner" | "member";
+};
+type WorkspaceMember = {
+  userId: string;
+  username: string | null;
+  role: "owner" | "member";
+  joinedAt: string;
+};
+type WorkspaceDocument = {
+  documentId: string;
+  displayFilename: string;
+  sha256: string;
+  byteSize: number;
+  pageCount: number;
+  chunkCount: number;
+  createdAt: string;
+  parserVersion: string;
+  sharedAt: string;
+  sharedBy: string;
+  sharedByUsername: string | null;
+};
+type WorkspaceQuiz = {
+  quizId: string;
+  topicId: string;
+  topic: string;
+  createdAt: string;
+  sharedAt: string;
+  sharedBy: string;
+  sharedByUsername: string | null;
+};
+type WorkspaceDiscussion = {
+  discussionId: string;
+  spaceId: string;
+  userId: string;
+  username: string | null;
+  content: string;
+  createdAt: string;
+};
+type WorkspaceDiscussionReply = {
+  replyId: string;
+  discussionId: string;
+  userId: string;
+  username: string | null;
+  content: string;
+  createdAt: string;
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   const body = (await response.json()) as T | { error?: { message?: string } };
   if (!response.ok) {
@@ -554,6 +611,32 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [graphDoneScope, setGraphDoneScope] = useState<string | null>(null);
   const requestNumber = useRef(0);
 
+  // --- M36: Shared study spaces ---
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [workspacesLoading, setWorkspacesLoading] = useState(false);
+  const [workspacesError, setWorkspacesError] = useState<string | null>(null);
+  const [selectedSpaceId, setSelectedSpaceId] = useState<string | null>(null);
+  const [selectedSpace, setSelectedSpace] = useState<Workspace | null>(null);
+  const [workspaceMembers, setWorkspaceMembers] = useState<WorkspaceMember[]>([]);
+  const [workspaceMembersLoading, setWorkspaceMembersLoading] = useState(false);
+  const [workspaceDocuments, setWorkspaceDocuments] = useState<WorkspaceDocument[]>([]);
+  const [workspaceQuizzes, setWorkspaceQuizzes] = useState<WorkspaceQuiz[]>([]);
+  const [workspaceDiscussions, setWorkspaceDiscussions] = useState<WorkspaceDiscussion[]>([]);
+  const [workspaceDiscussionReplies, setWorkspaceDiscussionReplies] = useState<WorkspaceDiscussionReply[]>([]);
+  const [selectedDiscussionId, setSelectedDiscussionId] = useState<string | null>(null);
+  const [newWorkspaceTitle, setNewWorkspaceTitle] = useState("");
+  const [newWorkspaceDescription, setNewWorkspaceDescription] = useState("");
+  const [newWorkspaceObjective, setNewWorkspaceObjective] = useState("");
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
+  const [inviteUsername, setInviteUsername] = useState("");
+  const [invitingMember, setInvitingMember] = useState(false);
+  const [newDocumentShare, setNewDocumentShare] = useState("");
+  const [newQuizShare, setNewQuizShare] = useState("");
+  const [newDiscussionContent, setNewDiscussionContent] = useState("");
+  const [newReplyContent, setNewReplyContent] = useState("");
+  const [creatingDiscussion, setCreatingDiscussion] = useState(false);
+
+
   // --- Private beta feedback state ---
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
@@ -746,6 +829,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
         if (active) setImageError(error instanceof Error ? error.message : "Could not load saved images.");
       });
     void loadMyFeedback();
+    void loadWorkspaces();
     if (isAdmin) {
       void loadAdminFeedback();
       void loadImprovementTasks();
@@ -1178,6 +1262,290 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     } catch (error) {
       setFeedbackError(error instanceof Error ? error.message : "Could not load your feedback.");
     } finally { setMyFeedbackLoading(false); }
+  }
+
+  // --- M36: Shared study spaces ---
+  async function loadWorkspaces() {
+    setWorkspacesLoading(true);
+    setWorkspacesError(null);
+    try {
+      const response = await fetch("/api/v1/workspaces");
+      const result = await readJson<{ spaces: Workspace[] }>(response);
+      setWorkspaces(result.spaces);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not load workspaces.");
+    } finally { setWorkspacesLoading(false); }
+  }
+
+  async function loadWorkspace(spaceId: string) {
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}`);
+      const result = await readJson<Workspace>(response);
+      setSelectedSpace(result);
+      setSelectedSpaceId(spaceId);
+      await loadWorkspaceMembers(spaceId);
+      await loadWorkspaceDocuments(spaceId);
+      await loadWorkspaceQuizzes(spaceId);
+      await loadWorkspaceDiscussions(spaceId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not load workspace.");
+    }
+  }
+
+  async function loadWorkspaceMembers(spaceId: string) {
+    setWorkspaceMembersLoading(true);
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/members`);
+      const result = await readJson<WorkspaceMember[]>(response);
+      setWorkspaceMembers(result);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not load members.");
+    } finally { setWorkspaceMembersLoading(false); }
+  }
+
+  async function loadWorkspaceDocuments(spaceId: string) {
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/documents`);
+      const result = await readJson<{ documents: WorkspaceDocument[] }>(response);
+      setWorkspaceDocuments(result.documents);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not load shared documents.");
+    }
+  }
+
+  async function loadWorkspaceQuizzes(spaceId: string) {
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/quizzes`);
+      const result = await readJson<{ quizzes: WorkspaceQuiz[] }>(response);
+      setWorkspaceQuizzes(result.quizzes);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not load shared quizzes.");
+    }
+  }
+
+  async function loadWorkspaceDiscussions(spaceId: string) {
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/discussions`);
+      const result = await readJson<{ discussions: WorkspaceDiscussion[] }>(response);
+      setWorkspaceDiscussions(result.discussions);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not load discussions.");
+    }
+  }
+
+  async function loadWorkspaceDiscussionReplies(discussionId: string) {
+    if (!selectedSpaceId) return;
+    try {
+      const response = await fetch(
+        `/api/v1/workspaces/${encodeURIComponent(selectedSpaceId)}/discussions/${encodeURIComponent(discussionId)}/replies`,
+      );
+      const result = await readJson<{ replies: WorkspaceDiscussionReply[] }>(response);
+      setWorkspaceDiscussionReplies(result.replies);
+      setSelectedDiscussionId(discussionId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not load replies.");
+    }
+  }
+
+  async function createWorkspace(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreatingWorkspace(true);
+    setWorkspacesError(null);
+    try {
+      const response = await fetch("/api/v1/workspaces", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: newWorkspaceTitle.trim(),
+          description: newWorkspaceDescription.trim(),
+          ...(newWorkspaceObjective.trim() ? { learningObjective: newWorkspaceObjective.trim() } : {}),
+        }),
+      });
+      const result = await readJson<Workspace>(response);
+      setWorkspaces((current) => [result, ...current]);
+      setNewWorkspaceTitle("");
+      setNewWorkspaceDescription("");
+      setNewWorkspaceObjective("");
+      await loadWorkspaces();
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not create workspace.");
+    } finally { setCreatingWorkspace(false); }
+  }
+
+  async function updateWorkspace(spaceId: string, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setWorkspacesError(null);
+    const form = new FormData(event.currentTarget);
+    const title = String(form.get("title")).trim();
+    const description = String(form.get("description")).trim();
+    const learningObjective = String(form.get("learningObjective")).trim();
+    const status = String(form.get("status"));
+    const updates: Record<string, any> = {};
+    if (title) updates.title = title;
+    if (description) updates.description = description;
+    if (learningObjective) updates.learningObjective = learningObjective;
+    if (status) updates.status = status;
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      const result = await readJson<Workspace>(response);
+      setWorkspaces((current) => current.map((item) => (item.spaceId === result.spaceId ? result : item)));
+      if (selectedSpaceId === spaceId) setSelectedSpace(result);
+      await loadWorkspaces();
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not update workspace.");
+    }
+  }
+
+  async function archiveWorkspace(spaceId: string) {
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "archived" }),
+      });
+      await readJson<Workspace>(response);
+      setWorkspaces((current) => current.map((item) => (item.spaceId === spaceId ? { ...item, status: "archived" } : item)));
+      if (selectedSpaceId === spaceId) {
+        setSelectedSpace(null);
+        setSelectedSpaceId(null);
+      }
+      await loadWorkspaces();
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not archive workspace.");
+    }
+  }
+
+  async function deleteWorkspace(spaceId: string) {
+    if (!confirm("Deleting a workspace removes all shared memberships, documents, quizzes, and discussions. Continue?")) return;
+    try {
+      await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}`, { method: "DELETE" });
+      setWorkspaces((current) => current.filter((item) => item.spaceId !== spaceId));
+      if (selectedSpaceId === spaceId) {
+        setSelectedSpace(null);
+        setSelectedSpaceId(null);
+      }
+      await loadWorkspaces();
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not delete workspace.");
+    }
+  }
+
+  async function inviteMember(spaceId: string) {
+    setInvitingMember(true);
+    setWorkspacesError(null);
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: inviteUsername.trim() }),
+      });
+      await readJson<WorkspaceMember>(response);
+      setInviteUsername("");
+      await loadWorkspaceMembers(spaceId);
+      await loadWorkspaces();
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not invite member.");
+    } finally { setInvitingMember(false); }
+  }
+
+  async function removeMember(spaceId: string, userId: string) {
+    if (!confirm("Remove this member from the workspace?")) return;
+    try {
+      await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/members/${encodeURIComponent(userId)}`, { method: "DELETE" });
+      await loadWorkspaceMembers(spaceId);
+      await loadWorkspaces();
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not remove member.");
+    }
+  }
+
+  async function shareDocument(spaceId: string) {
+    setWorkspacesError(null);
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/documents`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ documentId: newDocumentShare.trim() }),
+      });
+      await readJson<WorkspaceDocument>(response);
+      setNewDocumentShare("");
+      await loadWorkspaceDocuments(spaceId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not share document.");
+    }
+  }
+
+  async function unshareDocument(spaceId: string, documentId: string) {
+    try {
+      await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/documents/${encodeURIComponent(documentId)}`, { method: "DELETE" });
+      await loadWorkspaceDocuments(spaceId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not unshare document.");
+    }
+  }
+
+  async function shareQuiz(spaceId: string) {
+    setWorkspacesError(null);
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/quizzes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quizId: newQuizShare.trim() }),
+      });
+      await readJson<WorkspaceQuiz>(response);
+      setNewQuizShare("");
+      await loadWorkspaceQuizzes(spaceId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not share quiz.");
+    }
+  }
+
+  async function unshareQuiz(spaceId: string, quizId: string) {
+    try {
+      await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/quizzes/${encodeURIComponent(quizId)}`, { method: "DELETE" });
+      await loadWorkspaceQuizzes(spaceId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not unshare quiz.");
+    }
+  }
+
+  async function createDiscussion(spaceId: string, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreatingDiscussion(true);
+    setWorkspacesError(null);
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/discussions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: newDiscussionContent.trim() }),
+      });
+      await readJson<WorkspaceDiscussion>(response);
+      setNewDiscussionContent("");
+      await loadWorkspaceDiscussions(spaceId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not create discussion.");
+    } finally { setCreatingDiscussion(false); }
+  }
+
+  async function createReply(spaceId: string, discussionId: string, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setWorkspacesError(null);
+    try {
+      const response = await fetch(`/api/v1/workspaces/${encodeURIComponent(spaceId)}/discussions/${encodeURIComponent(discussionId)}/replies`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: newReplyContent.trim() }),
+      });
+      await readJson<WorkspaceDiscussionReply>(response);
+      setNewReplyContent("");
+      await loadWorkspaceDiscussionReplies(discussionId);
+    } catch (error) {
+      setWorkspacesError(error instanceof Error ? error.message : "Could not post reply.");
+    }
   }
 
   async function updateMyFeedback(feedbackId: string, event: React.FormEvent<HTMLFormElement>) {
@@ -2939,6 +3307,299 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
               </button>
             </form>
           </section>
+        )}
+      </section>
+      <section className="workspace-panel" aria-labelledby="workspace-title">
+        <div className="workspace-heading">
+          <div>
+            <p className="eyebrow">Shared study spaces</p>
+            <h2 id="workspace-panel-title">Study spaces</h2>
+            <p className="muted">Shared spaces are private to their members. Your personal documents, quiz history, and analytics are never shared unless you explicitly add them to a space.</p>
+          </div>
+        </div>
+
+        {workspacesLoading && <p className="muted" role="status">Loading workspaces…</p>}
+        {workspacesError && <p className="notice notice--error" role="alert">{workspacesError}</p>}
+
+        {!selectedSpaceId && (
+          <>
+            <form className="workspace-form" onSubmit={(event) => void createWorkspace(event)}>
+              <h3>Create a study space</h3>
+              <label className="document-control" htmlFor="workspace-title">
+                Title
+                <input
+                  id="workspace-title"
+                  value={newWorkspaceTitle}
+                  maxLength={200}
+                  minLength={1}
+                  required
+                  onChange={(event) => setNewWorkspaceTitle(event.currentTarget.value)}
+                  placeholder="For example, Biology study group"
+                />
+              </label>
+              <label className="document-control" htmlFor="workspace-description">
+                Description
+                <textarea
+                  id="workspace-description"
+                  value={newWorkspaceDescription}
+                  maxLength={4000}
+                  minLength={1}
+                  required
+                  rows={3}
+                  onChange={(event) => setNewWorkspaceDescription(event.currentTarget.value)}
+                  placeholder="What is this space for?"
+                />
+              </label>
+              <label className="document-control" htmlFor="workspace-objective">
+                Learning objective (optional)
+                <input
+                  id="workspace-objective"
+                  value={newWorkspaceObjective}
+                  maxLength={1000}
+                  onChange={(event) => setNewWorkspaceObjective(event.currentTarget.value)}
+                  placeholder="For example, Master photosynthesis by reading chapter 3"
+                />
+              </label>
+              <button type="submit" className="camera-action camera-action--primary" disabled={creatingWorkspace}>
+                {creatingWorkspace ? "Creating…" : "Create space"}
+              </button>
+            </form>
+
+            {workspaces.length === 0 && <p className="muted">You have no study spaces yet. Create one above to collaborate with others.</p>}
+            {workspaces.length > 0 && (
+              <>
+                <h3>Your spaces</h3>
+                <ul className="workspace-list" aria-label="Your study spaces" role="none">
+          {workspaces.map((space) => (
+            <li key={space.spaceId} className={`workspace-item ${space.userRole === "owner" ? "workspace-item--owner" : ""}`} role="none">
+                      <div className="workspace-item-info">
+                        <strong>{space.title}</strong>
+                        <span>{space.description}</span>
+                        {space.learningObjective && <p className="muted"><strong>Objective:</strong> {space.learningObjective}</p>}
+                        <p className="workspace-item-meta">
+                          {space.memberCount} member{space.memberCount !== 1 ? "s" : ""} · {space.status}
+                          {space.userRole === "owner" && <span> · owner</span>}
+                        </p>
+                      </div>
+                      <div className="workspace-item-actions">
+                        <button type="button" className="text-action" onClick={() => void loadWorkspace(space.spaceId)}>Open</button>
+                        {space.status === "active" && space.userRole === "owner" && (
+                          <button type="button" className="text-action" onClick={() => void archiveWorkspace(space.spaceId)}>Archive</button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </>
+        )}
+
+        {selectedSpace && (
+          <>
+            <button type="button" className="text-action" onClick={() => { setSelectedSpace(null); setSelectedSpaceId(null); }}>← Back to spaces</button>
+            <div className="workspace-detail">
+              <h3>{selectedSpace.title}</h3>
+              <p>{selectedSpace.description}</p>
+              {selectedSpace.learningObjective && <p className="muted"><strong>Learning objective:</strong> {selectedSpace.learningObjective}</p>}
+              <p className="workspace-detail-meta">
+                {selectedSpace.memberCount} member{selectedSpace.memberCount !== 1 ? "s" : ""} · {selectedSpace.status} · you are <strong>{selectedSpace.userRole}</strong>
+              </p>
+              {selectedSpace.userRole === "owner" && selectedSpace.status === "active" && (
+                <>
+                  <div className="workspace-actions">
+                    <button type="button" className="camera-action" onClick={() => void archiveWorkspace(selectedSpace.spaceId)}>Archive space</button>
+                    <button type="button" className="camera-action" onClick={() => void deleteWorkspace(selectedSpace.spaceId)}>Delete space</button>
+                  </div>
+                  <details className="workspace-edit-form"><summary>Edit space details</summary>
+                    <form className="workspace-form" onSubmit={(event) => void updateWorkspace(selectedSpace.spaceId, event)}>
+                      <label className="document-control" htmlFor="edit-workspace-title">
+                        Title
+                        <input id="edit-workspace-title" name="title" defaultValue={selectedSpace.title} minLength={1} maxLength={200} required />
+                      </label>
+                      <label className="document-control" htmlFor="edit-workspace-description">
+                        Description
+                        <textarea name="description" defaultValue={selectedSpace.description} minLength={1} maxLength={4000} rows={3} required />
+                      </label>
+                      <label className="document-control" htmlFor="edit-workspace-objective">
+                        Learning objective
+                        <input name="learningObjective" defaultValue={selectedSpace.learningObjective ?? ""} maxLength={1000} />
+                      </label>
+                      <label className="document-control" htmlFor="edit-workspace-status">
+                        Status
+                        <select name="status">
+                          <option value="active">Active</option>
+                          <option value="archived">Archived</option>
+                        </select>
+                      </label>
+                      <button type="submit" className="camera-action">Save changes</button>
+                    </form>
+                  </details>
+                </>
+              )}
+            </div>
+
+            <div className="workspace-grid">
+              <section className="workspace-section" aria-labelledby="workspace-members-title">
+                <h3 id="workspace-members-title">Members</h3>
+                {workspaceMembersLoading && <p className="muted">Loading members…</p>}
+                {workspaceMembers.length === 0 && <p className="muted">No members.</p>}
+                {workspaceMembers.length > 0 && (
+                  <ul className="member-list" role="none">
+                    {workspaceMembers.map((member) => (
+                      <li key={member.userId} className={`member-item ${member.role === "owner" ? "member-item--owner" : ""}`} role="none">
+                        <span>{member.username ?? member.userId}</span>
+                        <span className={`member-role member-role--${member.role}`}>{member.role}</span>
+                        {selectedSpace?.userRole === "owner" && member.role === "member" && (
+                          <button type="button" className="camera-action" onClick={() => void removeMember(selectedSpace.spaceId, member.userId)}>Remove</button>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {selectedSpace?.userRole === "owner" && (
+                  <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); void inviteMember(selectedSpace!.spaceId); }}>
+                    <label className="document-control" htmlFor="invite-username">
+                      Invite member by username
+                      <input
+                        id="invite-username"
+                        value={inviteUsername}
+                        maxLength={64}
+                        minLength={3}
+                        required
+                        onChange={(event) => setInviteUsername(event.currentTarget.value)}
+                        placeholder="Username"
+                      />
+                    </label>
+                    <button type="submit" className="camera-action camera-action--primary" disabled={invitingMember}>
+                      {invitingMember ? "Inviting…" : "Invite"}
+                    </button>
+                  </form>
+                )}
+              </section>
+
+              <section className="workspace-section" aria-labelledby="workspace-shared-docs-title">
+                <h3 id="workspace-shared-docs-title">Shared documents</h3>
+                {workspaceDocuments.length === 0 && <p className="muted">No documents shared yet.</p>}
+                {workspaceDocuments.map((doc) => (
+                  <article key={doc.documentId} className="workspace-doc-item">
+                    <strong>{doc.displayFilename}</strong>
+                    <span>{doc.pageCount} pages · shared {new Date(doc.sharedAt).toLocaleDateString()}</span>
+                    {selectedSpace?.userRole === "owner" || doc.sharedBy === (workspaces.find((w) => w.spaceId === selectedSpaceId)?.ownerId ?? "") && (
+                      <button type="button" className="text-action" onClick={() => void unshareDocument(selectedSpace!.spaceId, doc.documentId)}>Unshare</button>
+                    )}
+                  </article>
+                ))}
+                <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); void shareDocument(selectedSpace!.spaceId); }}>
+                  <label className="document-control" htmlFor="share-document-id">
+                    Share a document by ID
+                    <input
+                      id="share-document-id"
+                      value={newDocumentShare}
+                      maxLength={80}
+                      minLength={1}
+                      required
+                      onChange={(event) => setNewDocumentShare(event.currentTarget.value)}
+                      placeholder="Document ID from your documents list"
+                    />
+                  </label>
+                  <button type="submit" className="camera-action camera-action--primary">Share document</button>
+                </form>
+              </section>
+
+              <section className="workspace-section" aria-labelledby="workspace-shared-quizzes-title">
+                <h3 id="workspace-shared-quizzes-title">Shared quizzes</h3>
+                {workspaceQuizzes.length === 0 && <p className="muted">No quizzes shared yet.</p>}
+                {workspaceQuizzes.map((quiz) => (
+                  <article key={quiz.quizId} className="workspace-quiz-item">
+                    <strong>{quiz.topic}</strong>
+                    <span>shared {new Date(quiz.sharedAt).toLocaleDateString()}</span>
+                    {selectedSpace?.userRole === "owner" || quiz.sharedBy === (workspaces.find((w) => w.spaceId === selectedSpaceId)?.ownerId ?? "") && (
+                      <button type="button" className="text-action" onClick={() => void unshareQuiz(selectedSpace!.spaceId, quiz.quizId)}>Unshare</button>
+                    )}
+                  </article>
+                ))}
+                <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); void shareQuiz(selectedSpace!.spaceId); }}>
+                  <label className="document-control" htmlFor="share-quiz-id">
+                    Share a quiz by ID
+                    <input
+                      id="share-quiz-id"
+                      value={newQuizShare}
+                      maxLength={80}
+                      minLength={1}
+                      required
+                      onChange={(event) => setNewQuizShare(event.currentTarget.value)}
+                      placeholder="Quiz ID from your quizzes"
+                    />
+                  </label>
+                  <button type="submit" className="camera-action camera-action--primary">Share quiz</button>
+                </form>
+              </section>
+
+              <section className="workspace-section" aria-labelledby="workspace-discussions-title">
+                <h3 id="workspace-discussions-title">Discussions</h3>
+                {workspaceDiscussions.length === 0 && <p className="muted">No discussions yet.</p>}
+                {workspaceDiscussions.map((discussion) => (
+                  <article key={discussion.discussionId} className="workspace-discussion-item">
+                    <strong>{discussion.username ?? discussion.userId}</strong>
+                    <p>{discussion.content}</p>
+                    <span className="muted">{new Date(discussion.createdAt).toLocaleString()}</span>
+                    <button type="button" className="text-action" onClick={() => void loadWorkspaceDiscussionReplies(discussion.discussionId)}>
+                      Replies
+                    </button>
+                  </article>
+                ))}
+                <form className="workspace-form" onSubmit={(event) => void createDiscussion(selectedSpace!.spaceId, event)}>
+                  <label className="document-control" htmlFor="discussion-content">
+                    Start a discussion
+                    <textarea
+                      id="discussion-content"
+                      value={newDiscussionContent}
+                      maxLength={4000}
+                      minLength={1}
+                      required
+                      rows={3}
+                      onChange={(event) => setNewDiscussionContent(event.currentTarget.value)}
+                      placeholder="What would you like to discuss?"
+                    />
+                  </label>
+                  <button type="submit" className="camera-action camera-action--primary" disabled={creatingDiscussion}>
+                    {creatingDiscussion ? "Posting…" : "Post"}
+                  </button>
+                </form>
+                {selectedDiscussionId && workspaceDiscussionReplies.length > 0 && (
+                  <div className="workspace-replies">
+                    <h4>Replies</h4>
+                    <ul className="reply-list" role="none">
+                      {workspaceDiscussionReplies.map((reply) => (
+                        <li key={reply.replyId} className="reply-item" role="none">
+                          <strong>{reply.username ?? reply.userId}</strong>
+                          <p>{reply.content}</p>
+                          <span className="muted">{new Date(reply.createdAt).toLocaleString()}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <form className="workspace-form" onSubmit={(event) => void createReply(selectedSpace!.spaceId, selectedDiscussionId!, event)}>
+                      <label className="document-control" htmlFor="reply-content">
+                        Reply
+                        <textarea
+                          id="reply-content"
+                          value={newReplyContent}
+                          maxLength={4000}
+                          minLength={1}
+                          required
+                          rows={2}
+                          onChange={(event) => setNewReplyContent(event.currentTarget.value)}
+                          placeholder="Write a reply…"
+                        />
+                      </label>
+                      <button type="submit" className="camera-action">Post reply</button>
+                    </form>
+                  </div>
+                )}
+              </section>
+            </div>
+          </>
         )}
       </section>
     </main>

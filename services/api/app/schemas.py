@@ -983,3 +983,131 @@ class AdaptiveRecommendationResponse(ApiModel):
 
 class AdaptiveRecommendationsResponse(ApiModel):
     recommendations: list[AdaptiveRecommendationResponse]
+
+
+# ---------------------------------------------------------------------------
+# M36: Shared study spaces (private collaboration workspaces).
+# ---------------------------------------------------------------------------
+
+
+class StudySpaceRole(str):
+    pass
+
+
+class StudySpaceCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4000)
+    learningObjective: str | None = Field(default=None, max_length=1000)
+
+
+class StudySpaceUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    learningObjective: str | None = Field(default=None, max_length=1000)
+    status: Literal["active", "archived"] | None = None
+
+
+class WorkspaceMember(ApiModel):
+    userId: str
+    username: str | None = None
+    role: Literal["owner", "member"]
+    joinedAt: str
+
+
+class WorkspaceMemberInviteRequest(ApiModel):
+    username: str = Field(min_length=3, max_length=64)
+
+
+class StudySpaceResponse(ApiModel):
+    spaceId: str
+    ownerId: str
+    title: str
+    description: str
+    learningObjective: str | None = None
+    status: Literal["active", "archived"]
+    memberCount: int
+    createdAt: str
+    updatedAt: str
+    userRole: Literal["owner", "member"]
+
+
+class StudySpaceListResponse(ApiModel):
+    spaces: list[StudySpaceResponse]
+
+
+class WorkspaceDocument(ApiModel):
+    documentId: str
+    displayFilename: str
+    sha256: str
+    byteSize: int
+    pageCount: int
+    chunkCount: int
+    createdAt: str
+    parserVersion: str
+    sharedAt: str
+    sharedBy: str
+    sharedByUsername: str | None = None
+
+
+class WorkspaceDocumentShareRequest(ApiModel):
+    documentId: str = Field(min_length=1, max_length=80)
+
+
+class WorkspaceDocumentListResponse(ApiModel):
+    documents: list[WorkspaceDocument]
+
+
+class WorkspaceQuiz(ApiModel):
+    quizId: str
+    topicId: str
+    topic: str
+    createdAt: str
+    sharedAt: str
+    sharedBy: str
+    sharedByUsername: str | None = None
+
+
+class WorkspaceQuizShareRequest(ApiModel):
+    quizId: str = Field(min_length=1, max_length=80)
+
+
+class WorkspaceQuizListResponse(ApiModel):
+    quizzes: list[WorkspaceQuiz]
+
+
+class WorkspaceDiscussion(ApiModel):
+    discussionId: str
+    spaceId: str
+    userId: str
+    username: str | None = None
+    content: str
+    createdAt: str
+
+
+class WorkspaceDiscussionCreateRequest(ApiModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class WorkspaceDiscussionReply(ApiModel):
+    replyId: str
+    discussionId: str
+    userId: str
+    username: str | None = None
+    content: str
+    createdAt: str
+
+
+class WorkspaceDiscussionReplyCreateRequest(ApiModel):
+    content: str = Field(min_length=1, max_length=4000)
+
+
+class WorkspaceDiscussionListResponse(ApiModel):
+    discussions: list[WorkspaceDiscussion]
+
+
+class WorkspaceDiscussionReplyListResponse(ApiModel):
+    replies: list[WorkspaceDiscussionReply]
+
+
+class WorkspaceMemberRemoveRequest(ApiModel):
+    userId: str = Field(min_length=1, max_length=80)

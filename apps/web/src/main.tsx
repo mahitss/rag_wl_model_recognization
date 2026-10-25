@@ -2,6 +2,7 @@ import { StrictMode, useEffect, useRef, useState, type CSSProperties, type FormE
 import { createRoot } from "react-dom/client";
 import { CameraPanel } from "./CameraPanel";
 import { normalizedRegionStyle } from "./geometry";
+import { fetchWithOffline, isOffline, onOnlineChange } from "./offlineClient";
 import "./style.css";
 
 type DiagramRegion = {
@@ -286,10 +287,11 @@ async function recordProductAnalyticsEvent(
 type SessionUser = { userId: string; username: string; expiresAt: string; isAdmin: boolean };
 
 let csrfToken: string | null = null;
+let currentUsername = "";
 
-const fetch: typeof globalThis.fetch = async (input, init = {}) => {
+const fetch: typeof globalThis.fetch = async (input, init = {}, opts: { username?: string } = {}) => {
+  const username: string | undefined = opts.username || currentUsername;
   const method = (init.method ?? (input instanceof Request ? input.method : "GET")).toUpperCase();
-  const url = input instanceof Request ? input.url : String(input);
   const headers = new Headers(init.headers);
   if (!["GET", "HEAD", "OPTIONS", "TRACE"].includes(method)) {
     if (!csrfToken) {
@@ -304,15 +306,10 @@ const fetch: typeof globalThis.fetch = async (input, init = {}) => {
     headers.set("X-CSRF-Token", csrfToken);
   }
 
-  const response = await globalThis.fetch(input, {
-    ...init,
-    credentials: init.credentials ?? "same-origin",
-    headers,
+  return fetchWithOffline(input, { ...init, headers, credentials: "same-origin" }, {
+    username,
+    fetchFn: (input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, { ...init, credentials: "same-origin", headers }),
   });
-  if (response.status === 401 && !url.includes("/api/v1/auth/")) {
-    window.dispatchEvent(new Event("wonderlearn:session-expired"));
-  }
-  return response;
 };
 
 function AuthScreen() {
@@ -324,6 +321,8 @@ function AuthScreen() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authMessage, setAuthMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  currentUsername = session?.username ?? "";
 
   useEffect(() => {
     let active = true;
@@ -474,6 +473,7 @@ export function App() {
 }
 
 function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmin: boolean; onLogout: () => void }) {
+  currentUsername = username;
   const [diagram, setDiagram] = useState<Diagram | null>(null);
   const [pageError, setPageError] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<DiagramRegion | null>(null);
@@ -483,6 +483,33 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [selectedDocumentId, setSelectedDocumentId] = useState("");
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
+
+  // --- M35: Offline state ---
+  const [offline, setOffline] = useState(isOffline());
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<{ synced: number; failed: number } | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = onOnlineChange((isOnline: boolean) => {
+      setOffline(!isOnline);
+      if (isOnline) {
+        flushQueue().then((result) => {
+          setSyncStatus(result as unknown as { synced: number; failed: number });
+        });
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const flushQueue = async () => {
+    setSyncing(true);
+    try {
+      const result = await flushQueue();
+      setSyncStatus(result as unknown as { synced: number; failed: number });
+    } finally {
+      setSyncing(false);
+    }
+  };
   const [tutorConfigured, setTutorConfigured] = useState<boolean | null>(null);
   const [tutorModelId, setTutorModelId] = useState<string | null>(null);
   const [tutorQuestion, setTutorQuestion] = useState("");
@@ -1631,6 +1658,27 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
           with a pointer or use Tab and Enter.
         </p>
       </header>
+
+      {offline && (
+        <section className="offline-banner" aria-labelledby="offline-title">
+          <h2 id="offline-title">Offline</h2>
+          <p>
+            You are currently offline. Your study materials and cached responses
+            are still available. Any new actions (quiz answers, study sessions,
+            feedback) will be queued and synced automatically when you reconnect.
+          </p>
+          {syncing && <p className="muted">Syncing with server…</p>}
+          {syncStatus && (
+            <p className="muted">
+              Synced {syncStatus.synced} item{syncStatus.synced !== 1 ? "s" : ""}
+              {syncStatus.failed > 0 ? `, ${syncStatus.failed} failed` : ""}
+            </p>
+          )}
+          <button type="button" className="camera-action camera-action--primary" onClick={flushQueue} disabled={syncing}>
+            {syncing ? "Syncing…" : "Retry now"}
+          </button>
+        </section>
+      )}
 
       {!onboardingCompleted && !onboardingSkipped && (
         <section className="onboarding" aria-labelledby="onboarding-title">

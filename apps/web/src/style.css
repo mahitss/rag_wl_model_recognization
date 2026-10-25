@@ -1004,15 +1004,26 @@ code {
 .study-plan-status--completed::before { content: "☑ "; }
 .study-plan-status--dismissed::before { content: "✗ "; }
 
-/* Stronger focus indicators across all interactive controls */
-button:focus-visible,
-input:focus-visible,
-select:focus-visible,
-textarea:focus-visible,
-[type="radio"]:focus-visible,
-[type="range"]:focus-visible {
-  outline: 3px solid #b96d23;
-  outline-offset: 2px;
+/* --- M35: Offline feedback --- */
+.offline-banner {
+  margin: 1rem 0;
+  padding: 1rem;
+  border: 1px solid #e6b8b0;
+  border-radius: 0.7rem;
+  background: #fff0ed;
+  color: #762f26;
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+.offline-banner h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+.offline-banner p {
+  margin: 0.5rem 0;
+}
+.offline-banner button {
+  margin-top: 0.75rem;
 }
 
 /* --- M33: Onboarding --- */

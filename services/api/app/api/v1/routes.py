@@ -30,6 +30,7 @@ from app.observability import OperationalMetrics
 from app.quiz import evaluate_answer, generate_quiz_questions
 from app.retrieval.service import answer_from_evidence, retrieve_with_mode
 from app.schemas import (
+    AdaptiveRecommendationsResponse,
     AnswerRequest,
     AnswerResponse,
     DeleteDocumentResponse,
@@ -65,7 +66,17 @@ from app.schemas import (
     LearningAnalyticsResponse,
     LearningImageDetailResponse,
     LearningImageListResponse,
+    LearningObjectiveCreateRequest,
+    LearningObjectiveListResponse,
+    LearningObjectiveResponse,
+    LearningObjectiveUpdateRequest,
+    LearningPathCreateRequest,
+    LearningPathListResponse,
+    LearningPathResponse,
+    LearningPathUpdateRequest,
     LearningProgressResponse,
+    LinkObjectiveActivityRequest,
+    LinkObjectiveEvidenceRequest,
     PrioritizationExplanation,
     ProductAnalyticsEventRequest,
     ProductAnalyticsSummary,
@@ -90,18 +101,25 @@ from app.schemas import (
 )
 from app.storage import (
     complete_study_session,
+    compute_adaptive_recommendations,
     create_feedback_item,
     create_improvement_task,
     create_learning_image_region,
+    create_learning_objective,
+    create_learning_path,
     create_quiz_set,
     delete_document,
     delete_learning_image,
+    delete_learning_objective,
+    delete_learning_path,
     get_document,
     get_knowledge_concept,
     get_learning_analytics_data,
     get_learning_image,
     get_learning_image_detail,
     get_learning_image_region,
+    get_learning_objective,
+    get_learning_path,
     get_learning_progress,
     get_or_create_study_coach_plan,
     get_product_analytics_snapshot,
@@ -109,12 +127,16 @@ from app.storage import (
     get_quiz_set,
     knowledge_graph_chunks,
     link_feedback_to_task,
+    link_objective_activity,
+    link_objective_evidence,
     list_documents,
     list_feedback_for_admin,
     list_feedback_for_user,
     list_improvement_tasks,
     list_knowledge_concepts,
     list_learning_images,
+    list_learning_objectives,
+    list_learning_paths,
     prune_product_events,
     record_product_event,
     record_quiz_attempt,
@@ -126,6 +148,8 @@ from app.storage import (
     update_feedback_item,
     update_feedback_item_admin,
     update_improvement_task,
+    update_learning_objective,
+    update_learning_path,
     update_study_coach_recommendation,
     verify_knowledge_relationship,
 )
@@ -589,6 +613,370 @@ def prioritization_explanation(
             "priority.  Implementation effort reduces the score."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# M34: Personalized learning paths
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/learning-paths/adaptive-recommendations",
+    response_model=AdaptiveRecommendationsResponse,
+    tags=["learning paths"],
+)
+def adaptive_recommendations_route(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+    limit: int = 5,
+) -> dict[str, Any]:
+    """Return deterministic adaptive learning recommendations for the user.
+
+    Recommendations are derived from persisted quiz attempts, study sessions,
+    topic reviews, and source passages.  No external model or AI service is
+    used.
+    """
+    if limit < 1 or limit > 20:
+        raise ApiError(422, "INVALID_LIMIT", "Limit must be between 1 and 20.")
+    recommendations = compute_adaptive_recommendations(
+        _database_path(request),
+        user_id=current_user.user_id,
+        now=datetime.now(UTC),
+        limit=limit,
+    )
+    return {"recommendations": recommendations}
+
+
+@router.get(
+    "/learning-paths",
+    response_model=LearningPathListResponse,
+    tags=["learning paths"],
+)
+def list_learning_paths_route(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+    status: str | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """List the current user's learning paths."""
+    return {
+        "paths": list_learning_paths(
+            _database_path(request),
+            user_id=current_user.user_id,
+            status=status,
+        )
+    }
+
+
+@router.post(
+    "/learning-paths",
+    response_model=LearningPathResponse,
+    status_code=201,
+    tags=["learning paths"],
+)
+def create_learning_path_route(
+    request: Request,
+    payload: LearningPathCreateRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Create a new learning path for the current user."""
+    path = create_learning_path(
+        _database_path(request),
+        user_id=current_user.user_id,
+        title=payload.title,
+        description=payload.description,
+    )
+    return path
+
+
+@router.get(
+    "/learning-paths/{path_id}",
+    response_model=dict[str, Any],
+    tags=["learning paths"],
+)
+def get_learning_path_route(
+    request: Request,
+    path_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Return a learning path with its objectives."""
+    path = get_learning_path(_database_path(request), path_id)
+    if path is None:
+        raise ApiError(404, "LEARNING_PATH_NOT_FOUND", "Learning path was not found.")
+    if path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_PATH_FORBIDDEN", "You do not own this path.")
+    objectives = list_learning_objectives(_database_path(request), path_id=path_id)
+    return {"path": path, "objectives": objectives}
+
+
+@router.get(
+    "/learning-paths/{path_id}/objectives",
+    response_model=LearningObjectiveListResponse,
+    tags=["learning paths"],
+)
+def list_learning_objectives_route(
+    request: Request,
+    path_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """List objectives for a learning path."""
+    path = get_learning_path(_database_path(request), path_id)
+    if path is None:
+        raise ApiError(404, "LEARNING_PATH_NOT_FOUND", "Learning path was not found.")
+    if path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_PATH_FORBIDDEN", "You do not own this path.")
+    objectives = list_learning_objectives(_database_path(request), path_id=path_id)
+    return {"objectives": objectives}
+
+
+@router.get(
+    "/learning-objectives/{objective_id}",
+    response_model=LearningObjectiveResponse,
+    tags=["learning paths"],
+)
+def get_learning_objective_route(
+    request: Request,
+    objective_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Get a single learning objective."""
+    objective = get_learning_objective(_database_path(request), objective_id)
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    path = get_learning_path(_database_path(request), objective["pathId"])
+    if path is None or path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_OBJECTIVE_FORBIDDEN", "You do not own this objective.")
+    return objective
+
+
+@router.patch(
+    "/learning-paths/{path_id}",
+    response_model=LearningPathResponse,
+    tags=["learning paths"],
+)
+def update_learning_path_route(
+    request: Request,
+    path_id: str,
+    payload: LearningPathUpdateRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Update a learning path (title, description, status)."""
+    updates: dict[str, Any] = {}
+    if payload.title is not None:
+        updates["title"] = payload.title
+    if payload.description is not None:
+        updates["description"] = payload.description
+    if payload.status is not None:
+        updates["status"] = payload.status
+
+    if not updates:
+        raise ApiError(400, "EMPTY_LEARNING_PATH_UPDATE", "No updates were provided.")
+
+    try:
+        path = update_learning_path(
+            _database_path(request),
+            path_id=path_id,
+            user_id=current_user.user_id,
+            **updates,
+        )
+    except PermissionError:
+        raise ApiError(403, "LEARNING_PATH_FORBIDDEN", "You do not own this path.") from None
+    if path is None:
+        raise ApiError(404, "LEARNING_PATH_NOT_FOUND", "Learning path was not found.")
+    return path
+
+
+@router.delete(
+    "/learning-paths/{path_id}",
+    tags=["learning paths"],
+)
+def delete_learning_path_route(
+    request: Request,
+    path_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    try:
+        deleted = delete_learning_path(
+            _database_path(request),
+            path_id=path_id,
+            user_id=current_user.user_id,
+        )
+    except PermissionError:
+        raise ApiError(403, "LEARNING_PATH_FORBIDDEN", "You do not own this path.") from None
+    if not deleted:
+        raise ApiError(404, "LEARNING_PATH_NOT_FOUND", "Learning path was not found.")
+    return {"pathId": path_id, "deleted": True}
+
+
+@router.post(
+    "/learning-paths/{path_id}/objectives",
+    response_model=LearningObjectiveResponse,
+    status_code=201,
+    tags=["learning paths"],
+)
+def create_learning_objective_route(
+    request: Request,
+    path_id: str,
+    payload: LearningObjectiveCreateRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Create a new objective under a learning path.
+
+    The caller must own the path.  Prerequisite objectives must belong to the
+    same path.
+    """
+    path = get_learning_path(_database_path(request), path_id)
+    if path is None:
+        raise ApiError(404, "LEARNING_PATH_NOT_FOUND", "Learning path was not found.")
+    if path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_PATH_FORBIDDEN", "You do not own this path.")
+
+    try:
+        objective = create_learning_objective(
+            _database_path(request),
+            path_id=path_id,
+            title=payload.title,
+            description=payload.description,
+            order_index=payload.order_index,
+            source_document_id=payload.source_document_id,
+            source_chunk_id=payload.source_chunk_id,
+            source_passage=payload.source_passage,
+            prerequisite_objective_ids=payload.prerequisite_objective_ids,
+            rationale=payload.rationale,
+            difficulty_level=payload.difficulty_level,
+        )
+    except ValueError as exc:
+        raise ApiError(400, "INVALID_OBJECTIVE", str(exc)) from exc
+    if objective is None:
+        raise ApiError(404, "LEARNING_PATH_NOT_FOUND", "Learning path was not found.")
+    return objective
+
+
+@router.patch(
+    "/learning-objectives/{objective_id}",
+    response_model=LearningObjectiveResponse,
+    tags=["learning paths"],
+)
+def update_learning_objective_route(
+    request: Request,
+    objective_id: str,
+    payload: LearningObjectiveUpdateRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Update a learning objective's mutable fields."""
+    objective = get_learning_objective(_database_path(request), objective_id)
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    path = get_learning_path(_database_path(request), objective["pathId"])
+    if path is None or path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_OBJECTIVE_FORBIDDEN", "You do not own this objective.")
+
+    updates: dict[str, Any] = {}
+    if payload.title is not None:
+        updates["title"] = payload.title
+    if payload.description is not None:
+        updates["description"] = payload.description
+    if payload.status is not None:
+        updates["status"] = payload.status
+    if payload.order_index is not None:
+        updates["order_index"] = payload.order_index
+    if payload.rationale is not None:
+        updates["rationale"] = payload.rationale
+    if payload.difficulty_level is not None:
+        updates["difficulty_level"] = payload.difficulty_level
+
+    if not updates:
+        raise ApiError(400, "EMPTY_OBJECTIVE_UPDATE", "No updates were provided.")
+
+    objective = update_learning_objective(
+        _database_path(request),
+        objective_id=objective_id,
+        **updates,
+    )
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    return objective
+
+
+@router.delete(
+    "/learning-objectives/{objective_id}",
+    tags=["learning paths"],
+)
+def delete_learning_objective_route(
+    request: Request,
+    objective_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Delete a learning objective and its evidence/activity links."""
+    objective = get_learning_objective(_database_path(request), objective_id)
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    path = get_learning_path(_database_path(request), objective["pathId"])
+    if path is None or path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_OBJECTIVE_FORBIDDEN", "You do not own this objective.")
+
+    deleted = delete_learning_objective(_database_path(request), objective_id=objective_id)
+    if not deleted:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    return {"objectiveId": objective_id, "deleted": True}
+
+
+@router.post(
+    "/learning-objectives/{objective_id}/evidence",
+    response_model=LearningObjectiveResponse,
+    tags=["learning paths"],
+)
+def link_objective_evidence_route(
+    request: Request,
+    objective_id: str,
+    payload: LinkObjectiveEvidenceRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Link evidence citations to a learning objective."""
+    objective = get_learning_objective(_database_path(request), objective_id)
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    path = get_learning_path(_database_path(request), objective["pathId"])
+    if path is None or path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_OBJECTIVE_FORBIDDEN", "You do not own this objective.")
+
+    objective = link_objective_evidence(
+        _database_path(request),
+        objective_id=objective_id,
+        citation_ids=payload.citation_ids,
+    )
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    return objective
+
+
+@router.post(
+    "/learning-objectives/{objective_id}/activities",
+    response_model=LearningObjectiveResponse,
+    tags=["learning paths"],
+)
+def link_objective_activity_route(
+    request: Request,
+    objective_id: str,
+    payload: LinkObjectiveActivityRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Link a quiz attempt or study session to a learning objective."""
+    objective = get_learning_objective(_database_path(request), objective_id)
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    path = get_learning_path(_database_path(request), objective["pathId"])
+    if path is None or path["userId"] != current_user.user_id:
+        raise ApiError(403, "LEARNING_OBJECTIVE_FORBIDDEN", "You do not own this objective.")
+
+    objective = link_objective_activity(
+        _database_path(request),
+        objective_id=objective_id,
+        activity_type=payload.activity_type,
+        activity_id=payload.activity_id,
+    )
+    if objective is None:
+        raise ApiError(404, "LEARNING_OBJECTIVE_NOT_FOUND", "Objective was not found.")
+    return objective
 
 
 @router.get("/product-analytics", response_model=ProductAnalyticsSummary, tags=["analytics"])

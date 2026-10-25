@@ -12,7 +12,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 13
+from app.learning_analytics import _parse_datetime, build_analytics
+
+SCHEMA_VERSION = 14
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -1988,6 +1990,74 @@ def initialize_storage(database_path: Path) -> None:
                     "ON feedback_items(improvement_task_id)"
                 )
 
+            if version < 14:
+                # M34: Personalized learning paths and adaptive difficulty.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_paths (
+                        path_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'archived')),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_paths_user_id ON learning_paths(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_paths_status ON learning_paths(status)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_objectives (
+                        objective_id TEXT PRIMARY KEY,
+                        path_id TEXT NOT NULL REFERENCES learning_paths(path_id) ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        status TEXT NOT NULL CHECK (status IN ('not_started', 'in_progress', 'completed', 'skipped')),
+                        order_index INTEGER NOT NULL CHECK (order_index >= 0),
+                        source_document_id TEXT REFERENCES documents(document_id) ON DELETE SET NULL,
+                        source_chunk_id TEXT REFERENCES chunks(chunk_id) ON DELETE SET NULL,
+                        source_passage TEXT,
+                        prerequisite_objective_ids TEXT NOT NULL DEFAULT '[]',
+                        rationale TEXT,
+                        difficulty_level TEXT CHECK (difficulty_level IN ('foundational', 'building', 'practice', 'advanced')),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_objectives_path_id ON learning_objectives(path_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_objectives_status ON learning_objectives(status)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS objective_evidence_links (
+                        objective_id TEXT NOT NULL REFERENCES learning_objectives(objective_id) ON DELETE CASCADE,
+                        citation_id TEXT NOT NULL REFERENCES chunks(chunk_id) ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK (position >= 0),
+                        PRIMARY KEY (objective_id, citation_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS objective_activity_links (
+                        objective_id TEXT NOT NULL REFERENCES learning_objectives(objective_id) ON DELETE CASCADE,
+                        activity_type TEXT NOT NULL CHECK (activity_type IN ('quiz_attempt', 'study_session')),
+                        activity_id TEXT NOT NULL,
+                        PRIMARY KEY (objective_id, activity_type, activity_id)
+                    )
+                    """
+                )
+
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.execute("PRAGMA foreign_keys = ON")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -3842,3 +3912,833 @@ def search_semantic_chunks(
         results.append(item)
     results.sort(key=lambda value: (-value["similarity"], str(value["chunk_id"])))
     return results
+
+
+# ---------------------------------------------------------------------------
+# M34: Personalized learning paths and adaptive difficulty
+# ---------------------------------------------------------------------------
+
+
+def _difficulty_level_from_mastery(mastery: float | None) -> str:
+    """Map a mastery score to a deterministic difficulty level.
+
+    Mastery is None (no history) or below 0.40 -> foundational.
+    0.40 <= mastery < 0.60 -> building.
+    0.60 <= mastery < 0.80 -> practice.
+    mastery >= 0.80 -> advanced.
+    """
+    if mastery is None or mastery < 0.40:
+        return "foundational"
+    if mastery < 0.60:
+        return "building"
+    if mastery < 0.80:
+        return "practice"
+    return "advanced"
+
+
+def create_learning_path(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    description: str,
+) -> dict[str, Any]:
+    """Create a new learning path for ``user_id``.
+
+    Returns the stored path record.  Title uniqueness is not enforced; callers
+    may create multiple paths with the same title.
+    """
+    path_id = f"path_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = description.strip()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO learning_paths(
+                    path_id, user_id, title, description, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    path_id,
+                    user_id,
+                    title,
+                    description,
+                    "active",
+                    now,
+                    now,
+                ),
+            )
+    return get_learning_path(database_path, path_id)
+
+
+def get_learning_path(database_path: Path, path_id: str) -> dict[str, Any] | None:
+    """Return one learning path, or None if not found."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT path_id, user_id, title, description, status, created_at, updated_at "
+            "FROM learning_paths WHERE path_id = ?",
+            (path_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    return {
+        "pathId": row["path_id"],
+        "userId": row["user_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "status": row["status"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_learning_paths(
+    database_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List learning paths for ``user_id`` with optional status filter."""
+    query = """
+        SELECT path_id, user_id, title, description, status, created_at, updated_at
+        FROM learning_paths
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY updated_at DESC, created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "pathId": row["path_id"],
+            "userId": row["user_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_learning_path(
+    database_path: Path,
+    *,
+    path_id: str,
+    user_id: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a learning path, enforcing ownership when ``user_id`` is given."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT path_id, user_id FROM learning_paths WHERE path_id = ?",
+                (path_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            if user_id is not None and existing["user_id"] != user_id:
+                raise PermissionError("You do not own this learning path.")
+
+            updates: list[str] = []
+            values: list[Any] = []
+            if title is not None:
+                updates.append("title = ?")
+                values.append(title.strip())
+            if description is not None:
+                updates.append("description = ?")
+                values.append(description.strip())
+            if status is not None:
+                updates.append("status = ?")
+                values.append(status)
+
+            if not updates:
+                return get_learning_path(database_path, path_id)
+
+            updates.append("updated_at = ?")
+            values.append(datetime.now(UTC).isoformat())
+            values.append(path_id)
+            connection.execute(
+                f"UPDATE learning_paths SET {', '.join(updates)} WHERE path_id = ?",
+                tuple(values),
+            )
+
+    return get_learning_path(database_path, path_id)
+
+
+def delete_learning_path(
+    database_path: Path,
+    *,
+    path_id: str,
+    user_id: str | None = None,
+) -> bool:
+    """Delete a learning path and its objectives.  Returns True if deleted."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT user_id FROM learning_paths WHERE path_id = ?",
+                (path_id,),
+            ).fetchone()
+            if existing is None:
+                return False
+            if user_id is not None and existing["user_id"] != user_id:
+                raise PermissionError("You do not own this learning path.")
+            connection.execute("DELETE FROM learning_paths WHERE path_id = ?", (path_id,))
+    return True
+
+
+def create_learning_objective(
+    database_path: Path,
+    *,
+    path_id: str,
+    title: str,
+    description: str,
+    order_index: int,
+    source_document_id: str | None = None,
+    source_chunk_id: str | None = None,
+    source_passage: str | None = None,
+    prerequisite_objective_ids: list[str] | None = None,
+    rationale: str | None = None,
+    difficulty_level: str = "foundational",
+) -> dict[str, Any] | None:
+    """Create a learning objective under ``path_id``.
+
+    Returns the stored objective record, or None if the path does not exist.
+    Prerequisite objective IDs must belong to the same path.
+    """
+    objective_id = f"obj_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = description.strip()
+    prerequisite_objective_ids = prerequisite_objective_ids or []
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            path = connection.execute(
+                "SELECT 1 FROM learning_paths WHERE path_id = ?",
+                (path_id,),
+            ).fetchone()
+            if path is None:
+                return None
+            # Verify prerequisite objectives belong to the same path.
+            if prerequisite_objective_ids:
+                placeholders = ",".join("?" for _ in prerequisite_objective_ids)
+                prereqs = connection.execute(
+                    f"SELECT objective_id FROM learning_objectives "
+                    f"WHERE objective_id IN ({placeholders}) AND path_id = ?",
+                    [*prerequisite_objective_ids, path_id],
+                ).fetchall()
+                found = {row["objective_id"] for row in prereqs}
+                missing = set(prerequisite_objective_ids) - found
+                if missing:
+                    raise ValueError(
+                        "Prerequisite objectives not found in this path: "
+                        + ", ".join(sorted(missing))
+                    )
+            connection.execute(
+                """
+                INSERT INTO learning_objectives(
+                    objective_id, path_id, title, description, status, order_index,
+                    source_document_id, source_chunk_id, source_passage,
+                    prerequisite_objective_ids, rationale, difficulty_level,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    objective_id,
+                    path_id,
+                    title,
+                    description,
+                    "not_started",
+                    order_index,
+                    source_document_id,
+                    source_chunk_id,
+                    source_passage,
+                    json.dumps(prerequisite_objective_ids, separators=(",", ":")),
+                    rationale,
+                    difficulty_level,
+                    now,
+                    now,
+                ),
+            )
+    return get_learning_objective(database_path, objective_id)
+
+
+def get_learning_objective(database_path: Path, objective_id: str) -> dict[str, Any] | None:
+    """Return one learning objective with its evidence links and activity links."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT objective_id, path_id, title, description, status, order_index,
+                   source_document_id, source_chunk_id, source_passage,
+                   prerequisite_objective_ids, rationale, difficulty_level,
+                   created_at, updated_at
+            FROM learning_objectives WHERE objective_id = ?
+            """,
+            (objective_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        evidence = connection.execute(
+            "SELECT citation_id, position FROM objective_evidence_links "
+            "WHERE objective_id = ? ORDER BY position",
+            (objective_id,),
+        ).fetchall()
+        activities = connection.execute(
+            "SELECT activity_type, activity_id FROM objective_activity_links "
+            "WHERE objective_id = ?",
+            (objective_id,),
+        ).fetchall()
+    return {
+        "objectiveId": row["objective_id"],
+        "pathId": row["path_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "status": row["status"],
+        "orderIndex": row["order_index"],
+        "sourceDocumentId": row["source_document_id"],
+        "sourceChunkId": row["source_chunk_id"],
+        "sourcePassage": row["source_passage"],
+        "prerequisiteObjectiveIds": json.loads(row["prerequisite_objective_ids"] or "[]"),
+        "rationale": row["rationale"],
+        "difficultyLevel": row["difficulty_level"],
+        "evidenceIds": [e["citation_id"] for e in evidence],
+        "activityLinks": [
+            {"activityType": a["activity_type"], "activityId": a["activity_id"]} for a in activities
+        ],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_learning_objectives(
+    database_path: Path,
+    *,
+    path_id: str,
+) -> list[dict[str, Any]]:
+    """List objectives for a path ordered by order_index, then created_at."""
+    with closing(connect_database(database_path)) as connection:
+        path = connection.execute(
+            "SELECT 1 FROM learning_paths WHERE path_id = ?",
+            (path_id,),
+        ).fetchone()
+        if path is None:
+            return []
+        rows = connection.execute(
+            """
+            SELECT objective_id, path_id, title, description, status, order_index,
+                   source_document_id, source_chunk_id, source_passage,
+                   prerequisite_objective_ids, rationale, difficulty_level,
+                   created_at, updated_at
+            FROM learning_objectives
+            WHERE path_id = ?
+            ORDER BY order_index ASC, created_at ASC
+            """,
+            (path_id,),
+        ).fetchall()
+        # Fetch all evidence links while connection is open.
+        objective_ids = [row["objective_id"] for row in rows]
+        evidence_map: dict[str, list[str]] = {}
+        activities_map: dict[str, list[dict[str, str]]] = {}
+        if objective_ids:
+            placeholders = ",".join("?" for _ in objective_ids)
+            evidence_rows = connection.execute(
+                f"SELECT objective_id, citation_id FROM objective_evidence_links "
+                f"WHERE objective_id IN ({placeholders}) "
+                f"ORDER BY objective_id, position",
+                objective_ids,
+            ).fetchall()
+            for er in evidence_rows:
+                evidence_map.setdefault(er["objective_id"], []).append(er["citation_id"])
+            activity_rows = connection.execute(
+                f"SELECT objective_id, activity_type, activity_id FROM objective_activity_links "
+                f"WHERE objective_id IN ({placeholders}) "
+                f"ORDER BY objective_id, activity_type, activity_id",
+                objective_ids,
+            ).fetchall()
+            for ar in activity_rows:
+                activities_map.setdefault(ar["objective_id"], []).append(
+                    {"activityType": ar["activity_type"], "activityId": ar["activity_id"]}
+                )
+        results = []
+        for row in rows:
+            evidence_map_for_row = evidence_map.get(row["objective_id"], [])
+            activities_map_for_row = activities_map.get(row["objective_id"], [])
+            results.append(
+                {
+                    "objectiveId": row["objective_id"],
+                    "pathId": row["path_id"],
+                    "title": row["title"],
+                    "description": row["description"],
+                    "status": row["status"],
+                    "orderIndex": row["order_index"],
+                    "sourceDocumentId": row["source_document_id"],
+                    "sourceChunkId": row["source_chunk_id"],
+                    "sourcePassage": row["source_passage"],
+                    "prerequisiteObjectiveIds": json.loads(
+                        row["prerequisite_objective_ids"] or "[]"
+                    ),
+                    "rationale": row["rationale"],
+                    "difficultyLevel": row["difficulty_level"],
+                    "evidenceIds": evidence_map_for_row,
+                    "activityLinks": activities_map_for_row,
+                    "createdAt": row["created_at"],
+                    "updatedAt": row["updated_at"],
+                }
+            )
+        return results
+
+
+def update_learning_objective(
+    database_path: Path,
+    *,
+    objective_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+    order_index: int | None = None,
+    rationale: str | None = None,
+    difficulty_level: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a learning objective's mutable fields."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT objective_id FROM learning_objectives WHERE objective_id = ?",
+                (objective_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            updates: list[str] = []
+            values: list[Any] = []
+            if title is not None:
+                updates.append("title = ?")
+                values.append(title.strip())
+            if description is not None:
+                updates.append("description = ?")
+                values.append(description.strip())
+            if status is not None:
+                updates.append("status = ?")
+                values.append(status)
+            if order_index is not None:
+                updates.append("order_index = ?")
+                values.append(order_index)
+            if rationale is not None:
+                updates.append("rationale = ?")
+                values.append(rationale.strip() if rationale else None)
+            if difficulty_level is not None:
+                updates.append("difficulty_level = ?")
+                values.append(difficulty_level)
+
+            if not updates:
+                return get_learning_objective(database_path, objective_id)
+
+            updates.append("updated_at = ?")
+            values.append(datetime.now(UTC).isoformat())
+            values.append(objective_id)
+            connection.execute(
+                f"UPDATE learning_objectives SET {', '.join(updates)} WHERE objective_id = ?",
+                tuple(values),
+            )
+
+    return get_learning_objective(database_path, objective_id)
+
+
+def delete_learning_objective(
+    database_path: Path,
+    *,
+    objective_id: str,
+) -> bool:
+    """Delete a learning objective and its evidence/activity links."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT 1 FROM learning_objectives WHERE objective_id = ?",
+                (objective_id,),
+            ).fetchone()
+            if existing is None:
+                return False
+            connection.execute(
+                "DELETE FROM learning_objectives WHERE objective_id = ?",
+                (objective_id,),
+            )
+    return True
+
+
+def link_objective_evidence(
+    database_path: Path,
+    *,
+    objective_id: str,
+    citation_ids: list[str],
+) -> dict[str, Any] | None:
+    """Replace the evidence links for an objective with ``citation_ids``.
+
+    Citations are ordered as supplied.  Returns the updated objective or None.
+    """
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            exists = connection.execute(
+                "SELECT 1 FROM learning_objectives WHERE objective_id = ?",
+                (objective_id,),
+            ).fetchone()
+            if exists is None:
+                return None
+            connection.execute(
+                "DELETE FROM objective_evidence_links WHERE objective_id = ?",
+                (objective_id,),
+            )
+            for position, citation_id in enumerate(citation_ids):
+                connection.execute(
+                    """
+                    INSERT INTO objective_evidence_links(objective_id, citation_id, position)
+                    VALUES (?, ?, ?)
+                    """,
+                    (objective_id, citation_id, position),
+                )
+    return get_learning_objective(database_path, objective_id)
+
+
+def link_objective_activity(
+    database_path: Path,
+    *,
+    objective_id: str,
+    activity_type: str,
+    activity_id: str,
+) -> dict[str, Any] | None:
+    """Link an objective to a quiz attempt or study session activity."""
+    if activity_type not in {"quiz_attempt", "study_session"}:
+        raise ValueError("activity_type must be 'quiz_attempt' or 'study_session'")
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            exists = connection.execute(
+                "SELECT 1 FROM learning_objectives WHERE objective_id = ?",
+                (objective_id,),
+            ).fetchone()
+            if exists is None:
+                return None
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO objective_activity_links(
+                    objective_id, activity_type, activity_id
+                ) VALUES (?, ?, ?)
+                """,
+                (objective_id, activity_type, activity_id),
+            )
+    return get_learning_objective(database_path, objective_id)
+
+
+def compute_adaptive_recommendations(
+    database_path: Path,
+    *,
+    user_id: str,
+    now: datetime,
+    limit: int = 5,
+) -> list[dict[str, Any]]:
+    """Compute deterministic adaptive learning recommendations for ``user_id``.
+
+    Recommendations are derived exclusively from persisted learner data:
+    quiz attempts, study sessions, topic reviews, knowledge graph concepts,
+    and document/chunk evidence.  No external model or AI service is used.
+
+    Each recommendation includes:
+        - topicId / topic: the topic to work on
+        - difficultyLevel: foundational / building / practice / advanced
+        - priorityScore: higher = more urgent
+        - reasons: human-readable, data-grounded explanations
+        - citations: current source passages for the topic
+        - citationsCount: number of available source passages
+        - activitySuggestion: the type of activity to do next
+        - measuredFields: which inputs come from stored data
+        - estimatedFields: which inputs are derived heuristics
+    """
+    current = now.astimezone(UTC)
+    today = current.date().isoformat()
+
+    attempts = _get_user_quiz_attempts(database_path, user_id)
+    sessions = _get_user_study_sessions(database_path, user_id)
+    reviews = _get_user_topic_reviews(database_path, user_id)
+    topic_sources = _get_user_topic_sources(database_path, user_id)
+    concepts = list_knowledge_concepts(database_path, user_id=user_id)
+
+    analytics = build_analytics(
+        attempts=attempts,
+        sessions=sessions,
+        reviews=reviews,
+        topic_sources=topic_sources,
+        concepts=concepts,
+        now=current,
+    )
+
+    # Build a map of latest outcome per topic.
+    latest_by_topic: dict[str, str] = {}
+    for attempt in attempts:
+        topic_id = attempt["topicId"]
+        previous = latest_by_topic.get(topic_id)
+        attempted_at = attempt["createdAt"]
+        previous_at = previous["createdAt"] if previous else None
+        if previous is None or attempted_at > previous_at:
+            latest_by_topic[topic_id] = attempt
+
+    # Count recent activity (last 30 days).
+    thirty_days_ago = current - timedelta(days=30)
+    recent_activity_by_topic: dict[str, int] = {}
+    for attempt in attempts:
+        if _parse_datetime(attempt["createdAt"]) >= thirty_days_ago:
+            recent_activity_by_topic[attempt["topicId"]] = (
+                recent_activity_by_topic.get(attempt["topicId"], 0) + 1
+            )
+    for session in sessions:
+        if session["completedAt"] and _parse_datetime(session["completedAt"]) >= thirty_days_ago:
+            recent_activity_by_topic[session["topicId"]] = (
+                recent_activity_by_topic.get(session["topicId"], 0) + 1
+            )
+
+    sessions_today_by_topic: dict[str, int] = {}
+    for session in sessions:
+        completed_at = session.get("completedAt")
+        if completed_at and completed_at[:10] == today:
+            sessions_today_by_topic[session["topicId"]] = (
+                sessions_today_by_topic.get(session["topicId"], 0) + 1
+            )
+
+    recommendations: list[dict[str, Any]] = []
+    for topic in analytics.get("topics", []):
+        topic_id = topic["topicId"]
+        topic_name = topic["topic"]
+        citations = topic_sources.get(topic_id, [])
+        # Skip topics without any source passages — cannot ground activities.
+        if not citations:
+            continue
+
+        mastery = topic.get("mastery")
+        weak = topic.get("weak", False)
+        overdue = int(topic.get("overdueReviewCount", 0))
+        incorrect = int(topic.get("incorrectQuestions", 0))
+        ambiguous = int(topic.get("ambiguousQuestions", 0))
+        recent_count = recent_activity_by_topic.get(topic_id, 0)
+        today_sessions = sessions_today_by_topic.get(topic_id, 0)
+
+        score = 0
+        reasons: list[str] = []
+        measured: list[str] = []
+        estimated: list[str] = []
+
+        # Overdue reviews — strongest signal, fully measured.
+        if overdue:
+            score += overdue * 100
+            reasons.append(f"{overdue} review question(s) for this topic are due or overdue.")
+            measured.append("overdueReviewCount")
+
+        # Weak topic — measured via mastery calculation.
+        if weak and mastery is not None:
+            score += 60
+            reasons.append(
+                f"Recency-weighted quiz score is {mastery:.0%}, below the "
+                f"{0.60:.0%} review-prompt threshold."
+            )
+            measured.append("mastery")
+
+        # Recent incorrect/ambiguous outcomes — measured.
+        if incorrect:
+            score += min(incorrect, 3) * 15
+            reasons.append(f"Your latest results include {incorrect} incorrect question(s).")
+            measured.append("incorrectQuestions")
+        if ambiguous:
+            score += min(ambiguous, 3) * 10
+            reasons.append(f"Your latest results include {ambiguous} uncertain question(s).")
+            measured.append("ambiguousQuestions")
+
+        # Recency — measured heuristic.
+        if recent_count == 0:
+            score += 20
+            reasons.append("No recent activity on this topic (30 days).")
+            measured.append("recentActivityCount")
+
+        # High mastery — de-prioritize, suggest advanced practice.
+        if mastery is not None and mastery >= 0.80:
+            score -= 20
+            reasons.append(f"Strong mastery ({mastery:.0%}); consider advanced practice.")
+            measured.append("mastery")
+
+        # Today's completed sessions — de-prioritize.
+        if today_sessions:
+            score -= min(today_sessions, 2) * 10
+            reasons.append(f"You completed {today_sessions} study session(s) on this topic today.")
+            measured.append("sessionsToday")
+
+        # Difficulty level from mastery — derived heuristic.
+        difficulty = _difficulty_level_from_mastery(mastery)
+        estimated.append("difficultyLevel")
+
+        if mastery is None:
+            reasons.append("No quiz history yet; starting with foundational practice.")
+            estimated.append("mastery")
+
+        if not reasons:
+            reasons.append("You have stored quiz and source material for this topic.")
+
+        recommendations.append(
+            {
+                "topicId": topic_id,
+                "topic": topic_name,
+                "difficultyLevel": difficulty,
+                "priorityScore": round(score, 2),
+                "reasons": reasons,
+                "citations": citations,
+                "citationsCount": len(citations),
+                "activitySuggestion": _activity_suggestion(difficulty, weak, overdue),
+                "mastery": mastery,
+                "measuredFields": measured,
+                "estimatedFields": estimated,
+            }
+        )
+
+    recommendations.sort(key=lambda item: (-item["priorityScore"], item["topic"].casefold()))
+    return recommendations[: max(0, limit)]
+
+
+def _activity_suggestion(
+    difficulty: str,
+    weak: bool,
+    overdue: int,
+) -> str:
+    """Return a deterministic activity suggestion from difficulty and state."""
+    if overdue > 0:
+        return "review_overdue"
+    if weak:
+        return "foundational_practice"
+    if difficulty == "advanced":
+        return "challenge_quiz"
+    if difficulty == "practice":
+        return "mixed_quiz"
+    if difficulty == "building":
+        return "targeted_quiz"
+    return "introductory_quiz"
+
+
+def _get_user_quiz_attempts(database_path: Path, user_id: str) -> list[dict[str, Any]]:
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT a.attempt_id, a.question_id, a.outcome, a.created_at,
+                   qs.topic_id, qs.topic, q.position, q.prompt
+            FROM quiz_attempts AS a
+            JOIN quiz_questions AS q ON q.question_id = a.question_id
+            JOIN quiz_sets AS qs ON qs.quiz_id = q.quiz_id
+            WHERE a.user_id = ?
+            ORDER BY a.created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "attemptId": row["attempt_id"],
+            "questionId": row["question_id"],
+            "outcome": row["outcome"],
+            "createdAt": row["created_at"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "position": row["position"],
+            "prompt": row["prompt"],
+        }
+        for row in rows
+    ]
+
+
+def _get_user_study_sessions(database_path: Path, user_id: str) -> list[dict[str, Any]]:
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT session_id, topic_id, topic, started_at, completed_at
+            FROM study_sessions
+            WHERE user_id = ?
+            ORDER BY started_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "sessionId": row["session_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "startedAt": row["started_at"],
+            "completedAt": row["completed_at"],
+        }
+        for row in rows
+    ]
+
+
+def _get_user_topic_reviews(database_path: Path, user_id: str) -> list[dict[str, Any]]:
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT r.question_id, r.topic_id, r.topic, r.last_outcome, r.attempted_at,
+                   r.due_at
+            FROM topic_review_items AS r
+            JOIN quiz_questions AS q ON q.question_id = r.question_id
+            WHERE q.user_id = ?
+            ORDER BY r.due_at ASC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "questionId": row["question_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "lastOutcome": row["last_outcome"],
+            "attemptedAt": row["attempted_at"],
+            "dueAt": row["due_at"],
+            "status": "completed",
+        }
+        for row in rows
+    ]
+
+
+def _get_user_topic_sources(database_path: Path, user_id: str) -> dict[str, list[dict[str, Any]]]:
+    """Return topicId -> list of citation records from stored quiz citations."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT qs.topic_id, c.citation_id, ch.document_id,
+                   d.display_name, ch.page_number, ch.chunk_index, ch.char_start,
+                   ch.char_end, ch.text, c.retrieval_json
+            FROM quiz_citations AS c
+            JOIN quiz_questions AS q ON q.question_id = c.question_id
+            JOIN quiz_sets AS qs ON qs.quiz_id = q.quiz_id
+            JOIN chunks AS ch ON ch.chunk_id = c.citation_id
+            JOIN documents AS d ON d.document_id = ch.document_id
+            WHERE q.user_id = ?
+            ORDER BY qs.topic_id, c.position
+            """,
+            (user_id,),
+        ).fetchall()
+    result: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        topic_id = row["topic_id"]
+        retrieval_json = row["retrieval_json"]
+        try:
+            retrieval = json.loads(retrieval_json) if retrieval_json else {}
+        except (json.JSONDecodeError, TypeError):
+            retrieval = {}
+        result.setdefault(topic_id, []).append(
+            {
+                "citationId": row["citation_id"],
+                "documentId": row["document_id"],
+                "displayFilename": row["display_name"],
+                "pageNumber": row["page_number"],
+                "chunkIndex": row["chunk_index"],
+                "charStart": row["char_start"],
+                "charEnd": row["char_end"],
+                "text": row["text"],
+                "retrieval": retrieval,
+            }
+        )
+    return result

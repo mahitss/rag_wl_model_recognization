@@ -860,3 +860,126 @@ class RebuildEmbeddingsRequest(ApiModel):
 class RebuildEmbeddingsResponse(EmbeddingStatusResponse):
     indexed_this_run: int
     complete: bool
+
+
+# ---------------------------------------------------------------------------
+# M34: Personalized learning paths and adaptive difficulty
+# ---------------------------------------------------------------------------
+
+
+class LearningPathStatus(str):
+    pass
+
+
+class LearningPathCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4000)
+
+
+class LearningPathUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    status: Literal["active", "paused", "completed", "archived"] | None = None
+
+
+class LearningPathResponse(ApiModel):
+    path_id: str
+    user_id: str
+    title: str
+    description: str
+    status: Literal["active", "paused", "completed", "archived"]
+    created_at: str
+    updated_at: str
+
+
+class LearningPathListResponse(ApiModel):
+    paths: list[LearningPathResponse]
+
+
+class LearningObjectiveStatus(str):
+    pass
+
+
+class LearningObjectiveCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4000)
+    order_index: int = Field(default=0, ge=0)
+    source_document_id: str | None = Field(default=None, min_length=1, max_length=80)
+    source_chunk_id: str | None = Field(default=None, min_length=1, max_length=80)
+    source_passage: str | None = Field(default=None, max_length=4000)
+    prerequisite_objective_ids: list[str] | None = Field(default=None, max_length=50)
+    rationale: str | None = Field(default=None, max_length=4000)
+    difficulty_level: Literal["foundational", "building", "practice", "advanced"] = "foundational"
+
+    @field_validator("prerequisite_objective_ids", mode="before")
+    @classmethod
+    def normalize_prerequisite_ids(cls, value):
+        if value is None:
+            return []
+        return [str(fid).strip() for fid in value if str(fid).strip()]
+
+
+class LearningObjectiveUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    status: Literal["not_started", "in_progress", "completed", "skipped"] | None = None
+    order_index: int | None = Field(default=None, ge=0)
+    rationale: str | None = Field(default=None, max_length=4000)
+    difficulty_level: Literal["foundational", "building", "practice", "advanced"] | None = None
+
+
+class LearningObjectiveResponse(ApiModel):
+    objective_id: str
+    path_id: str
+    title: str
+    description: str
+    status: Literal["not_started", "in_progress", "completed", "skipped"]
+    order_index: int
+    source_document_id: str | None = None
+    source_chunk_id: str | None = None
+    source_passage: str | None = None
+    prerequisite_objective_ids: list[str]
+    rationale: str | None = None
+    difficulty_level: Literal["foundational", "building", "practice", "advanced"]
+    evidence_ids: list[str]
+    activity_links: list[dict[str, str]]
+    created_at: str
+    updated_at: str
+
+
+class LearningObjectiveListResponse(ApiModel):
+    objectives: list[LearningObjectiveResponse]
+
+
+class LinkObjectiveEvidenceRequest(ApiModel):
+    citation_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class LinkObjectiveActivityRequest(ApiModel):
+    activity_type: Literal["quiz_attempt", "study_session"]
+    activity_id: str = Field(min_length=1, max_length=80)
+
+
+class AdaptiveRecommendationResponse(ApiModel):
+    topic_id: str
+    topic: str
+    difficulty_level: Literal["foundational", "building", "practice", "advanced"]
+    priority_score: float
+    reasons: list[str]
+    citations: list[CitationResponse]
+    citations_count: int
+    activity_suggestion: Literal[
+        "review_overdue",
+        "foundational_practice",
+        "introductory_quiz",
+        "targeted_quiz",
+        "mixed_quiz",
+        "challenge_quiz",
+    ]
+    mastery: float | None = None
+    measured_fields: list[str]
+    estimated_fields: list[str]
+
+
+class AdaptiveRecommendationsResponse(ApiModel):
+    recommendations: list[AdaptiveRecommendationResponse]

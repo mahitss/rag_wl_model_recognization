@@ -1,6 +1,6 @@
 """Validated API input models for retrieval and evidence-only answers."""
 
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.alias_generators import to_camel
@@ -64,8 +64,22 @@ class FeedbackUpdateRequest(ApiModel):
     status: Literal["new", "reviewing", "planned", "resolved", "withdrawn"] | None = None
 
 
+class FeedbackAdminUpdateRequest(ApiModel):
+    category: Literal["bug", "usability", "feature_request", "other"] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=1, max_length=4_000)
+    status: (
+        Literal["new", "reviewing", "planned", "in_progress", "resolved", "withdrawn", "declined"]
+        | None
+    ) = None
+    resolution_notes: str | None = Field(default=None, max_length=4000)
+    improvement_task_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+
 class FeedbackAdminStatusRequest(ApiModel):
-    status: Literal["new", "reviewing", "planned", "resolved", "withdrawn"]
+    status: Literal[
+        "new", "reviewing", "planned", "in_progress", "resolved", "withdrawn", "declined"
+    ]
 
 
 class FeedbackItem(ApiModel):
@@ -75,13 +89,105 @@ class FeedbackItem(ApiModel):
     category: Literal["bug", "usability", "feature_request", "other"]
     title: str
     description: str
-    status: Literal["new", "reviewing", "planned", "resolved", "withdrawn"]
+    status: Literal[
+        "new", "reviewing", "planned", "in_progress", "resolved", "withdrawn", "declined"
+    ]
+    resolution_notes: str | None = None
+    improvement_task_id: str | None = None
     created_at: str
     updated_at: str
 
 
 class FeedbackListResponse(ApiModel):
     feedback: list[FeedbackItem]
+
+
+class ImprovementTaskStatus(str):
+    pass
+
+
+class ImprovementTaskCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4000)
+    status: Literal["proposed", "in_progress", "resolved", "declined"] = "proposed"
+    severity: int = Field(default=3, ge=1, le=5)
+    impact: int = Field(default=3, ge=1, le=5)
+    reproducibility: int = Field(default=3, ge=1, le=5)
+    workflow_frequency: int = Field(default=3, ge=1, le=5)
+    implementation_effort: int = Field(default=3, ge=1, le=5)
+    regression_test: str | None = Field(default=None, max_length=200)
+    feedback_ids: list[str] | None = Field(default=None, max_length=100)
+
+    @field_validator("feedback_ids", mode="before")
+    @classmethod
+    def normalize_feedback_ids(cls, value):
+        if value is None:
+            return []
+        return [str(fid).strip() for fid in value if str(fid).strip()]
+
+
+class ImprovementTaskUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, min_length=1, max_length=4000)
+    status: Literal["proposed", "in_progress", "resolved", "declined"] | None = None
+    severity: int | None = Field(default=None, ge=1, le=5)
+    impact: int | None = Field(default=None, ge=1, le=5)
+    reproducibility: int | None = Field(default=None, ge=1, le=5)
+    workflow_frequency: int | None = Field(default=None, ge=1, le=5)
+    implementation_effort: int | None = Field(default=None, ge=1, le=5)
+    regression_test: str | None = Field(default=None, max_length=200)
+    implemented: bool | None = None
+
+
+class ImprovementTaskResponse(ApiModel):
+    task_id: str
+    title: str
+    description: str
+    status: Literal["proposed", "in_progress", "resolved", "declined"]
+    priority_score: float
+    priority_factors: dict[str, Any]
+    severity: int
+    impact: int
+    report_count: int
+    reproducibility: int
+    workflow_frequency: int
+    implementation_effort: int
+    regression_test: str | None = None
+    implemented: bool
+    implemented_at: str | None = None
+    user_id: str
+    username: str | None = None
+    created_at: str
+    updated_at: str
+    feedback_ids: list[str]
+
+
+class ImprovementTaskListResponse(ApiModel):
+    tasks: list[ImprovementTaskResponse]
+
+
+class LinkFeedbackRequest(ApiModel):
+    feedback_id: str = Field(min_length=1, max_length=80)
+
+
+class FeedbackFilterRequest(ApiModel):
+    category: Literal["bug", "usability", "feature_request", "other"] | None = None
+    status: (
+        Literal["new", "reviewing", "planned", "in_progress", "resolved", "withdrawn", "declined"]
+        | None
+    ) = None
+    date_from: str | None = None
+    date_to: str | None = None
+    sort_by: Literal["recency", "created"] = "recency"
+    sort_order: Literal["asc", "desc"] = "desc"
+
+
+class PrioritizationExplanation(ApiModel):
+    formula: str
+    weights: dict[str, int]
+    measured_fields: list[str]
+    estimated_fields: list[str]
+    range_note: str
 
 
 class Capabilities(BaseModel):

@@ -319,7 +319,7 @@ function installFetchMock(
       };
       return jsonResponse({ feedback: feedbackItems[index], message: "Feedback updated." });
     }
-    if (url === "/api/v1/feedback/admin" && (init?.method ?? "GET") === "GET") {
+    if (url.startsWith("/api/v1/feedback/admin") && (init?.method ?? "GET") === "GET") {
       return jsonResponse({ feedback: feedbackItems });
     }
     if (url.startsWith("/api/v1/feedback/") && url.endsWith("/status") && (init?.method ?? "GET") === "PATCH") {

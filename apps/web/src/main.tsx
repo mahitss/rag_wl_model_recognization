@@ -196,8 +196,42 @@ type FeedbackItem = {
   title: string;
   description: string;
   status: FeedbackStatus;
+  resolutionNotes: string | null;
+  improvementTaskId: string | null;
   createdAt: string;
   updatedAt: string;
+};
+
+type ImprovementTask = {
+  taskId: string;
+  title: string;
+  description: string;
+  status: "proposed" | "in_progress" | "resolved" | "declined";
+  priorityScore: number;
+  priorityFactors: {
+    severity: number;
+    impact: number;
+    reportCount: number;
+    reproducibility: number;
+    workflowFrequency: number;
+    implementationEffort: number;
+    measured: string[];
+    estimated: string[];
+  };
+  severity: number;
+  impact: number;
+  reportCount: number;
+  reproducibility: number;
+  workflowFrequency: number;
+  implementationEffort: number;
+  regressionTest: string | null;
+  implemented: boolean;
+  implementedAt: string | null;
+  userId: string;
+  username: string | null;
+  createdAt: string;
+  updatedAt: string;
+  feedbackIds: string[];
 };
 
 type GraphConcept = { conceptId: string; name: string; aliases: string[]; evidenceCount: number; relationshipCount: number };
@@ -510,6 +544,45 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [adminFeedbackLoading, setAdminFeedbackLoading] = useState(false);
   const [adminFeedbackError, setAdminFeedbackError] = useState<string | null>(null);
 
+  // --- M32: Feedback analysis & improvement loop state ---
+  const [feedbackFilterCategory, setFeedbackFilterCategory] = useState<FeedbackCategory | "">("");
+  const [feedbackFilterStatus, setFeedbackFilterStatus] = useState<FeedbackStatus | "">("");
+  const [feedbackSortBy, setFeedbackSortBy] = useState<"recency" | "created">("recency");
+  const [feedbackSortOrder, setFeedbackSortOrder] = useState<"asc" | "desc">("desc");
+  const [feedbackDateFrom, setFeedbackDateFrom] = useState("");
+  const [feedbackDateTo, setFeedbackDateTo] = useState("");
+
+  const [improvementTasks, setImprovementTasks] = useState<ImprovementTask[]>([]);
+  const [improvementTasksLoading, setImprovementTasksLoading] = useState(false);
+  const [improvementTasksError, setImprovementTasksError] = useState<string | null>(null);
+  const [creatingTask, setCreatingTask] = useState(false);
+  const [taskForm, setTaskForm] = useState<{
+    title: string;
+    description: string;
+    status: "proposed" | "in_progress" | "resolved" | "declined";
+    severity: number;
+    impact: number;
+    reproducibility: number;
+    workflowFrequency: number;
+    implementationEffort: number;
+    regressionTest: string;
+    feedbackIds: string;
+  }>({
+    title: "",
+    description: "",
+    status: "proposed",
+    severity: 3,
+    impact: 3,
+    reproducibility: 3,
+    workflowFrequency: 3,
+    implementationEffort: 3,
+    regressionTest: "",
+    feedbackIds: "",
+  });
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [linkTaskFeedbackId, setLinkTaskFeedbackId] = useState<string | null>(null);
+  const [selectedLinkTaskId, setSelectedLinkTaskId] = useState<string | null>(null);
+
   useEffect(() => {
     const section = quiz?.status === "ready" ? `Quiz: ${quiz.topic}`
       : selectedGraphConcept ? `Knowledge graph: ${selectedGraphConcept.name}`
@@ -614,7 +687,10 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
         if (active) setImageError(error instanceof Error ? error.message : "Could not load saved images.");
       });
     void loadMyFeedback();
-    if (isAdmin) void loadAdminFeedback();
+    if (isAdmin) {
+      void loadAdminFeedback();
+      void loadImprovementTasks();
+    }
     return () => {
       active = false;
     };
@@ -1068,12 +1144,40 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     setAdminFeedbackLoading(true);
     setAdminFeedbackError(null);
     try {
-      const response = await fetch("/api/v1/feedback/admin");
+      const params = new URLSearchParams();
+      if (feedbackFilterCategory) params.set("category", feedbackFilterCategory);
+      if (feedbackFilterStatus) params.set("status", feedbackFilterStatus);
+      if (feedbackDateFrom) params.set("dateFrom", feedbackDateFrom);
+      if (feedbackDateTo) params.set("dateTo", feedbackDateTo);
+      params.set("sortBy", feedbackSortBy);
+      params.set("sortOrder", feedbackSortOrder);
+      const query = params.toString();
+      const response = await fetch(`/api/v1/feedback/admin${query ? `?${query}` : ""}`);
       const result = await readJson<{ feedback: FeedbackItem[] }>(response);
       setAdminFeedback(result.feedback);
     } catch (error) {
       setAdminFeedbackError(error instanceof Error ? error.message : "Could not load feedback for review.");
     } finally { setAdminFeedbackLoading(false); }
+  }
+
+  async function updateAdminFeedback(feedbackId: string, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setAdminFeedbackError(null);
+    const form = new FormData(event.currentTarget);
+    const resolutionNotes = String(form.get("resolutionNotes"));
+    const status = String(form.get("status"));
+    try {
+      const response = await fetch(`/api/v1/feedback/admin/${encodeURIComponent(feedbackId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ resolution_notes: resolutionNotes || undefined, status: status || undefined }),
+      });
+      const result = await readJson<{ feedback: FeedbackItem }>(response);
+      setAdminFeedback((current) => current.map((item) => item.feedbackId === result.feedback.feedbackId ? result.feedback : item));
+      setMyFeedback((current) => current.map((item) => item.feedbackId === result.feedback.feedbackId ? result.feedback : item));
+    } catch (error) {
+      setAdminFeedbackError(error instanceof Error ? error.message : "Could not update feedback.");
+    }
   }
 
   async function updateAdminFeedbackStatus(feedbackId: string, status: FeedbackStatus) {
@@ -1088,6 +1192,127 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       setAdminFeedback((current) => current.map((item) => item.feedbackId === result.feedback.feedbackId ? result.feedback : item));
     } catch (error) {
       setAdminFeedbackError(error instanceof Error ? error.message : "Could not update feedback status.");
+    }
+  }
+
+  // --- M32: Improvement tasks ---
+  async function loadImprovementTasks() {
+    if (!isAdmin) return;
+    setImprovementTasksLoading(true);
+    setImprovementTasksError(null);
+    try {
+      const params = new URLSearchParams();
+      params.set("sortBy", "priority");
+      params.set("sortOrder", "desc");
+      const response = await fetch(`/api/v1/feedback/admin/improvement-tasks?${params.toString()}`);
+      const result = await readJson<{ tasks: ImprovementTask[] }>(response);
+      setImprovementTasks(result.tasks);
+    } catch (error) {
+      setImprovementTasksError(error instanceof Error ? error.message : "Could not load improvement tasks.");
+    } finally { setImprovementTasksLoading(false); }
+  }
+
+  async function createImprovementTask(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setImprovementTasksError(null);
+    setCreatingTask(true);
+    try {
+      const feedbackIds = taskForm.feedbackIds.split(",").map((id) => id.trim()).filter(Boolean);
+      const response = await fetch("/api/v1/feedback/admin/improvement-tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: taskForm.title.trim(),
+          description: taskForm.description.trim(),
+          status: taskForm.status,
+          severity: taskForm.severity,
+          impact: taskForm.impact,
+          reproducibility: taskForm.reproducibility,
+          workflowFrequency: taskForm.workflowFrequency,
+          implementationEffort: taskForm.implementationEffort,
+          regressionTest: taskForm.regressionTest.trim() || undefined,
+          feedbackIds: feedbackIds.length > 0 ? feedbackIds : undefined,
+        }),
+      });
+      const result = await readJson<ImprovementTask>(response);
+      setImprovementTasks((current) => [result, ...current]);
+      setTaskForm({
+        title: "", description: "", status: "proposed", severity: 3, impact: 3,
+        reproducibility: 3, workflowFrequency: 3, implementationEffort: 3,
+        regressionTest: "", feedbackIds: "",
+      });
+      await loadAdminFeedback();
+    } catch (error) {
+      setImprovementTasksError(error instanceof Error ? error.message : "Could not create improvement task.");
+    } finally { setCreatingTask(false); }
+  }
+
+  async function updateImprovementTask(taskId: string, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setImprovementTasksError(null);
+    const form = new FormData(event.currentTarget);
+    const updates: Record<string, any> = {};
+    const title = String(form.get("title")).trim();
+    const description = String(form.get("description")).trim();
+    const status = String(form.get("status"));
+    const severity = String(form.get("severity"));
+    const impact = String(form.get("impact"));
+    const reproducibility = String(form.get("reproducibility"));
+    const workflowFrequency = String(form.get("workflowFrequency"));
+    const implementationEffort = String(form.get("implementationEffort"));
+    const regressionTest = String(form.get("regressionTest")).trim();
+    const implemented = form.get("implemented") === "on";
+    if (title) updates.title = title;
+    if (description) updates.description = description;
+    if (status) updates.status = status;
+    if (severity) updates.severity = parseInt(severity, 10);
+    if (impact) updates.impact = parseInt(impact, 10);
+    if (reproducibility) updates.reproducibility = parseInt(reproducibility, 10);
+    if (workflowFrequency) updates.workflowFrequency = parseInt(workflowFrequency, 10);
+    if (implementationEffort) updates.implementationEffort = parseInt(implementationEffort, 10);
+    if (regressionTest) updates.regressionTest = regressionTest;
+    updates.implemented = implemented;
+    try {
+      const response = await fetch(`/api/v1/feedback/admin/improvement-tasks/${encodeURIComponent(taskId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      const result = await readJson<ImprovementTask>(response);
+      setImprovementTasks((current) => current.map((item) => item.taskId === result.taskId ? result : item));
+      setEditingTaskId(null);
+      await loadAdminFeedback();
+    } catch (error) {
+      setImprovementTasksError(error instanceof Error ? error.message : "Could not update improvement task.");
+    }
+  }
+
+  async function linkFeedbackToTask(taskId: string, feedbackId: string) {
+    setImprovementTasksError(null);
+    try {
+      const response = await fetch(`/api/v1/feedback/admin/improvement-tasks/${encodeURIComponent(taskId)}/feedback/${encodeURIComponent(feedbackId)}`, {
+        method: "POST",
+      });
+      const result = await readJson<ImprovementTask>(response);
+      setImprovementTasks((current) => current.map((item) => item.taskId === result.taskId ? result : item));
+      setLinkTaskFeedbackId(null);
+      await loadAdminFeedback();
+    } catch (error) {
+      setImprovementTasksError(error instanceof Error ? error.message : "Could not link feedback to task.");
+    }
+  }
+
+  async function unlinkFeedbackFromTask(taskId: string, feedbackId: string) {
+    setImprovementTasksError(null);
+    try {
+      const response = await fetch(`/api/v1/feedback/admin/improvement-tasks/${encodeURIComponent(taskId)}/feedback/${encodeURIComponent(feedbackId)}`, {
+        method: "DELETE",
+      });
+      const result = await readJson<ImprovementTask>(response);
+      setImprovementTasks((current) => current.map((item) => item.taskId === result.taskId ? result : item));
+      await loadAdminFeedback();
+    } catch (error) {
+      setImprovementTasksError(error instanceof Error ? error.message : "Could not unlink feedback from task.");
     }
   }
 
@@ -2051,6 +2276,62 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
           <section className="feedback-admin" aria-labelledby="admin-feedback-title">
             <h3 id="admin-feedback-title">Admin review</h3>
             <p className="muted">List all beta feedback and update review status. Only administrators can access this view.</p>
+
+            <div className="feedback-admin-filters">
+              <label>
+                Category
+                <select
+                  value={feedbackFilterCategory}
+                  onChange={(event) => setFeedbackFilterCategory(event.currentTarget.value as FeedbackCategory | "")}
+                >
+                  <option value="">All categories</option>
+                  <option value="bug">Bug report</option>
+                  <option value="usability">Usability</option>
+                  <option value="feature_request">Feature request</option>
+                  <option value="other">Other</option>
+                </select>
+              </label>
+              <label>
+                Status
+                <select
+                  value={feedbackFilterStatus}
+                  onChange={(event) => setFeedbackFilterStatus(event.currentTarget.value as FeedbackStatus | "")}
+                >
+                  <option value="">All statuses</option>
+                  <option value="new">New</option>
+                  <option value="reviewing">Reviewing</option>
+                  <option value="planned">Planned</option>
+                  <option value="in_progress">In progress</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="withdrawn">Withdrawn</option>
+                  <option value="declined">Declined</option>
+                </select>
+              </label>
+              <label>
+                From date
+                <input type="date" value={feedbackDateFrom} onChange={(event) => setFeedbackDateFrom(event.currentTarget.value)} />
+              </label>
+              <label>
+                To date
+                <input type="date" value={feedbackDateTo} onChange={(event) => setFeedbackDateTo(event.currentTarget.value)} />
+              </label>
+              <label>
+                Sort by
+                <select value={feedbackSortBy} onChange={(event) => setFeedbackSortBy(event.currentTarget.value as "recency" | "created")}>
+                  <option value="recency">Last updated</option>
+                  <option value="created">Date created</option>
+                </select>
+              </label>
+              <label>
+                Order
+                <select value={feedbackSortOrder} onChange={(event) => setFeedbackSortOrder(event.currentTarget.value as "asc" | "desc")}>
+                  <option value="desc">Descending</option>
+                  <option value="asc">Ascending</option>
+                </select>
+              </label>
+              <button type="button" className="camera-action camera-action--primary" onClick={() => void loadAdminFeedback()}>Apply filters</button>
+            </div>
+
             {adminFeedbackLoading && <p className="muted" role="status">Loading feedback for review…</p>}
             {adminFeedbackError && <p className="notice notice--error" role="alert">{adminFeedbackError}</p>}
             {adminFeedback.length === 0 && !adminFeedbackLoading && <p className="muted">No feedback has been submitted yet.</p>}
@@ -2063,6 +2344,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
                     <th>Category</th>
                     <th>Status</th>
                     <th>Updated</th>
+                    <th>Task</th>
                     <th>Action</th>
                   </tr>
                 </thead>
@@ -2080,17 +2362,56 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
                           <option value="new">New</option>
                           <option value="reviewing">Reviewing</option>
                           <option value="planned">Planned</option>
+                          <option value="in_progress">In progress</option>
                           <option value="resolved">Resolved</option>
                           <option value="withdrawn">Withdrawn</option>
+                          <option value="declined">Declined</option>
                         </select>
                       </td>
                       <td><time dateTime={item.updatedAt}>{new Date(item.updatedAt).toLocaleString()}</time></td>
+                      <td>{item.improvementTaskId ?? <span className="muted">—</span>}</td>
                       <td>
-                        {item.description && (
-                          <details>
-                            <summary>View description</summary>
-                            <blockquote>{item.description}</blockquote>
-                          </details>
+                        <details>
+                          <summary>View description</summary>
+                          <blockquote>{item.description}</blockquote>
+                          {item.resolutionNotes && (
+                            <div className="resolution-notes">
+                              <strong>Resolution notes:</strong> {item.resolutionNotes}
+                            </div>
+                          )}
+                        </details>
+                        <form className="feedback-admin-update" onSubmit={(event) => void updateAdminFeedback(item.feedbackId, event)}>
+                          <label>
+                            Resolution notes
+                            <textarea
+                              defaultValue={item.resolutionNotes ?? ""}
+                              placeholder="Add resolution notes…"
+                              maxLength={4000}
+                              rows={2}
+                            />
+                          </label>
+                          <button type="submit" className="camera-action">Save notes</button>
+                        </form>
+                        {item.improvementTaskId ? (
+                          <button
+                            type="button"
+                            className="text-action"
+                            onClick={() => {
+                              if (item.improvementTaskId) {
+                                void unlinkFeedbackFromTask(item.improvementTaskId, item.feedbackId);
+                              }
+                            }}
+                          >
+                            Unlink task
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="text-action"
+                            onClick={() => void setLinkTaskFeedbackId(item.feedbackId)}
+                          >
+                            Link to task
+                          </button>
                         )}
                       </td>
                     </tr>
@@ -2098,6 +2419,227 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
                 </tbody>
               </table>
             )}
+
+            {linkTaskFeedbackId !== null && (
+              <div className="feedback-admin-link">
+                <p className="muted">Link feedback to an improvement task:</p>
+                <select
+                  value={selectedLinkTaskId ?? ""}
+                  onChange={(event) => setSelectedLinkTaskId(event.currentTarget.value || null)}
+                >
+                  <option value="">Select a task</option>
+                  {(improvementTasks ?? []).map((task) => (
+                    <option key={task.taskId} value={task.taskId}>{task.title}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  className="camera-action"
+                  disabled={!selectedLinkTaskId}
+                  onClick={() => {
+                    if (linkTaskFeedbackId !== null && selectedLinkTaskId !== null) {
+                      void linkFeedbackToTask(selectedLinkTaskId, linkTaskFeedbackId);
+                    }
+                  }}
+                >
+                  Link
+                </button>
+                <button type="button" className="camera-action" onClick={() => setLinkTaskFeedbackId(null)}>
+                  Cancel
+                </button>
+              </div>
+            )}
+          </section>
+        )}
+        {isAdmin && (
+          <section className="feedback-improvement-tasks" aria-labelledby="improvement-tasks-title">
+            <h3 id="improvement-tasks-title">Improvement tasks</h3>
+            <p className="muted">Turn feedback into tracked improvement tasks. Priority factors marked as estimated are administrator judgments, not observed facts. Report count is measured from linked feedback.</p>
+            {improvementTasksError && <p className="notice notice--error" role="alert">{improvementTasksError}</p>}
+            {(improvementTasks ?? []).length === 0 && !improvementTasksLoading && <p className="muted">No improvement tasks yet. Create one from feedback above.</p>}
+            {(improvementTasks ?? []).length > 0 && (
+              <table className="feedback-admin-table">
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Status</th>
+                    <th>Priority</th>
+                    <th>Reports</th>
+                    <th>Severity</th>
+                    <th>Effort</th>
+                    <th>Regression test</th>
+                    <th>Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(improvementTasks ?? []).map((task) => (
+                    <tr key={task.taskId} className={`task-row task-row--${task.status}`}>
+                      <td>{task.title}</td>
+                      <td>{task.status}</td>
+                      <td>{task.priorityScore.toFixed(1)}</td>
+                      <td>{task.reportCount} <span className="muted">(measured)</span></td>
+                      <td>{task.severity} <span className="muted">(est.)</span></td>
+                      <td>{task.implementationEffort} <span className="muted">(est.)</span></td>
+                      <td>{task.regressionTest ?? <span className="muted">—</span>}</td>
+                      <td>
+                        {editingTaskId === task.taskId ? (
+                          <form className="feedback-edit-form" onSubmit={(event) => void updateImprovementTask(task.taskId, event)}>
+                            <label>
+                              Title<input defaultValue={task.title} minLength={1} maxLength={200} required />
+                            </label>
+                            <label>
+                              Description<textarea defaultValue={task.description} minLength={1} maxLength={4000} required rows={3} /></label>
+                            <label>
+                              Status
+                              <select defaultValue={task.status}>
+                                <option value="proposed">Proposed</option>
+                                <option value="in_progress">In progress</option>
+                                <option value="resolved">Resolved</option>
+                                <option value="declined">Declined</option>
+                              </select>
+                            </label>
+                            <label>
+                              Severity (1-5)<input type="number" defaultValue={task.severity} min={1} max={5} required />
+                            </label>
+                            <label>
+                              Impact (1-5)<input type="number" defaultValue={task.impact} min={1} max={5} required />
+                            </label>
+                            <label>
+                              Reproducibility (1-5)<input type="number" defaultValue={task.reproducibility} min={1} max={5} required />
+                            </label>
+                            <label>
+                              Workflow frequency (1-5)<input type="number" defaultValue={task.workflowFrequency} min={1} max={5} required />
+                            </label>
+                            <label>
+                              Implementation effort (1-5)<input type="number" defaultValue={task.implementationEffort} min={1} max={5} required />
+                            </label>
+                            <label>
+                              Regression test<input defaultValue={task.regressionTest ?? ""} maxLength={200} />
+                            </label>
+                            <label>
+                              Implemented<input type="checkbox" defaultChecked={task.implemented} />
+                            </label>
+                            <button type="submit" className="camera-action">Save</button>
+                            <button type="button" className="camera-action" onClick={() => setEditingTaskId(null)}>Cancel</button>
+                          </form>
+                        ) : (
+                          <>
+                            {task.implemented && <span className="feedback-item-status feedback-item-status--resolved">Implemented</span>}
+                            <button type="button" className="text-action" onClick={() => setEditingTaskId(task.taskId)}>Edit</button>
+                            {task.feedbackIds.length > 0 && (
+                              <button
+                                type="button"
+                                className="text-action"
+                                onClick={() => void unlinkFeedbackFromTask(task.taskId, task.feedbackIds[0])}
+                              >
+                                Unlink first
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+
+            <details className="feedback-admin-filters">
+              <summary>Prioritization method</summary>
+              <p>
+                Priority score = severity×20 + impact×15 + reportCount×10 + reproducibility×10 +
+                workflowFrequency×10 − implementationEffort×5.
+              </p>
+              <p>
+                <strong>Measured:</strong> report count (number of linked feedback items).{" "}
+                <strong>Estimated:</strong> severity, impact, reproducibility, workflow frequency,
+                implementation effort (administrator judgments, 1–5 scale). Higher score = higher
+                priority. Implementation effort reduces the score.
+              </p>
+            </details>
+
+            <h4>Create improvement task</h4>
+            <form className="feedback-form" onSubmit={(event) => void createImprovementTask(event)}>
+              <label>
+                Title<input
+                  value={taskForm.title}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, title: event.currentTarget.value }))}
+                  minLength={1} maxLength={200} required
+                />
+              </label>
+              <label>
+                Description<textarea
+                  value={taskForm.description}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, description: event.currentTarget.value }))}
+                  minLength={1} maxLength={4000} required rows={3}
+                /></label>
+              <label>
+                Status
+                <select
+                  value={taskForm.status}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, status: event.currentTarget.value as "proposed" | "in_progress" | "resolved" | "declined" }))}
+                >
+                  <option value="proposed">Proposed</option>
+                  <option value="in_progress">In progress</option>
+                  <option value="resolved">Resolved</option>
+                  <option value="declined">Declined</option>
+                </select>
+              </label>
+              <label>
+                Severity (1-5, est.)<input
+                  type="number" value={taskForm.severity}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, severity: parseInt(event.currentTarget.value, 10) || 3 }))}
+                  min={1} max={5} required
+                />
+              </label>
+              <label>
+                Impact (1-5, est.)<input
+                  type="number" value={taskForm.impact}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, impact: parseInt(event.currentTarget.value, 10) || 3 }))}
+                  min={1} max={5} required
+                />
+              </label>
+              <label>
+                Reproducibility (1-5, est.)<input
+                  type="number" value={taskForm.reproducibility}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, reproducibility: parseInt(event.currentTarget.value, 10) || 3 }))}
+                  min={1} max={5} required
+                />
+              </label>
+              <label>
+                Workflow frequency (1-5, est.)<input
+                  type="number" value={taskForm.workflowFrequency}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, workflowFrequency: parseInt(event.currentTarget.value, 10) || 3 }))}
+                  min={1} max={5} required
+                />
+              </label>
+              <label>
+                Implementation effort (1-5, est.)<input
+                  type="number" value={taskForm.implementationEffort}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, implementationEffort: parseInt(event.currentTarget.value, 10) || 3 }))}
+                  min={1} max={5} required
+                />
+              </label>
+              <label>
+                Regression test<input
+                  value={taskForm.regressionTest}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, regressionTest: event.currentTarget.value }))}
+                  maxLength={200}
+                  placeholder="Which regression test verifies the fix?"
+                />
+              </label>
+              <label>
+                Feedback IDs (comma-separated)<input
+                  value={taskForm.feedbackIds}
+                  onChange={(event) => setTaskForm((current) => ({ ...current, feedbackIds: event.currentTarget.value }))}
+                  placeholder="feedback_abc, feedback_def"
+                />
+              </label>
+              {creatingTask && <p className="muted" role="status">Creating task…</p>}
+              <button type="submit" className="camera-action camera-action--primary" disabled={creatingTask}>
+                {creatingTask ? "Creating…" : "Create task"}
+              </button>
+            </form>
           </section>
         )}
       </section>

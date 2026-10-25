@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -182,7 +182,8 @@ def get_feedback_item(database_path: Path, feedback_id: str) -> dict[str, Any] |
         row = connection.execute(
             """
             SELECT f.feedback_id, f.user_id, f.category, f.title, f.description,
-                   f.status, f.created_at, f.updated_at, u.username
+                   f.status, f.resolution_notes, f.improvement_task_id,
+                   f.created_at, f.updated_at, u.username
             FROM feedback_items AS f
             LEFT JOIN users AS u ON u.user_id = f.user_id
             WHERE f.feedback_id = ?
@@ -198,6 +199,8 @@ def get_feedback_item(database_path: Path, feedback_id: str) -> dict[str, Any] |
         "title": row["title"],
         "description": row["description"],
         "status": row["status"],
+        "resolution_notes": row["resolution_notes"],
+        "improvement_task_id": row["improvement_task_id"],
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
         "username": row["username"],
@@ -210,7 +213,8 @@ def list_feedback_for_user(database_path: Path, user_id: str) -> list[dict[str, 
         rows = connection.execute(
             """
             SELECT f.feedback_id, f.user_id, f.category, f.title, f.description,
-                   f.status, f.created_at, f.updated_at, u.username
+                   f.status, f.resolution_notes, f.improvement_task_id,
+                   f.created_at, f.updated_at, u.username
             FROM feedback_items AS f
             LEFT JOIN users AS u ON u.user_id = f.user_id
             WHERE f.user_id = ?
@@ -226,34 +230,8 @@ def list_feedback_for_user(database_path: Path, user_id: str) -> list[dict[str, 
             "title": row["title"],
             "description": row["description"],
             "status": row["status"],
-            "created_at": row["created_at"],
-            "updated_at": row["updated_at"],
-            "username": row["username"],
-        }
-        for row in rows
-    ]
-
-
-def list_feedback_for_admin(database_path: Path) -> list[dict[str, Any]]:
-    """Return all feedback items for administrator review."""
-    with closing(connect_database(database_path)) as connection:
-        rows = connection.execute(
-            """
-            SELECT f.feedback_id, f.user_id, f.category, f.title, f.description,
-                   f.status, f.created_at, f.updated_at, u.username
-            FROM feedback_items AS f
-            LEFT JOIN users AS u ON u.user_id = f.user_id
-            ORDER BY f.updated_at DESC, f.created_at DESC
-            """
-        ).fetchall()
-    return [
-        {
-            "feedback_id": row["feedback_id"],
-            "user_id": row["user_id"],
-            "category": row["category"],
-            "title": row["title"],
-            "description": row["description"],
-            "status": row["status"],
+            "resolution_notes": row["resolution_notes"],
+            "improvement_task_id": row["improvement_task_id"],
             "created_at": row["created_at"],
             "updated_at": row["updated_at"],
             "username": row["username"],
@@ -305,6 +283,662 @@ def update_feedback_item(
             updates.append("updated_at = ?")
             values.extend([datetime.now(UTC).isoformat()])
             values.extend([feedback_id])
+            connection.execute(
+                f"UPDATE feedback_items SET {', '.join(updates)} WHERE feedback_id = ?",
+                tuple(values),
+            )
+
+    return get_feedback_item(database_path, feedback_id)
+
+
+def _compute_priority_score(
+    *,
+    severity: int,
+    impact: int,
+    report_count: int,
+    reproducibility: int,
+    workflow_frequency: int,
+    implementation_effort: int,
+) -> float:
+    """Compute a transparent priority score for an improvement task.
+
+    The score blends measured data with administrator estimates.  The only
+    measured value is ``report_count`` (the number of distinct feedback items
+    linked to the task).  All other factors are administrator estimates on a
+    1–5 scale and are never treated as observed facts.
+
+    Weights:
+        severity x20, impact x15, report_count x10 (measured),
+        reproducibility x10, workflow_frequency x10,
+        implementation_effort x5 (higher effort lowers the score).
+
+    Result range is approximately 0 to 150.  Higher means higher priority.
+    """
+    return (
+        severity * 20
+        + impact * 15
+        + report_count * 10
+        + reproducibility * 10
+        + workflow_frequency * 10
+        - implementation_effort * 5
+    )
+
+
+def create_improvement_task(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    description: str,
+    status: str = "proposed",
+    severity: int = 3,
+    impact: int = 3,
+    reproducibility: int = 3,
+    workflow_frequency: int = 3,
+    implementation_effort: int = 3,
+    regression_test: str | None = None,
+    feedback_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Create an improvement task and optionally link feedback items to it.
+
+    Duplicate titles (case-insensitive) are rejected to prevent accidental
+    duplicate tasks.  ``feedback_ids`` are stored in the junction table and the
+    measured ``report_count`` is derived from them.
+    """
+    task_id = f"task_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = description.strip()
+    feedback_ids = feedback_ids or []
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT 1 FROM improvement_tasks WHERE lower(title) = lower(?) LIMIT 1",
+                (title,),
+            ).fetchone()
+            if existing is not None:
+                raise ValueError("An improvement task with this title already exists.")
+
+            report_count = len(feedback_ids)
+            priority_score = _compute_priority_score(
+                severity=severity,
+                impact=impact,
+                report_count=report_count,
+                reproducibility=reproducibility,
+                workflow_frequency=workflow_frequency,
+                implementation_effort=implementation_effort,
+            )
+            factors = {
+                "severity": severity,
+                "impact": impact,
+                "report_count": report_count,
+                "reproducibility": reproducibility,
+                "workflow_frequency": workflow_frequency,
+                "implementation_effort": implementation_effort,
+                "measured": ["report_count"],
+                "estimated": [
+                    "severity",
+                    "impact",
+                    "reproducibility",
+                    "workflow_frequency",
+                    "implementation_effort",
+                ],
+            }
+            connection.execute(
+                """
+                INSERT INTO improvement_tasks(
+                    task_id, title, description, status, priority_score,
+                    priority_factors_json, severity, impact, report_count,
+                    reproducibility, workflow_frequency, implementation_effort,
+                    regression_test, implemented, implemented_at, user_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    title,
+                    description,
+                    status,
+                    round(priority_score, 2),
+                    json.dumps(factors, separators=(",", ":"), sort_keys=True),
+                    severity,
+                    impact,
+                    report_count,
+                    reproducibility,
+                    workflow_frequency,
+                    implementation_effort,
+                    regression_test,
+                    0,
+                    None,
+                    user_id,
+                    now,
+                    now,
+                ),
+            )
+            for feedback_id in feedback_ids:
+                connection.execute(
+                    """
+                    INSERT OR IGNORE INTO improvement_task_feedback(
+                        improvement_task_id, feedback_id
+                    ) VALUES (?, ?)
+                    """,
+                    (task_id, feedback_id),
+                )
+                connection.execute(
+                    "UPDATE feedback_items SET improvement_task_id = ? WHERE feedback_id = ?",
+                    (task_id, feedback_id),
+                )
+
+    return get_improvement_task(database_path, task_id)
+
+
+def get_improvement_task(database_path: Path, task_id: str) -> dict[str, Any] | None:
+    """Return one improvement task with its linked feedback IDs."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT t.task_id, t.title, t.description, t.status, t.priority_score,
+                   t.priority_factors_json, t.severity, t.impact, t.report_count,
+                   t.reproducibility, t.workflow_frequency, t.implementation_effort,
+                   t.regression_test, t.implemented, t.implemented_at, t.user_id,
+                   t.created_at, t.updated_at, u.username
+            FROM improvement_tasks AS t
+            LEFT JOIN users AS u ON u.user_id = t.user_id
+            WHERE t.task_id = ?
+            """,
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        linked = connection.execute(
+            "SELECT feedback_id FROM improvement_task_feedback WHERE improvement_task_id = ? ORDER BY feedback_id",
+            (task_id,),
+        ).fetchall()
+    return {
+        "task_id": row["task_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "status": row["status"],
+        "priority_score": row["priority_score"],
+        "priority_factors": json.loads(row["priority_factors_json"] or "{}"),
+        "severity": row["severity"],
+        "impact": row["impact"],
+        "report_count": row["report_count"],
+        "reproducibility": row["reproducibility"],
+        "workflow_frequency": row["workflow_frequency"],
+        "implementation_effort": row["implementation_effort"],
+        "regression_test": row["regression_test"],
+        "implemented": bool(row["implemented"]),
+        "implemented_at": row["implemented_at"],
+        "user_id": row["user_id"],
+        "username": row["username"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "feedback_ids": [r["feedback_id"] for r in linked],
+    }
+
+
+def list_improvement_tasks(
+    database_path: Path,
+    *,
+    status: str | None = None,
+    user_id: str | None = None,
+    sort_by: str = "priority",
+    sort_order: str = "desc",
+) -> list[dict[str, Any]]:
+    """List improvement tasks with optional status/user filters and sorting."""
+    allowed_sort = {"priority": "t.priority_score", "recency": "t.created_at"}
+    sort_column = allowed_sort.get(sort_by, "t.priority_score")
+    order = "ASC" if sort_order == "asc" else "DESC"
+
+    query = """
+        SELECT t.task_id, t.title, t.description, t.status, t.priority_score,
+               t.priority_factors_json, t.severity, t.impact, t.report_count,
+               t.reproducibility, t.workflow_frequency, t.implementation_effort,
+               t.regression_test, t.implemented, t.implemented_at, t.user_id,
+               t.created_at, t.updated_at, u.username
+        FROM improvement_tasks AS t
+        LEFT JOIN users AS u ON u.user_id = t.user_id
+        WHERE 1 = 1
+    """
+    params: list[Any] = []
+    if status is not None:
+        query += " AND t.status = ?"
+        params.append(status)
+    if user_id is not None:
+        query += " AND t.user_id = ?"
+        params.append(user_id)
+    query += f" ORDER BY {sort_column} {order}"
+
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+        # Fetch all linked feedback IDs in one query while the connection is open.
+        task_ids = [row["task_id"] for row in rows]
+        linked_map: dict[str, list[str]] = {}
+        if task_ids:
+            placeholders = ",".join("?" for _ in task_ids)
+            linked_rows = connection.execute(
+                f"SELECT improvement_task_id, feedback_id FROM improvement_task_feedback "
+                f"WHERE improvement_task_id IN ({placeholders}) "
+                f"ORDER BY improvement_task_id, feedback_id",
+                task_ids,
+            ).fetchall()
+            for lr in linked_rows:
+                linked_map.setdefault(lr["improvement_task_id"], []).append(lr["feedback_id"])
+    results = []
+    for row in rows:
+        results.append(
+            {
+                "task_id": row["task_id"],
+                "title": row["title"],
+                "description": row["description"],
+                "status": row["status"],
+                "priority_score": row["priority_score"],
+                "priority_factors": json.loads(row["priority_factors_json"] or "{}"),
+                "severity": row["severity"],
+                "impact": row["impact"],
+                "report_count": row["report_count"],
+                "reproducibility": row["reproducibility"],
+                "workflow_frequency": row["workflow_frequency"],
+                "implementation_effort": row["implementation_effort"],
+                "regression_test": row["regression_test"],
+                "implemented": bool(row["implemented"]),
+                "implemented_at": row["implemented_at"],
+                "user_id": row["user_id"],
+                "username": row["username"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+                "feedback_ids": linked_map.get(row["task_id"], []),
+            }
+        )
+    return results
+
+
+def update_improvement_task(
+    database_path: Path,
+    *,
+    task_id: str,
+    user_id: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+    severity: int | None = None,
+    impact: int | None = None,
+    reproducibility: int | None = None,
+    workflow_frequency: int | None = None,
+    implementation_effort: int | None = None,
+    regression_test: str | None = None,
+    implemented: bool | None = None,
+) -> dict[str, Any] | None:
+    """Update an improvement task, recomputing priority when factors change."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT * FROM improvement_tasks WHERE task_id = ?",
+                (task_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+            if user_id is not None and existing["user_id"] != user_id:
+                raise PermissionError("You do not own this improvement task.")
+
+            updates: list[str] = []
+            values: list[Any] = []
+            if title is not None:
+                updates.append("title = ?")
+                values.append(title.strip())
+            if description is not None:
+                updates.append("description = ?")
+                values.append(description.strip())
+            if status is not None:
+                updates.append("status = ?")
+                values.append(status)
+            if severity is not None:
+                updates.append("severity = ?")
+                values.append(severity)
+            if impact is not None:
+                updates.append("impact = ?")
+                values.append(impact)
+            if reproducibility is not None:
+                updates.append("reproducibility = ?")
+                values.append(reproducibility)
+            if workflow_frequency is not None:
+                updates.append("workflow_frequency = ?")
+                values.append(workflow_frequency)
+            if implementation_effort is not None:
+                updates.append("implementation_effort = ?")
+                values.append(implementation_effort)
+            if regression_test is not None:
+                updates.append("regression_test = ?")
+                values.append(regression_test.strip() if regression_test else None)
+            if implemented is not None:
+                updates.append("implemented = ?")
+                values.append(1 if implemented else 0)
+                if implemented:
+                    updates.append("implemented_at = ?")
+                    values.append(datetime.now(UTC).isoformat())
+                else:
+                    updates.append("implemented_at = ?")
+                    values.append(None)
+
+            # Recompute priority score if any factor changed.
+            factor_changed = any(
+                f is not None
+                for f in (
+                    severity,
+                    impact,
+                    reproducibility,
+                    workflow_frequency,
+                    implementation_effort,
+                )
+            )
+            if factor_changed:
+                new_severity = severity if severity is not None else existing["severity"]
+                new_impact = impact if impact is not None else existing["impact"]
+                new_reproducibility = (
+                    reproducibility if reproducibility is not None else existing["reproducibility"]
+                )
+                new_workflow_frequency = (
+                    workflow_frequency
+                    if workflow_frequency is not None
+                    else existing["workflow_frequency"]
+                )
+                new_effort = (
+                    implementation_effort
+                    if implementation_effort is not None
+                    else existing["implementation_effort"]
+                )
+                new_score = _compute_priority_score(
+                    severity=new_severity,
+                    impact=new_impact,
+                    report_count=existing["report_count"],
+                    reproducibility=new_reproducibility,
+                    workflow_frequency=new_workflow_frequency,
+                    implementation_effort=new_effort,
+                )
+                updates.append("priority_score = ?")
+                values.append(round(new_score, 2))
+                factors = {
+                    "severity": new_severity,
+                    "impact": new_impact,
+                    "report_count": existing["report_count"],
+                    "reproducibility": new_reproducibility,
+                    "workflow_frequency": new_workflow_frequency,
+                    "implementation_effort": new_effort,
+                    "measured": ["report_count"],
+                    "estimated": [
+                        "severity",
+                        "impact",
+                        "reproducibility",
+                        "workflow_frequency",
+                        "implementation_effort",
+                    ],
+                }
+                updates.append("priority_factors_json = ?")
+                values.append(json.dumps(factors, separators=(",", ":"), sort_keys=True))
+
+            if not updates:
+                return get_improvement_task(database_path, task_id)
+
+            updates.append("updated_at = ?")
+            values.append(datetime.now(UTC).isoformat())
+            values.append(task_id)
+            connection.execute(
+                f"UPDATE improvement_tasks SET {', '.join(updates)} WHERE task_id = ?",
+                tuple(values),
+            )
+
+    return get_improvement_task(database_path, task_id)
+
+
+def link_feedback_to_task(
+    database_path: Path, *, task_id: str, feedback_id: str
+) -> dict[str, Any] | None:
+    """Link a feedback item to an improvement task and recompute report_count."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            task = connection.execute(
+                "SELECT * FROM improvement_tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                return None
+            feedback = connection.execute(
+                "SELECT * FROM feedback_items WHERE feedback_id = ?", (feedback_id,)
+            ).fetchone()
+            if feedback is None:
+                return None
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO improvement_task_feedback(
+                    improvement_task_id, feedback_id
+                ) VALUES (?, ?)
+                """,
+                (task_id, feedback_id),
+            )
+            connection.execute(
+                "UPDATE feedback_items SET improvement_task_id = ? WHERE feedback_id = ?",
+                (task_id, feedback_id),
+            )
+            row = connection.execute(
+                "SELECT COUNT(*) AS c FROM improvement_task_feedback WHERE improvement_task_id = ?",
+                (task_id,),
+            ).fetchone()
+            new_count = int(row["c"])
+            new_score = _compute_priority_score(
+                severity=task["severity"],
+                impact=task["impact"],
+                report_count=new_count,
+                reproducibility=task["reproducibility"],
+                workflow_frequency=task["workflow_frequency"],
+                implementation_effort=task["implementation_effort"],
+            )
+            factors = {
+                "severity": task["severity"],
+                "impact": task["impact"],
+                "report_count": new_count,
+                "reproducibility": task["reproducibility"],
+                "workflow_frequency": task["workflow_frequency"],
+                "implementation_effort": task["implementation_effort"],
+                "measured": ["report_count"],
+                "estimated": [
+                    "severity",
+                    "impact",
+                    "reproducibility",
+                    "workflow_frequency",
+                    "implementation_effort",
+                ],
+            }
+            connection.execute(
+                "UPDATE improvement_tasks SET report_count = ?, priority_score = ?, priority_factors_json = ?, updated_at = ? WHERE task_id = ?",
+                (
+                    new_count,
+                    round(new_score, 2),
+                    json.dumps(factors, separators=(",", ":"), sort_keys=True),
+                    datetime.now(UTC).isoformat(),
+                    task_id,
+                ),
+            )
+
+    return get_improvement_task(database_path, task_id)
+
+
+def unlink_feedback_from_task(
+    database_path: Path, *, task_id: str, feedback_id: str
+) -> dict[str, Any] | None:
+    """Unlink a feedback item from an improvement task and recompute report_count."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            task = connection.execute(
+                "SELECT * FROM improvement_tasks WHERE task_id = ?", (task_id,)
+            ).fetchone()
+            if task is None:
+                return None
+            connection.execute(
+                "DELETE FROM improvement_task_feedback WHERE improvement_task_id = ? AND feedback_id = ?",
+                (task_id, feedback_id),
+            )
+            connection.execute(
+                "UPDATE feedback_items SET improvement_task_id = NULL WHERE feedback_id = ? AND improvement_task_id = ?",
+                (feedback_id, task_id),
+            )
+            row = connection.execute(
+                "SELECT COUNT(*) AS c FROM improvement_task_feedback WHERE improvement_task_id = ?",
+                (task_id,),
+            ).fetchone()
+            new_count = int(row["c"])
+            new_score = _compute_priority_score(
+                severity=task["severity"],
+                impact=task["impact"],
+                report_count=new_count,
+                reproducibility=task["reproducibility"],
+                workflow_frequency=task["workflow_frequency"],
+                implementation_effort=task["implementation_effort"],
+            )
+            factors = {
+                "severity": task["severity"],
+                "impact": task["impact"],
+                "report_count": new_count,
+                "reproducibility": task["reproducibility"],
+                "workflow_frequency": task["workflow_frequency"],
+                "implementation_effort": task["implementation_effort"],
+                "measured": ["report_count"],
+                "estimated": [
+                    "severity",
+                    "impact",
+                    "reproducibility",
+                    "workflow_frequency",
+                    "implementation_effort",
+                ],
+            }
+            connection.execute(
+                "UPDATE improvement_tasks SET report_count = ?, priority_score = ?, priority_factors_json = ?, updated_at = ? WHERE task_id = ?",
+                (
+                    new_count,
+                    round(new_score, 2),
+                    json.dumps(factors, separators=(",", ":"), sort_keys=True),
+                    datetime.now(UTC).isoformat(),
+                    task_id,
+                ),
+            )
+
+    return get_improvement_task(database_path, task_id)
+
+
+def list_feedback_for_admin(
+    database_path: Path,
+    *,
+    category: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    sort_by: str = "recency",
+    sort_order: str = "desc",
+) -> list[dict[str, Any]]:
+    """List all feedback for administrator review with filtering and sorting.
+
+    Measured counts are derived from stored rows only.  No administrator
+    estimates are included in this list view.
+    """
+    allowed_sort = {"recency": "f.updated_at", "created": "f.created_at"}
+    sort_column = allowed_sort.get(sort_by, "f.updated_at")
+    order = "ASC" if sort_order == "asc" else "DESC"
+
+    query = """
+        SELECT f.feedback_id, f.user_id, f.category, f.title, f.description,
+               f.status, f.resolution_notes, f.improvement_task_id,
+               f.created_at, f.updated_at, u.username
+        FROM feedback_items AS f
+        LEFT JOIN users AS u ON u.user_id = f.user_id
+        WHERE 1 = 1
+    """
+    params: list[Any] = []
+    if category is not None:
+        query += " AND f.category = ?"
+        params.append(category)
+    if status is not None:
+        query += " AND f.status = ?"
+        params.append(status)
+    if date_from is not None:
+        query += " AND f.created_at >= ?"
+        params.append(date_from)
+    if date_to is not None:
+        query += " AND f.created_at <= ?"
+        params.append(date_to)
+    query += f" ORDER BY {sort_column} {order}"
+
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "feedback_id": row["feedback_id"],
+            "user_id": row["user_id"],
+            "category": row["category"],
+            "title": row["title"],
+            "description": row["description"],
+            "status": row["status"],
+            "resolution_notes": row["resolution_notes"],
+            "improvement_task_id": row["improvement_task_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "username": row["username"],
+        }
+        for row in rows
+    ]
+
+
+def update_feedback_item_admin(
+    database_path: Path,
+    *,
+    feedback_id: str,
+    category: str | None = None,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+    resolution_notes: str | None = None,
+    improvement_task_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a feedback item as an administrator (no ownership check).
+
+    Only administrators may call this.  Resolution notes and improvement task
+    links are admin-only fields.
+    """
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT feedback_id, user_id FROM feedback_items WHERE feedback_id = ?",
+                (feedback_id,),
+            ).fetchone()
+            if existing is None:
+                return None
+
+            updates: list[str] = []
+            values: list[Any] = []
+            if category is not None:
+                updates.append("category = ?")
+                values.append(category)
+            if title is not None:
+                updates.append("title = ?")
+                values.append(title.strip())
+            if description is not None:
+                updates.append("description = ?")
+                values.append(description.strip())
+            if status is not None:
+                updates.append("status = ?")
+                values.append(status)
+            if resolution_notes is not None:
+                updates.append("resolution_notes = ?")
+                values.append(resolution_notes.strip() if resolution_notes else None)
+            if improvement_task_id is not None:
+                updates.append("improvement_task_id = ?")
+                values.append(improvement_task_id)
+
+            if not updates:
+                return get_feedback_item(database_path, feedback_id)
+
+            updates.append("updated_at = ?")
+            values.append(datetime.now(UTC).isoformat())
+            values.append(feedback_id)
             connection.execute(
                 f"UPDATE feedback_items SET {', '.join(updates)} WHERE feedback_id = ?",
                 tuple(values),
@@ -1257,6 +1891,102 @@ def initialize_storage(database_path: Path) -> None:
                 )
                 if any(connection.execute(query).fetchone() for query in cross_owner_checks):
                     raise RuntimeError("Cannot safely migrate resources with conflicting ownership")
+
+            if version < 13:
+                # M32: Feedback analysis and product improvement loop.
+                # Create improvement_tasks and its junction table first so the
+                # feedback_items recreation can reference them safely.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS improvement_tasks (
+                        task_id TEXT PRIMARY KEY,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        status TEXT NOT NULL CHECK (status IN ('proposed', 'in_progress', 'resolved', 'declined')),
+                        priority_score REAL NOT NULL DEFAULT 0,
+                        priority_factors_json TEXT NOT NULL DEFAULT '{}',
+                        severity INTEGER NOT NULL CHECK (severity BETWEEN 1 AND 5),
+                        impact INTEGER NOT NULL CHECK (impact BETWEEN 1 AND 5),
+                        report_count INTEGER NOT NULL DEFAULT 0,
+                        reproducibility INTEGER NOT NULL CHECK (reproducibility BETWEEN 1 AND 5),
+                        workflow_frequency INTEGER NOT NULL CHECK (workflow_frequency BETWEEN 1 AND 5),
+                        implementation_effort INTEGER NOT NULL CHECK (implementation_effort BETWEEN 1 AND 5),
+                        regression_test TEXT,
+                        implemented INTEGER NOT NULL DEFAULT 0 CHECK (implemented IN (0, 1)),
+                        implemented_at TEXT,
+                        user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_improvement_tasks_user_id "
+                    "ON improvement_tasks(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_improvement_tasks_status "
+                    "ON improvement_tasks(status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_improvement_tasks_priority "
+                    "ON improvement_tasks(priority_score DESC)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS improvement_task_feedback (
+                        improvement_task_id TEXT NOT NULL
+                            REFERENCES improvement_tasks(task_id) ON DELETE CASCADE,
+                        feedback_id TEXT NOT NULL
+                            REFERENCES feedback_items(feedback_id) ON DELETE CASCADE,
+                        PRIMARY KEY (improvement_task_id, feedback_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_improvement_task_feedback_feedback "
+                    "ON improvement_task_feedback(feedback_id)"
+                )
+                # Recreate feedback_items with expanded status CHECK and new columns.
+                connection.execute(
+                    """
+                    CREATE TABLE feedback_items_m32 (
+                        feedback_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        category TEXT NOT NULL CHECK (category IN ('bug', 'usability', 'feature_request', 'other')),
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        status TEXT NOT NULL CHECK (status IN ('new', 'reviewing', 'planned', 'in_progress', 'resolved', 'withdrawn', 'declined')),
+                        resolution_notes TEXT,
+                        improvement_task_id TEXT REFERENCES improvement_tasks(task_id),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO feedback_items_m32(
+                        feedback_id, user_id, category, title, description, status,
+                        resolution_notes, improvement_task_id, created_at, updated_at
+                    )
+                    SELECT feedback_id, user_id, category, title, description, status,
+                        NULL, NULL, created_at, updated_at
+                    FROM feedback_items
+                    """
+                )
+                connection.execute("DROP TABLE feedback_items")
+                connection.execute("ALTER TABLE feedback_items_m32 RENAME TO feedback_items")
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_feedback_items_user_id ON feedback_items(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_feedback_items_status ON feedback_items(status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_feedback_items_improvement_task "
+                    "ON feedback_items(improvement_task_id)"
+                )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.execute("PRAGMA foreign_keys = ON")

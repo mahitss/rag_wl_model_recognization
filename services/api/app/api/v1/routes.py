@@ -44,6 +44,7 @@ from app.schemas import (
     DocumentsResponse,
     EmbeddingStatusResponse,
     FeedbackAdminStatusRequest,
+    FeedbackAdminUpdateRequest,
     FeedbackCreateRequest,
     FeedbackListResponse,
     FeedbackUpdateRequest,
@@ -53,6 +54,10 @@ from app.schemas import (
     ImageRegionCreateResponse,
     ImageTutorRequest,
     ImageTutorResponse,
+    ImprovementTaskCreateRequest,
+    ImprovementTaskListResponse,
+    ImprovementTaskResponse,
+    ImprovementTaskUpdateRequest,
     KnowledgeGraphConceptDetail,
     KnowledgeGraphConceptList,
     KnowledgeGraphExtractRequest,
@@ -61,6 +66,7 @@ from app.schemas import (
     LearningImageDetailResponse,
     LearningImageListResponse,
     LearningProgressResponse,
+    PrioritizationExplanation,
     ProductAnalyticsEventRequest,
     ProductAnalyticsSummary,
     QuizAttemptRequest,
@@ -85,6 +91,7 @@ from app.schemas import (
 from app.storage import (
     complete_study_session,
     create_feedback_item,
+    create_improvement_task,
     create_learning_image_region,
     create_quiz_set,
     delete_document,
@@ -101,9 +108,11 @@ from app.storage import (
     get_quiz_question,
     get_quiz_set,
     knowledge_graph_chunks,
+    link_feedback_to_task,
     list_documents,
     list_feedback_for_admin,
     list_feedback_for_user,
+    list_improvement_tasks,
     list_knowledge_concepts,
     list_learning_images,
     prune_product_events,
@@ -113,7 +122,10 @@ from app.storage import (
     start_study_session,
     store_knowledge_extraction,
     store_learning_image,
+    unlink_feedback_from_task,
     update_feedback_item,
+    update_feedback_item_admin,
+    update_improvement_task,
     update_study_coach_recommendation,
     verify_knowledge_relationship,
 )
@@ -298,9 +310,73 @@ def update_feedback(
 def list_feedback_admin(
     request: Request,
     _: AuthUser = Depends(require_admin),
+    category: str | None = None,
+    status: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    sort_by: str = "recency",
+    sort_order: str = "desc",
 ) -> dict[str, list[dict[str, Any]]]:
-    """List all feedback for private-beta review by administrators."""
-    return {"feedback": list_feedback_for_admin(_database_path(request))}
+    """List all feedback for private-beta review by administrators.
+
+    Supports filtering by category, status, and date range, and sorting by
+    recency or creation time.  All values are measured from stored rows only.
+    """
+    return {
+        "feedback": list_feedback_for_admin(
+            _database_path(request),
+            category=category,
+            status=status,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    }
+
+
+@router.patch(
+    "/feedback/admin/{feedback_id}",
+    response_model=dict[str, Any],
+    tags=["beta"],
+)
+def update_feedback_admin(
+    request: Request,
+    feedback_id: str,
+    payload: FeedbackAdminUpdateRequest,
+    _: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Administrator update of a feedback item.
+
+    Allows updating category, title, description, status, resolution notes,
+    and linking to an improvement task.  No ownership check is applied;
+    caller must be an administrator.
+    """
+    updates: dict[str, Any] = {}
+    if payload.category is not None:
+        updates["category"] = payload.category
+    if payload.title is not None:
+        updates["title"] = payload.title
+    if payload.description is not None:
+        updates["description"] = payload.description
+    if payload.status is not None:
+        updates["status"] = payload.status
+    if payload.resolution_notes is not None:
+        updates["resolution_notes"] = payload.resolution_notes
+    if payload.improvement_task_id is not None:
+        updates["improvement_task_id"] = payload.improvement_task_id
+
+    if not updates:
+        raise ApiError(400, "EMPTY_FEEDBACK_UPDATE", "No updates were provided.")
+
+    existing = update_feedback_item_admin(
+        _database_path(request),
+        feedback_id=feedback_id,
+        **updates,
+    )
+    if existing is None:
+        raise ApiError(404, "FEEDBACK_NOT_FOUND", "Feedback item was not found.")
+    return {"feedback": existing, "message": "Feedback updated."}
 
 
 @router.patch("/feedback/{feedback_id}/status", response_model=dict[str, Any], tags=["beta"])
@@ -319,6 +395,200 @@ def update_feedback_status(
     if existing is None:
         raise ApiError(404, "FEEDBACK_NOT_FOUND", "Feedback item was not found.")
     return {"feedback": existing, "message": "Feedback status updated."}
+
+
+@router.post(
+    "/feedback/admin/improvement-tasks",
+    response_model=ImprovementTaskResponse,
+    tags=["beta"],
+)
+def create_improvement_task_route(
+    request: Request,
+    payload: ImprovementTaskCreateRequest,
+    current_user: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Create a tracked improvement task from beta feedback.
+
+    Duplicate titles are rejected.  Linked feedback IDs are stored and the
+    measured report_count is derived from them.  Priority factors that are
+    administrator estimates are clearly distinguished from measured data.
+    """
+    try:
+        task = create_improvement_task(
+            _database_path(request),
+            user_id=current_user.user_id,
+            title=payload.title,
+            description=payload.description,
+            status=payload.status,
+            severity=payload.severity,
+            impact=payload.impact,
+            reproducibility=payload.reproducibility,
+            workflow_frequency=payload.workflow_frequency,
+            implementation_effort=payload.implementation_effort,
+            regression_test=payload.regression_test,
+            feedback_ids=payload.feedback_ids,
+        )
+    except ValueError as exc:
+        raise ApiError(409, "DUPLICATE_IMPROVEMENT_TASK", str(exc)) from exc
+    return task
+
+
+@router.get(
+    "/feedback/admin/improvement-tasks",
+    response_model=ImprovementTaskListResponse,
+    tags=["beta"],
+)
+def list_improvement_tasks_route(
+    request: Request,
+    _: AuthUser = Depends(require_admin),
+    status: str | None = None,
+    sort_by: str = "priority",
+    sort_order: str = "desc",
+) -> dict[str, list[dict[str, Any]]]:
+    """List improvement tasks with optional status filter and sorting."""
+    return {
+        "tasks": list_improvement_tasks(
+            _database_path(request),
+            status=status,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+    }
+
+
+@router.patch(
+    "/feedback/admin/improvement-tasks/{task_id}",
+    response_model=ImprovementTaskResponse,
+    tags=["beta"],
+)
+def update_improvement_task_route(
+    request: Request,
+    task_id: str,
+    payload: ImprovementTaskUpdateRequest,
+    current_user: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Update an improvement task and recompute its priority score.
+
+    Priority factors that are administrator estimates are clearly marked.
+    Only the measured report_count is derived from linked feedback rows.
+    """
+    updates: dict[str, Any] = {}
+    if payload.title is not None:
+        updates["title"] = payload.title
+    if payload.description is not None:
+        updates["description"] = payload.description
+    if payload.status is not None:
+        updates["status"] = payload.status
+    if payload.severity is not None:
+        updates["severity"] = payload.severity
+    if payload.impact is not None:
+        updates["impact"] = payload.impact
+    if payload.reproducibility is not None:
+        updates["reproducibility"] = payload.reproducibility
+    if payload.workflow_frequency is not None:
+        updates["workflow_frequency"] = payload.workflow_frequency
+    if payload.implementation_effort is not None:
+        updates["implementation_effort"] = payload.implementation_effort
+    if payload.regression_test is not None:
+        updates["regression_test"] = payload.regression_test
+    if payload.implemented is not None:
+        updates["implemented"] = payload.implemented
+
+    task = update_improvement_task(
+        _database_path(request),
+        task_id=task_id,
+        user_id=current_user.user_id,
+        **updates,
+    )
+    if task is None:
+        raise ApiError(404, "IMPROVEMENT_TASK_NOT_FOUND", "Improvement task was not found.")
+    return task
+
+
+@router.post(
+    "/feedback/admin/improvement-tasks/{task_id}/feedback/{feedback_id}",
+    response_model=ImprovementTaskResponse,
+    tags=["beta"],
+)
+def link_feedback_to_task_route(
+    request: Request,
+    task_id: str,
+    feedback_id: str,
+    _: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Link a feedback item to an improvement task and recompute priority."""
+    task = link_feedback_to_task(
+        _database_path(request),
+        task_id=task_id,
+        feedback_id=feedback_id,
+    )
+    if task is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "Task or feedback item was not found.")
+    return task
+
+
+@router.delete(
+    "/feedback/admin/improvement-tasks/{task_id}/feedback/{feedback_id}",
+    response_model=ImprovementTaskResponse,
+    tags=["beta"],
+)
+def unlink_feedback_from_task_route(
+    request: Request,
+    task_id: str,
+    feedback_id: str,
+    _: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Unlink a feedback item from an improvement task and recompute priority."""
+    task = unlink_feedback_from_task(
+        _database_path(request),
+        task_id=task_id,
+        feedback_id=feedback_id,
+    )
+    if task is None:
+        raise ApiError(404, "RESOURCE_NOT_FOUND", "Task or feedback item was not found.")
+    return task
+
+
+@router.get(
+    "/feedback/admin/prioritization",
+    response_model=PrioritizationExplanation,
+    tags=["beta"],
+)
+def prioritization_explanation(
+    _: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Return the documented prioritization formula and field classifications.
+
+    Measured fields are derived from stored rows only.  Estimated fields are
+    administrator judgments and are never treated as observed facts.
+    """
+    return {
+        "formula": (
+            "priority_score = severity*20 + impact*15 + report_count*10 + "
+            "reproducibility*10 + workflow_frequency*10 - "
+            "implementation_effort*5"
+        ),
+        "weights": {
+            "severity": 20,
+            "impact": 15,
+            "report_count": 10,
+            "reproducibility": 10,
+            "workflow_frequency": 10,
+            "implementation_effort": 5,
+        },
+        "measured_fields": ["report_count"],
+        "estimated_fields": [
+            "severity",
+            "impact",
+            "reproducibility",
+            "workflow_frequency",
+            "implementation_effort",
+        ],
+        "range_note": (
+            "Approximate range 0 to 150.  Higher scores indicate higher "
+            "priority.  Implementation effort reduces the score."
+        ),
+    }
 
 
 @router.get("/product-analytics", response_model=ProductAnalyticsSummary, tags=["analytics"])

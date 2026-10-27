@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.auth_routes import router as auth_router
+from app.api.v1.content import router as content_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
@@ -105,6 +106,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(router)
     # Workspace router (shared study spaces require membership)
     application.include_router(workspaces_router)
+    # Content studio router (AI-generated learning resources require ownership)
+    application.include_router(content_router)
 
     @application.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> Any:

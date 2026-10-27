@@ -14,7 +14,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 16
+SCHEMA_VERSION = 17
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -2167,6 +2167,92 @@ def initialize_storage(database_path: Path) -> None:
                     "learning_objective TEXT",
                 )
 
+            if version < 17:
+                # M38: AI Learning Content Studio - generated learning resources.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS content_resources (
+                        resource_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT,
+                        format TEXT NOT NULL CHECK (format IN (
+                            'notes', 'summary', 'flashcards', 'questions',
+                            'revision_sheet', 'concept_outline'
+                        )),
+                        detail_level TEXT NOT NULL CHECK (detail_level IN (
+                            'brief', 'standard', 'comprehensive'
+                        )),
+                        status TEXT NOT NULL CHECK (status IN ('draft', 'reviewed', 'archived')),
+                        source_type TEXT NOT NULL CHECK (source_type IN ('document', 'workspace')),
+                        source_refs_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        reviewed_at TEXT,
+                        reviewed_by TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resources_user_id "
+                    "ON content_resources(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resources_status "
+                    "ON content_resources(status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resources_created_at "
+                    "ON content_resources(created_at DESC)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS content_resource_sections (
+                        section_id TEXT PRIMARY KEY,
+                        resource_id TEXT NOT NULL REFERENCES content_resources(resource_id)
+                            ON DELETE CASCADE,
+                        section_type TEXT NOT NULL CHECK (section_type IN (
+                            'heading', 'body', 'flashcard', 'question', 'summary'
+                        )),
+                        section_title TEXT NOT NULL CHECK (length(section_title) BETWEEN 1 AND 200),
+                        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 10000),
+                        citations_json TEXT NOT NULL DEFAULT '[]',
+                        version INTEGER NOT NULL DEFAULT 1,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resource_sections_resource_id "
+                    "ON content_resource_sections(resource_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resource_sections_version "
+                    "ON content_resource_sections(resource_id, version)"
+                )
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS content_resource_revisions (
+                        revision_id TEXT PRIMARY KEY,
+                        resource_id TEXT NOT NULL REFERENCES content_resources(resource_id)
+                            ON DELETE CASCADE,
+                        section_id TEXT NOT NULL REFERENCES content_resource_sections(section_id)
+                            ON DELETE CASCADE,
+                        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 10000),
+                        citations_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resource_revisions_section_id "
+                    "ON content_resource_revisions(section_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resource_revisions_created_at "
+                    "ON content_resource_revisions(created_at DESC)"
+                )
+
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.execute("PRAGMA foreign_keys = ON")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -2513,7 +2599,6 @@ def replace_image_region_citations(
     citations: list[dict[str, Any]],
     user_id: str | None = None,
 ) -> None:
-    import json
 
     with closing(connect_database(database_path)) as connection:
         with connection:
@@ -2562,7 +2647,6 @@ def replace_image_region_citations(
 def get_learning_image_detail(
     database_path: Path, image_id: str, user_id: str | None = None
 ) -> dict[str, Any] | None:
-    import json
 
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
@@ -2706,7 +2790,6 @@ def store_knowledge_extraction(
     user_id: str | None = None,
 ) -> None:
     """Atomically store concepts and evidence-backed candidate relations for one chunk."""
-    import json
 
     with closing(connect_database(database_path)) as connection:
         with connection:
@@ -2821,7 +2904,6 @@ def list_knowledge_concepts(
                    WHERE c.user_id IS NULL
                    GROUP BY c.concept_id ORDER BY c.canonical_name COLLATE NOCASE"""
             ).fetchall()
-    import json
 
     return [
         {
@@ -2838,7 +2920,6 @@ def list_knowledge_concepts(
 def get_knowledge_concept(
     database_path: Path, concept_id: str, user_id: str | None = None
 ) -> dict[str, Any] | None:
-    import json
 
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
@@ -3003,7 +3084,6 @@ def search_chunks(
 
 def create_quiz_set(database_path: Path, quiz: dict[str, Any], user_id: str | None = None) -> None:
     """Persist generated questions and foreign-key citations atomically."""
-    import json
 
     with closing(connect_database(database_path)) as connection:
         with connection:
@@ -3069,7 +3149,6 @@ def get_quiz_set(
     user_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Load a quiz with current source provenance and latest attempt outcomes."""
-    import json
 
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
@@ -3196,7 +3275,6 @@ def get_quiz_set(
 def get_quiz_question(
     database_path: Path, question_id: str, user_id: str | None = None
 ) -> dict[str, Any] | None:
-    import json
 
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
@@ -3341,7 +3419,6 @@ def complete_study_session(
 
 
 def get_learning_analytics_data(database_path: Path, user_id: str | None = None) -> dict[str, Any]:
-    import json
 
     with closing(connect_database(database_path)) as connection:
         if user_id is not None:
@@ -3547,7 +3624,6 @@ def get_or_create_study_coach_plan(
     user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Persist the deterministic daily plan once and preserve learner decisions."""
-    import json
 
     with closing(connect_database(database_path)) as connection:
         with connection:
@@ -3617,7 +3693,6 @@ def update_study_coach_recommendation(
     user_id: str | None = None,
 ) -> dict[str, Any] | None:
     """Apply an explicit learner decision to one persisted plan item."""
-    import json
 
     with closing(connect_database(database_path)) as connection:
         with connection:
@@ -4893,7 +4968,6 @@ def create_study_space(
     learning_objective: str | None = None,
 ) -> dict[str, Any]:
     """Create a study space owned by ``user_id`` and register them as owner member."""
-    import secrets
 
     space_id = f"space_{secrets.token_urlsafe(12)}"
     now = datetime.now(UTC).isoformat()
@@ -5350,7 +5424,6 @@ def create_workspace_discussion(
         return None
     if _workspace_exists(database_path, space_id) is None:
         return None
-    import secrets
 
     content = content.strip()
     if not content:
@@ -5422,7 +5495,6 @@ def create_workspace_discussion_reply(
         return None
     if _workspace_exists(database_path, space_id) is None:
         return None
-    import secrets
 
     content = content.strip()
     if not content:
@@ -5487,6 +5559,527 @@ def list_workspace_discussion_replies(
             "userId": row["user_id"],
             "username": row["username"],
             "content": row["content"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# M38: AI Learning Content Studio storage functions.
+# ---------------------------------------------------------------------------
+
+def _resource_exists(database_path: Path, resource_id: str) -> dict[str, Any] | None:
+    with closing(connect_database(database_path)) as connection:
+        return connection.execute(
+            "SELECT resource_id, user_id, title, description, format, detail_level, status, "
+            "source_type, source_refs_json, created_at, updated_at, reviewed_at, reviewed_by "
+            "FROM content_resources WHERE resource_id = ?",
+            (resource_id,),
+        ).fetchone()
+
+
+def _is_resource_owner(database_path: Path, resource_id: str, user_id: str) -> bool:
+    row = _resource_exists(database_path, resource_id)
+    return row is not None and row["user_id"] == user_id
+
+
+def _verify_source_chunks(
+    database_path: Path,
+    citation_ids: list[str],
+    user_id: str | None,
+) -> list[dict[str, Any]]:
+    """Return chunk records for citation ids, enforcing user ownership."""
+    if not citation_ids:
+        return []
+    placeholders = ",".join("?" for _ in citation_ids)
+    parameters: list[Any] = list(citation_ids)
+    if user_id is not None:
+        sql = f"""
+            SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
+                   c.chunk_index, c.char_start, c.char_end, c.text
+            FROM chunks AS c
+            JOIN documents AS d ON d.document_id = c.document_id
+            WHERE c.chunk_id IN ({placeholders}) AND c.user_id = ? AND d.user_id = ?
+        """
+        parameters.extend([user_id, user_id])
+    else:
+        sql = f"""
+            SELECT c.chunk_id, c.document_id, d.display_name, c.page_number,
+                   c.chunk_index, c.char_start, c.char_end, c.text
+            FROM chunks AS c
+            JOIN documents AS d ON d.document_id = c.document_id
+            WHERE c.chunk_id IN ({placeholders}) AND c.user_id IS NULL AND d.user_id IS NULL
+        """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, parameters).fetchall()
+    return [dict(row) for row in rows]
+
+
+def create_content_resource(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    description: str | None,
+    format: str,
+    detail_level: str,
+    source_type: str,
+    source_refs: list[dict[str, Any]],
+    status: str = "draft",
+) -> dict[str, Any]:
+    """Create a new AI-generated content resource owned by ``user_id``."""
+
+    resource_id = f"content_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = (description or "").strip() or None
+    source_refs_json = json.dumps(source_refs, separators=(",", ":"), sort_keys=True)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO content_resources(
+                    resource_id, user_id, title, description, format, detail_level,
+                    status, source_type, source_refs_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    resource_id,
+                    user_id,
+                    title,
+                    description,
+                    format,
+                    detail_level,
+                    status,
+                    source_type,
+                    source_refs_json,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "resourceId": resource_id,
+        "userId": user_id,
+        "title": title,
+        "description": description,
+        "format": format,
+        "detailLevel": detail_level,
+        "status": status,
+        "sourceType": source_type,
+        "sourceRefs": source_refs,
+        "createdAt": now,
+        "updatedAt": now,
+        "reviewedAt": None,
+        "reviewedBy": None,
+    }
+
+
+def list_content_resources(
+    database_path: Path, *, user_id: str, status: str | None = None
+) -> list[dict[str, Any]]:
+    """List content resources owned by the user, newest first."""
+    query = """
+        SELECT resource_id, user_id, title, description, format, detail_level, status,
+               source_type, source_refs_json, created_at, updated_at, reviewed_at, reviewed_by
+        FROM content_resources WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY updated_at DESC, created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [_resource_row_to_public(row) for row in rows]
+
+
+def _resource_row_to_public(row: sqlite3.Row) -> dict[str, Any]:
+
+    return {
+        "resourceId": row["resource_id"],
+        "userId": row["user_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "format": row["format"],
+        "detailLevel": row["detail_level"],
+        "status": row["status"],
+        "sourceType": row["source_type"],
+        "sourceRefs": json.loads(row["source_refs_json"] or "[]"),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "reviewedAt": row["reviewed_at"],
+        "reviewedBy": row["reviewed_by"],
+    }
+
+
+def get_content_resource(
+    database_path: Path, *, resource_id: str, user_id: str
+) -> dict[str, Any] | None:
+    """Return a content resource with its sections if the user owns it."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+    row = _resource_exists(database_path, resource_id)
+    if row is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        section_rows = connection.execute(
+            """
+            SELECT section_id, resource_id, section_type, section_title, content,
+                   citations_json, version, created_at
+            FROM content_resource_sections
+            WHERE resource_id = ?
+            ORDER BY created_at ASC, section_id ASC
+            """,
+            (resource_id,),
+        ).fetchall()
+    sections = [_section_row_to_public(row) for row in section_rows]
+    public = _resource_row_to_public(row)
+    public["sections"] = sections
+    return public
+
+
+def _section_row_to_public(row: sqlite3.Row) -> dict[str, Any]:
+
+    return {
+        "sectionId": row["section_id"],
+        "resourceId": row["resource_id"],
+        "sectionType": row["section_type"],
+        "sectionTitle": row["section_title"],
+        "content": row["content"],
+        "citations": json.loads(row["citations_json"] or "[]"),
+        "version": row["version"],
+        "createdAt": row["created_at"],
+    }
+
+
+def update_content_resource(
+    database_path: Path,
+    *,
+    resource_id: str,
+    user_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable content resource fields. Only the owner may update."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+    if _resource_exists(database_path, resource_id) is None:
+        return None
+    updates: list[str] = []
+    values: list[Any] = []
+    if title is not None:
+        title = title.strip()
+        if not title:
+            raise ValueError("Title must not be blank.")
+        updates.append("title = ?")
+        values.append(title)
+    if description is not None:
+        description = description.strip() or None
+        updates.append("description = ?")
+        values.append(description)
+    if status is not None:
+        if status not in {"draft", "reviewed", "archived"}:
+            raise ValueError("Status must be 'draft', 'reviewed', or 'archived'.")
+        updates.append("status = ?")
+        values.append(status)
+        if status == "reviewed":
+            updates.append("reviewed_at = ?")
+            values.append(datetime.now(UTC).isoformat())
+            updates.append("reviewed_by = ?")
+            values.append(user_id)
+    if not updates:
+        return get_content_resource(database_path, resource_id=resource_id, user_id=user_id)
+    updates.append("updated_at = ?")
+    values.append(datetime.now(UTC).isoformat())
+    values.append(resource_id)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                f"UPDATE content_resources SET {', '.join(updates)} WHERE resource_id = ?",
+                tuple(values),
+            )
+    return get_content_resource(database_path, resource_id=resource_id, user_id=user_id)
+
+
+def delete_content_resource(
+    database_path: Path, *, resource_id: str, user_id: str
+) -> bool:
+    """Delete a content resource, its sections, and revisions. Owner only."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return False
+    if _resource_exists(database_path, resource_id) is None:
+        return False
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "DELETE FROM content_resources WHERE resource_id = ?", (resource_id,)
+            )
+    return True
+
+
+def create_content_section(
+    database_path: Path,
+    *,
+    resource_id: str,
+    user_id: str,
+    section_type: str,
+    section_title: str,
+    content: str,
+    citations: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Create a new section for a content resource. Owner only."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+    if _resource_exists(database_path, resource_id) is None:
+        return None
+
+    section_id = f"section_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    section_title = section_title.strip()
+    content = content.strip()
+    if not section_title:
+        raise ValueError("Section title must not be blank.")
+    if not content:
+        raise ValueError("Section content must not be blank.")
+    citations_json = json.dumps(citations, separators=(",", ":"), sort_keys=True)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO content_resource_sections(
+                    section_id, resource_id, section_type, section_title,
+                    content, citations_json, version, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                """,
+                (
+                    section_id,
+                    resource_id,
+                    section_type,
+                    section_title,
+                    content,
+                    citations_json,
+                    now,
+                ),
+            )
+    return {
+        "sectionId": section_id,
+        "resourceId": resource_id,
+        "sectionType": section_type,
+        "sectionTitle": section_title,
+        "content": content,
+        "citations": citations,
+        "version": 1,
+        "createdAt": now,
+    }
+
+
+def update_content_section(
+    database_path: Path,
+    *,
+    resource_id: str,
+    section_id: str,
+    user_id: str,
+    section_title: str | None = None,
+    content: str | None = None,
+    citations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Edit a section's mutable fields. Only the resource owner may edit."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        section = connection.execute(
+            "SELECT section_id, version FROM content_resource_sections WHERE section_id = ? AND resource_id = ?",
+            (section_id, resource_id),
+        ).fetchone()
+        if section is None:
+            return None
+        updates: list[str] = []
+        values: list[Any] = []
+        if section_title is not None:
+            section_title = section_title.strip()
+            if not section_title:
+                raise ValueError("Section title must not be blank.")
+            updates.append("section_title = ?")
+            values.append(section_title)
+        if content is not None:
+            content = content.strip()
+            if not content:
+                raise ValueError("Section content must not be blank.")
+            updates.append("content = ?")
+            values.append(content)
+        if citations is not None:
+
+            updates.append("citations_json = ?")
+            values.append(json.dumps(citations, separators=(",", ":"), sort_keys=True))
+        if not updates:
+            return get_content_section(database_path, resource_id, section_id, user_id)
+        new_version = int(section["version"]) + 1
+        updates.append("version = ?")
+        values.append(new_version)
+        updates.append("created_at = ?")
+        values.append(datetime.now(UTC).isoformat())
+        values.append(section_id)
+        with connection:
+            connection.execute(
+                f"UPDATE content_resource_sections SET {', '.join(updates)} WHERE section_id = ?",
+                tuple(values),
+            )
+            connection.execute(
+                """
+                INSERT INTO content_resource_revisions(
+                    revision_id, resource_id, section_id, content, citations_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"rev_{secrets.token_urlsafe(12)}",
+                    resource_id,
+                    section_id,
+                    content if content is not None
+                    else connection.execute(
+                        "SELECT content FROM content_resource_sections WHERE section_id = ?",
+                        (section_id,),
+                    ).fetchone()["content"],
+                    json.dumps(citations, separators=(",", ":"), sort_keys=True)
+                    if citations is not None
+                    else connection.execute(
+                        "SELECT citations_json FROM content_resource_sections WHERE section_id = ?",
+                        (section_id,),
+                    ).fetchone()["citations_json"],
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+    return get_content_section(database_path, resource_id, section_id, user_id)
+
+
+def regenerate_content_section(
+    database_path: Path,
+    *,
+    resource_id: str,
+    section_id: str,
+    user_id: str,
+    section_type: str | None = None,
+    section_title: str | None = None,
+    content: str | None = None,
+    citations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Regenerate a section's content, preserving the previous version as a revision."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        section = connection.execute(
+            "SELECT content, citations_json, version FROM content_resource_sections WHERE section_id = ? AND resource_id = ?",
+            (section_id, resource_id),
+        ).fetchone()
+        if section is None:
+            return None
+        # Archive current content as a revision before overwriting.
+
+        now = datetime.now(UTC).isoformat()
+        new_version = int(section["version"]) + 1
+        updates: list[str] = []
+        values: list[Any] = []
+        if content is not None:
+            content = content.strip()
+            if not content:
+                raise ValueError("Section content must not be blank.")
+            updates.append("content = ?")
+            values.append(content)
+        if citations is not None:
+            updates.append("citations_json = ?")
+            values.append(json.dumps(citations, separators=(",", ":"), sort_keys=True))
+        if section_title is not None:
+            section_title = section_title.strip()
+            if not section_title:
+                raise ValueError("Section title must not be blank.")
+            updates.append("section_title = ?")
+            values.append(section_title)
+        if section_type is not None:
+            updates.append("section_type = ?")
+            values.append(section_type)
+        if not updates:
+            return get_content_section(database_path, resource_id, section_id, user_id)
+        updates.append("version = ?")
+        values.append(new_version)
+        updates.append("created_at = ?")
+        values.append(now)
+        values.append(section_id)
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO content_resource_revisions(
+                    revision_id, resource_id, section_id, content, citations_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"rev_{secrets.token_urlsafe(12)}",
+                    resource_id,
+                    section_id,
+                    section["content"],
+                    section["citations_json"],
+                    now,
+                ),
+            )
+            connection.execute(
+                f"UPDATE content_resource_sections SET {', '.join(updates)} WHERE section_id = ?",
+                tuple(values),
+            )
+    return get_content_section(database_path, resource_id, section_id, user_id)
+
+
+def get_content_section(
+    database_path: Path, resource_id: str, section_id: str, user_id: str
+) -> dict[str, Any] | None:
+    """Return one section if the user owns the parent resource."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT section_id, resource_id, section_type, section_title, content,
+                   citations_json, version, created_at
+            FROM content_resource_sections
+            WHERE section_id = ? AND resource_id = ?
+            """,
+            (section_id, resource_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return _section_row_to_public(row)
+
+
+def list_content_revisions(
+    database_path: Path, *, resource_id: str, section_id: str, user_id: str
+) -> list[dict[str, Any]] | None:
+    """List revisions for a section if the user owns the parent resource."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+
+    with closing(connect_database(database_path)) as connection:
+        section = connection.execute(
+            "SELECT 1 FROM content_resource_sections WHERE section_id = ? AND resource_id = ?",
+            (section_id, resource_id),
+        ).fetchone()
+        if section is None:
+            return None
+        rows = connection.execute(
+            """
+            SELECT revision_id, resource_id, section_id, content, citations_json, created_at
+            FROM content_resource_revisions
+            WHERE section_id = ?
+            ORDER BY created_at DESC
+            """,
+            (section_id,),
+        ).fetchall()
+    return [
+        {
+            "revisionId": row["revision_id"],
+            "resourceId": row["resource_id"],
+            "sectionId": row["section_id"],
+            "content": row["content"],
+            "citations": json.loads(row["citations_json"] or "[]"),
             "createdAt": row["created_at"],
         }
         for row in rows

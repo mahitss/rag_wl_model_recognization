@@ -245,6 +245,42 @@ type GraphDetail = GraphConcept & {
   }[];
 };
 
+type ContentResourceSection = {
+  sectionId: string;
+  resourceId: string;
+  sectionType: "heading" | "body" | "flashcard" | "question" | "summary";
+  sectionTitle: string;
+  content: string;
+  citations: Citation[];
+  version: number;
+  createdAt: string;
+};
+type ContentResource = {
+  resourceId: string;
+  userId: string;
+  title: string;
+  description: string | null;
+  format: "notes" | "summary" | "flashcards" | "questions" | "revision_sheet" | "concept_outline";
+  detailLevel: "brief" | "standard" | "comprehensive";
+  status: "draft" | "reviewed" | "archived";
+  sourceType: "document" | "workspace";
+  sourceRefs: any[];
+  sections: ContentResourceSection[];
+  createdAt: string;
+  updatedAt: string;
+  reviewedAt: string | null;
+  reviewedBy: string | null;
+};
+type ContentResourceCreateRequest = {
+  title: string;
+  description?: string;
+  format: "notes" | "summary" | "flashcards" | "questions" | "revision_sheet" | "concept_outline";
+  detailLevel?: "brief" | "standard" | "comprehensive";
+  topic: string;
+  documentIds?: string[];
+  spaceId?: string;
+};
+
 type Workspace = {
   spaceId: string;
   ownerId: string;
@@ -636,6 +672,19 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [newReplyContent, setNewReplyContent] = useState("");
   const [creatingDiscussion, setCreatingDiscussion] = useState(false);
 
+  // --- M38: Content studio ---
+  const [contentResources, setContentResources] = useState<ContentResource[]>([]);
+  const [contentResourcesLoading, setContentResourcesLoading] = useState(false);
+  const [contentResourcesError, setContentResourcesError] = useState<string | null>(null);
+  const [selectedResourceId, setSelectedResourceId] = useState<string | null>(null);
+  const [selectedResource, setSelectedResource] = useState<ContentResource | null>(null);
+  const [newContentTitle, setNewContentTitle] = useState("");
+  const [newContentDescription, setNewContentDescription] = useState("");
+  const [newContentTopic, setNewContentTopic] = useState("");
+  const [newContentFormat, setNewContentFormat] = useState<"notes" | "summary" | "flashcards" | "questions" | "revision_sheet" | "concept_outline">("notes");
+  const [newContentDetail, setNewContentDetail] = useState<"brief" | "standard" | "comprehensive">("standard");
+  const [creatingContent, setCreatingContent] = useState(false);
+
 
   // --- Private beta feedback state ---
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
@@ -830,6 +879,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       });
     void loadMyFeedback();
     void loadWorkspaces();
+    void loadContentResources();
     if (isAdmin) {
       void loadAdminFeedback();
       void loadImprovementTasks();
@@ -1545,6 +1595,98 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       await loadWorkspaceDiscussionReplies(discussionId);
     } catch (error) {
       setWorkspacesError(error instanceof Error ? error.message : "Could not post reply.");
+    }
+  }
+
+  // --- M38: Content studio API ---
+  async function loadContentResources() {
+    setContentResourcesLoading(true);
+    setContentResourcesError(null);
+    try {
+      const response = await fetch("/api/v1/content/resources");
+      const result = await readJson<{ resources: ContentResource[] }>(response);
+      setContentResources(result.resources);
+    } catch (error) {
+      setContentResourcesError(error instanceof Error ? error.message : "Could not load content resources.");
+    } finally { setContentResourcesLoading(false); }
+  }
+
+  async function loadContentResource(resourceId: string) {
+    try {
+      const response = await fetch(`/api/v1/content/resources/${encodeURIComponent(resourceId)}`);
+      const result = await readJson<ContentResource>(response);
+      setSelectedResource(result);
+      setSelectedResourceId(resourceId);
+    } catch (error) {
+      setContentResourcesError(error instanceof Error ? error.message : "Could not load content resource.");
+    }
+  }
+
+  async function createContentResource(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setCreatingContent(true);
+    setContentResourcesError(null);
+    try {
+      const payload: ContentResourceCreateRequest = {
+        title: newContentTitle.trim(),
+        description: newContentDescription.trim() || undefined,
+        format: newContentFormat,
+        detailLevel: newContentDetail,
+        topic: newContentTopic.trim(),
+      };
+      const response = await fetch("/api/v1/content/resources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await readJson<ContentResource>(response);
+      setContentResources((current) => [result, ...current]);
+      setNewContentTitle("");
+      setNewContentDescription("");
+      setNewContentTopic("");
+      setSelectedResource(result);
+      setSelectedResourceId(result.resourceId);
+    } catch (error) {
+      setContentResourcesError(error instanceof Error ? error.message : "Could not create content resource.");
+    } finally { setCreatingContent(false); }
+  }
+
+  async function updateContentResourceMetadata(resourceId: string, event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setContentResourcesError(null);
+    const form = new FormData(event.currentTarget);
+    const title = String(form.get("title")).trim();
+    const description = String(form.get("description")).trim();
+    const status = String(form.get("status"));
+    const updates: Record<string, any> = {};
+    if (title) updates.title = title;
+    if (description) updates.description = description;
+    if (status) updates.status = status;
+    try {
+      const response = await fetch(`/api/v1/content/resources/${encodeURIComponent(resourceId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(updates),
+      });
+      const result = await readJson<ContentResource>(response);
+      setContentResources((current) => current.map((item) => item.resourceId === result.resourceId ? result : item));
+      if (selectedResourceId === resourceId) setSelectedResource(result);
+    } catch (error) {
+      setContentResourcesError(error instanceof Error ? error.message : "Could not update content resource.");
+    }
+  }
+
+  async function deleteContentResource(resourceId: string) {
+    if (!confirm("Delete this content resource? This cannot be undone.")) return;
+    try {
+      await fetch(`/api/v1/content/resources/${encodeURIComponent(resourceId)}`, { method: "DELETE" });
+      setContentResources((current) => current.filter((item) => item.resourceId !== resourceId));
+      if (selectedResourceId === resourceId) {
+        setSelectedResource(null);
+        setSelectedResourceId(null);
+      }
+    } catch (error) {
+      setContentResourcesError(error instanceof Error ? error.message : "Could not delete content resource.");
     }
   }
 
@@ -3597,6 +3739,152 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
                     </form>
                   </div>
                 )}
+              </section>
+            </div>
+          </>
+        )}
+      </section>
+      <section className="content-studio-panel" aria-labelledby="content-studio-title">
+        <div className="workspace-heading">
+          <div>
+            <p className="eyebrow">AI content studio</p>
+            <h2 id="content-studio-title">Content studio</h2>
+            <p className="muted">Turn your documents or shared study-space materials into structured learning resources. All generated content cites its sources and is labelled unverified until you review it.</p>
+          </div>
+        </div>
+
+        {contentResourcesLoading && <p className="muted" role="status">Loading content resources…</p>}
+        {contentResourcesError && <p className="notice notice--error" role="alert">{contentResourcesError}</p>}
+
+        {!selectedResourceId && (
+          <>
+            <form className="workspace-form" onSubmit={(event) => void createContentResource(event)}>
+              <h3>Create a content resource</h3>
+              <label className="document-control" htmlFor="content-title">
+                Title
+                <input
+                  id="content-title"
+                  value={newContentTitle}
+                  maxLength={200}
+                  minLength={1}
+                  required
+                  onChange={(event) => setNewContentTitle(event.currentTarget.value)}
+                  placeholder="For example, Photosynthesis study notes"
+                />
+              </label>
+              <label className="document-control" htmlFor="content-description">
+                Description (optional)
+                <textarea
+                  id="content-description"
+                  value={newContentDescription}
+                  maxLength={4000}
+                  rows={3}
+                  onChange={(event) => setNewContentDescription(event.currentTarget.value)}
+                  placeholder="What is this resource about?"
+                />
+              </label>
+              <label className="document-control" htmlFor="content-topic">
+                Topic
+                <input
+                  id="content-topic"
+                  value={newContentTopic}
+                  maxLength={160}
+                  minLength={2}
+                  required
+                  onChange={(event) => setNewContentTopic(event.currentTarget.value)}
+                  placeholder="For example, photosynthesis"
+                />
+              </label>
+              <label className="document-control" htmlFor="content-format">
+                Output format
+                <select
+                  id="content-format"
+                  value={newContentFormat}
+                  onChange={(event) => setNewContentFormat(event.currentTarget.value as "notes" | "summary" | "flashcards" | "questions" | "revision_sheet" | "concept_outline")}
+                >
+                  <option value="notes">Study notes</option>
+                  <option value="summary">Topic summary</option>
+                  <option value="flashcards">Flashcards</option>
+                  <option value="questions">Practice questions</option>
+                  <option value="revision_sheet">Revision sheet</option>
+                  <option value="concept_outline">Concept outline</option>
+                </select>
+              </label>
+              <label className="document-control" htmlFor="content-detail">
+                Level of detail
+                <select
+                  id="content-detail"
+                  value={newContentDetail}
+                  onChange={(event) => setNewContentDetail(event.currentTarget.value as "brief" | "standard" | "comprehensive")}
+                >
+                  <option value="brief">Brief</option>
+                  <option value="standard">Standard</option>
+                  <option value="comprehensive">Comprehensive</option>
+                </select>
+              </label>
+              <button type="submit" className="camera-action camera-action--primary" disabled={creatingContent}>
+                {creatingContent ? "Generating…" : "Generate resource"}
+              </button>
+            </form>
+
+            {contentResources.length === 0 && <p className="muted">You have no content resources yet. Create one above to get started.</p>}
+            {contentResources.length > 0 && (
+              <>
+                <h3>Your content resources</h3>
+                <ul className="workspace-list" role="none">
+                    {contentResources.map((resource) => (
+                    <li key={resource.resourceId} className={`workspace-item`} role="none">
+                      <div className="workspace-item-info">
+                        <strong>{resource.title}</strong>
+                        <span>{resource.description}</span>
+                        <p className="workspace-item-meta">
+                          {resource.format} · {resource.detailLevel} · {resource.status}
+                        </p>
+                      </div>
+                      <div className="workspace-item-actions">
+                        <button type="button" className="text-action" onClick={() => void loadContentResource(resource.resourceId)}>Open</button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </>
+        )}
+
+        {selectedResource && (
+          <>
+            <button type="button" className="text-action" onClick={() => { setSelectedResource(null); setSelectedResourceId(null); }}>← Back to resources</button>
+            <div className="workspace-detail">
+              <h3>{selectedResource.title}</h3>
+              <p>{selectedResource.description}</p>
+              <p className="workspace-detail-meta">
+                {selectedResource.format} · {selectedResource.detailLevel} · {selectedResource.status}
+              </p>
+              {selectedResource.status === "draft" && (
+                <div className="workspace-actions">
+                  <button type="button" className="camera-action" onClick={() => void updateContentResourceMetadata(selectedResource.resourceId, {} as any)}>Mark as reviewed</button>
+                  <button type="button" className="camera-action" onClick={() => void deleteContentResource(selectedResource.resourceId)}>Delete resource</button>
+                </div>
+              )}
+            </div>
+
+            <div className="workspace-grid">
+              <section className="workspace-section" aria-labelledby="content-sections-title">
+                <h3 id="content-sections-title">Sections</h3>
+                {selectedResource.sections.length === 0 && <p className="muted">No sections yet.</p>}
+                {selectedResource.sections.map((section) => (
+                  <article key={section.sectionId} className="workspace-discussion-item" role="none">
+                    <h4>{section.sectionTitle}</h4>
+                    <span className={`section-type section-type--${section.sectionType}`}>{section.sectionType}</span>
+                    <p>{section.content}</p>
+                    {section.citations.length > 0 && (
+                      <details className="topic-citations"><summary>Source passages ({section.citations.length})</summary>
+                        <ul>{section.citations.map((citation) => <li key={citation.citationId}><blockquote>{citation.text}</blockquote><span><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · chunk <code>{citation.citationId}</code></span></li>)}</ul>
+                      </details>
+                    )}
+                  </article>
+                ))}
               </section>
             </div>
           </>

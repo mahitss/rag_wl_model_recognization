@@ -447,6 +447,9 @@ function installFetchMock(
     if (url === "/api/v1/workspaces/space_test_001/documents/doc_shared_001" && init?.method === "DELETE") {
       return jsonResponse({ documentId: "doc_shared_001", removed: true });
     }
+    if (url === "/api/v1/content/resources") {
+      return jsonResponse({ resources: [] });
+    }
     if (url === "/api/v1/workspaces/space_test_001/quizzes") {
       if (init?.method === "POST") {
         return jsonResponse({ quizId: "quiz_shared_001", topicId: "topic_shared", topic: "Shared quiz", createdAt: "2026-10-25T12:00:00+00:00", sharedAt: "2026-10-25T12:00:00+00:00", sharedBy: "user-test", sharedByUsername: "learner" });

@@ -1111,3 +1111,114 @@ class WorkspaceDiscussionReplyListResponse(ApiModel):
 
 class WorkspaceMemberRemoveRequest(ApiModel):
     userId: str = Field(min_length=1, max_length=80)
+
+
+# ---------------------------------------------------------------------------
+# M38: AI Learning Content Studio.
+# ---------------------------------------------------------------------------
+
+
+class ContentResourceFormat(str):
+    pass
+
+
+class ContentResourceDetailLevel(str):
+    pass
+
+
+class ContentResourceStatus(str):
+    pass
+
+
+class ContentSourceType(str):
+    pass
+
+
+class ContentSectionType(str):
+    pass
+
+
+class ContentResourceCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    format: Literal[
+        "notes", "summary", "flashcards", "questions", "revision_sheet", "concept_outline"
+    ]
+    detailLevel: Literal["brief", "standard", "comprehensive"] = "standard"
+    topic: str = Field(min_length=2, max_length=160)
+    documentIds: list[str] | None = Field(default=None, max_length=50)
+    spaceId: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class ContentResourceSection(ApiModel):
+    sectionId: str
+    resourceId: str
+    sectionType: Literal["heading", "body", "flashcard", "question", "summary"]
+    sectionTitle: str
+    content: str
+    citations: list[CitationResponse]
+    version: int
+    createdAt: str
+
+
+class ContentResourceResponse(ApiModel):
+    resourceId: str
+    userId: str
+    title: str
+    description: str | None = None
+    format: Literal[
+        "notes", "summary", "flashcards", "questions", "revision_sheet", "concept_outline"
+    ]
+    detailLevel: Literal["brief", "standard", "comprehensive"]
+    status: Literal["draft", "reviewed", "archived"]
+    sourceType: Literal["document", "workspace"]
+    sourceRefs: list[dict[str, Any]]
+    sections: list[ContentResourceSection] = []
+    createdAt: str
+    updatedAt: str
+    reviewedAt: str | None = None
+    reviewedBy: str | None = None
+
+
+class ContentResourceListResponse(ApiModel):
+    resources: list[ContentResourceResponse]
+
+
+class ContentResourceUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    status: Literal["draft", "reviewed", "archived"] | None = None
+
+
+class ContentSectionEditRequest(ApiModel):
+    sectionTitle: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, min_length=1, max_length=10000)
+    citations: list[str] | None = Field(default=None, max_length=50)
+
+
+class ContentSectionRegenerateRequest(ApiModel):
+    sectionType: Literal["heading", "body", "flashcard", "question", "summary"] | None = None
+    sectionTitle: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, min_length=1, max_length=10000)
+    citations: list[str] | None = Field(default=None, max_length=50)
+
+
+class ContentResourceReviewRequest(ApiModel):
+    status: Literal["reviewed", "archived"]
+
+
+class ContentResourceRevision(ApiModel):
+    revisionId: str
+    resourceId: str
+    sectionId: str
+    content: str
+    citations: list[CitationResponse]
+    createdAt: str
+
+
+class ContentResourceRevisionListResponse(ApiModel):
+    revisions: list[ContentResourceRevision]
+
+
+class ContentResourceQuizLinkRequest(ApiModel):
+    quizId: str = Field(min_length=1, max_length=80)

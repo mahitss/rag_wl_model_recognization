@@ -14,7 +14,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -2251,6 +2251,72 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_content_resource_revisions_created_at "
                     "ON content_resource_revisions(created_at DESC)"
+                )
+
+            if version < 18:
+                # M39: AI Study Content Quality & Verification Engine.
+                # Verification state on sections (deterministic or human-set).
+                _ensure_column(
+                    connection,
+                    "content_resource_sections",
+                    "verification_status",
+                    "verification_status TEXT NOT NULL DEFAULT 'needs_review' "
+                    "CHECK (verification_status IN ('verified', 'needs_review', 'insufficient_evidence'))",
+                )
+                _ensure_column(
+                    connection,
+                    "content_resource_sections",
+                    "verification_method",
+                    "verification_method TEXT NOT NULL DEFAULT 'deterministic' "
+                    "CHECK (verification_method IN ('deterministic', 'human'))",
+                )
+                _ensure_column(
+                    connection,
+                    "content_resource_sections",
+                    "verification_details_json",
+                    "verification_details_json TEXT NOT NULL DEFAULT '{}'",
+                )
+                _ensure_column(
+                    connection,
+                    "content_resource_sections",
+                    "verified_at",
+                    "verified_at TEXT",
+                )
+                _ensure_column(
+                    connection,
+                    "content_resource_sections",
+                    "verified_by",
+                    "verified_by TEXT REFERENCES users(user_id) ON DELETE SET NULL",
+                )
+                # Per-resource validation summary produced by the verification pipeline.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS content_resource_validations (
+                        validation_id TEXT PRIMARY KEY,
+                        resource_id TEXT NOT NULL REFERENCES content_resources(resource_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        citation_validity INTEGER NOT NULL CHECK (citation_validity IN (0, 1)),
+                        evidence_coverage REAL NOT NULL CHECK (evidence_coverage >= 0 AND evidence_coverage <= 1),
+                        schema_validity INTEGER NOT NULL CHECK (schema_validity IN (0, 1)),
+                        unsupported_claim_count INTEGER NOT NULL CHECK (unsupported_claim_count >= 0),
+                        question_answer_correctness REAL CHECK (question_answer_correctness >= 0 AND question_answer_correctness <= 1),
+                        verification_method TEXT NOT NULL CHECK (verification_method IN ('deterministic', 'semantic_estimate')),
+                        details_json TEXT NOT NULL DEFAULT '{}',
+                        verified_by TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+                        verified_at TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resource_validations_resource_id "
+                    "ON content_resource_validations(resource_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_content_resource_validations_created_at "
+                    "ON content_resource_validations(created_at DESC)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -5726,7 +5792,9 @@ def get_content_resource(
         section_rows = connection.execute(
             """
             SELECT section_id, resource_id, section_type, section_title, content,
-                   citations_json, version, created_at
+                   citations_json, version, created_at,
+                   verification_status, verification_method,
+                   verification_details_json, verified_at, verified_by
             FROM content_resource_sections
             WHERE resource_id = ?
             ORDER BY created_at ASC, section_id ASC
@@ -5750,6 +5818,11 @@ def _section_row_to_public(row: sqlite3.Row) -> dict[str, Any]:
         "citations": json.loads(row["citations_json"] or "[]"),
         "version": row["version"],
         "createdAt": row["created_at"],
+        "verificationStatus": row["verification_status"],
+        "verificationMethod": row["verification_method"],
+        "verificationDetails": json.loads(row["verification_details_json"] or "{}"),
+        "verifiedAt": row["verified_at"],
+        "verifiedBy": row["verified_by"],
     }
 
 
@@ -6039,7 +6112,9 @@ def get_content_section(
         row = connection.execute(
             """
             SELECT section_id, resource_id, section_type, section_title, content,
-                   citations_json, version, created_at
+                   citations_json, version, created_at,
+                   verification_status, verification_method,
+                   verification_details_json, verified_at, verified_by
             FROM content_resource_sections
             WHERE section_id = ? AND resource_id = ?
             """,
@@ -6084,3 +6159,114 @@ def list_content_revisions(
         }
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# M39: Content validation storage helpers.
+# ---------------------------------------------------------------------------
+
+def get_latest_content_validation(
+    database_path: Path, *, resource_id: str, user_id: str
+) -> dict[str, Any] | None:
+    """Return the latest validation record for a resource if owned."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT validation_id, resource_id, user_id, citation_validity,
+                   evidence_coverage, schema_validity, unsupported_claim_count,
+                   question_answer_correctness, verification_method,
+                   details_json, verified_by, verified_at, created_at
+            FROM content_resource_validations
+            WHERE resource_id = ? AND user_id = ?
+            ORDER BY created_at DESC, validation_id DESC
+            LIMIT 1
+            """,
+            (resource_id, user_id),
+        ).fetchone()
+    if row is None:
+        return None
+    import json
+
+    return {
+        "validationId": row["validation_id"],
+        "resourceId": row["resource_id"],
+        "userId": row["user_id"],
+        "citationValidity": bool(row["citation_validity"]),
+        "evidenceCoverage": row["evidence_coverage"],
+        "schemaValidity": bool(row["schema_validity"]),
+        "unsupportedClaimCount": row["unsupported_claim_count"],
+        "questionAnswerCorrectness": row["question_answer_correctness"],
+        "verificationMethod": row["verification_method"],
+        "details": json.loads(row["details_json"] or "{}"),
+        "verifiedBy": row["verified_by"],
+        "verifiedAt": row["verified_at"],
+        "createdAt": row["created_at"],
+    }
+
+
+def verify_content_section(
+    database_path: Path,
+    *,
+    resource_id: str,
+    section_id: str,
+    user_id: str,
+    verification_status: str,
+    verification_notes: str | None = None,
+) -> dict[str, Any] | None:
+    """Human review of a section. Sets verification_status to the given value
+    with verification_method='human' and records the actor. Owner only."""
+    if not _is_resource_owner(database_path, resource_id, user_id):
+        return None
+    if verification_status not in {"verified", "needs_review", "insufficient_evidence"}:
+        raise ValueError("verification_status must be 'verified', 'needs_review', or 'insufficient_evidence'")
+    with closing(connect_database(database_path)) as connection:
+        section = connection.execute(
+            "SELECT section_id, resource_id, section_type, section_title, content, "
+            "citations_json, version, created_at, verification_status, verification_method, "
+            "verification_details_json, verified_at, verified_by "
+            "FROM content_resource_sections WHERE section_id = ? AND resource_id = ?",
+            (section_id, resource_id),
+        ).fetchone()
+        if section is None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        details = {}
+        if verification_notes:
+            details["reviewerNotes"] = verification_notes
+        connection.execute(
+            """
+            UPDATE content_resource_sections
+            SET verification_status = ?,
+                verification_method = 'human',
+                verification_details_json = ?,
+                verified_at = ?,
+                verified_by = ?
+            WHERE section_id = ? AND resource_id = ?
+            """,
+            (
+                verification_status,
+                json.dumps(details, separators=(",", ":"), sort_keys=True),
+                now,
+                user_id,
+                section_id,
+                resource_id,
+            ),
+        )
+        connection.commit()
+    return {
+        "sectionId": section["section_id"],
+        "resourceId": section["resource_id"],
+        "sectionType": section["section_type"],
+        "sectionTitle": section["section_title"],
+        "content": section["content"],
+        "citations": json.loads(section["citations_json"] or "[]"),
+        "version": section["version"],
+        "createdAt": section["created_at"],
+        "verificationStatus": verification_status,
+        "verificationMethod": "human",
+        "verificationDetails": details,
+        "verifiedAt": now,
+        "verifiedBy": user_id,
+    }

@@ -1159,6 +1159,13 @@ class ContentResourceSection(ApiModel):
     citations: list[CitationResponse]
     version: int
     createdAt: str
+    verificationStatus: Literal[
+        "verified", "needs_review", "insufficient_evidence"
+    ] = "needs_review"
+    verificationMethod: Literal["deterministic", "human"] = "deterministic"
+    verificationDetails: dict[str, Any] = {}
+    verifiedAt: str | None = None
+    verifiedBy: str | None = None
 
 
 class ContentResourceResponse(ApiModel):
@@ -1200,7 +1207,7 @@ class ContentSectionRegenerateRequest(ApiModel):
     sectionType: Literal["heading", "body", "flashcard", "question", "summary"] | None = None
     sectionTitle: str | None = Field(default=None, min_length=1, max_length=200)
     content: str | None = Field(default=None, min_length=1, max_length=10000)
-    citations: list[str] | None = Field(default=None, max_length=50)
+    citations: list[dict[str, Any]] | None = Field(default=None, max_length=50)
 
 
 class ContentResourceReviewRequest(ApiModel):
@@ -1222,3 +1229,51 @@ class ContentResourceRevisionListResponse(ApiModel):
 
 class ContentResourceQuizLinkRequest(ApiModel):
     quizId: str = Field(min_length=1, max_length=80)
+
+
+# ---------------------------------------------------------------------------
+# M39: AI Study Content Quality & Verification Engine.
+# ---------------------------------------------------------------------------
+
+
+class ContentResourceSectionVerification(ApiModel):
+    sectionId: str
+    resourceId: str
+    sectionType: Literal["heading", "body", "flashcard", "question", "summary"]
+    sectionTitle: str
+    content: str
+    citations: list[CitationResponse]
+    version: int
+    createdAt: str
+    verificationStatus: Literal["verified", "needs_review", "insufficient_evidence"]
+    verificationMethod: Literal["deterministic", "human"]
+    verificationDetails: dict[str, Any]
+    verifiedAt: str | None = None
+    verifiedBy: str | None = None
+
+
+class ContentResourceValidation(ApiModel):
+    validationId: str
+    resourceId: str
+    userId: str
+    citationValidity: bool
+    evidenceCoverage: float
+    schemaValidity: bool
+    unsupportedClaimCount: int
+    questionAnswerCorrectness: float | None
+    verificationMethod: Literal["deterministic", "deterministic_semantic_estimate"]
+    details: dict[str, Any]
+    sections: list[dict[str, Any]] = []
+    status: Literal["verified", "needs_review", "insufficient_evidence"] | None = None
+    verifiedBy: str | None = None
+    verifiedAt: str | None = None
+    createdAt: str
+
+
+class ContentResourceValidationListResponse(ApiModel):
+    validations: list[ContentResourceValidation]
+
+
+class ContentSectionVerifyRequest(ApiModel):
+    verificationStatus: Literal["verified", "needs_review", "insufficient_evidence"]
+    verificationNotes: str | None = Field(default=None, max_length=4000)

@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.auth_routes import router as auth_router
 from app.api.v1.content import router as content_router
+from app.api.v1.content_validation import router as content_validation_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
@@ -31,6 +32,7 @@ logger = get_logger("wonderlearn")
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    print(f"DEBUG create_app called with settings={settings}")
     configured = settings or get_settings()
     configure_logging(configured.log_level)
 
@@ -108,6 +110,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(workspaces_router)
     # Content studio router (AI-generated learning resources require ownership)
     application.include_router(content_router)
+    # Content studio validation router (evidence verification requires ownership)
+    application.include_router(content_validation_router)
+    print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
+    for r in application.router.routes:
+        if hasattr(r, 'path'):
+            print(f'  Route: {list(r.methods)} {r.path}')
+    for r in application.router.routes:
+        if hasattr(r, 'path'):
+            print(f"  Route: {list(r.methods)} {r.path}")
 
     @application.exception_handler(ApiError)
     async def handle_api_error(request: Request, exc: ApiError) -> Any:

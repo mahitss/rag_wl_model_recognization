@@ -311,6 +311,21 @@ type ContentResourceValidation = {
   sections: ContentResourceSection[];
 };
 
+type SearchResult = {
+  resultType: "document_passage" | "content_section" | "quiz_question" | "learning_objective" | "knowledge_concept";
+  id: string;
+  title: string;
+  snippet: string;
+  score: number;
+  sourceType: "document" | "content_resource" | "quiz" | "learning_objective" | "knowledge_concept";
+  sourceId: string;
+  sourceTitle: string | null;
+  pageNumber: number | null;
+  citations: Citation[];
+  createdAt: string | null;
+  updatedAt: string | null;
+};
+
 type Workspace = {
   spaceId: string;
   ownerId: string;
@@ -722,6 +737,15 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [verifyingSectionId, setVerifyingSectionId] = useState<string | null>(null);
   const [regeneratingSectionId, setRegeneratingSectionId] = useState<string | null>(null);
 
+  // --- M41: Unified search ---
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [searchTotal, setSearchTotal] = useState(0);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchMode, setSearchMode] = useState<"lexical" | "semantic" | "hybrid" | null>(null);
+  const [searchFallbackReason, setSearchFallbackReason] = useState<string | null>(null);
+  const [searchByType, setSearchByType] = useState<Record<string, number>>({});
 
   // --- Private beta feedback state ---
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
@@ -1819,6 +1843,42 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     } catch (error) {
       setContentValidationError(error instanceof Error ? error.message : "Could not link this resource to a quiz.");
     }
+  }
+
+  // --- M41: Unified search ---
+  async function runSearch(query: string, mode: "lexical" | "semantic" | "hybrid" | null = null) {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setSearchTotal(0);
+      setSearchMode(null);
+      setSearchFallbackReason(null);
+      setSearchByType({});
+      return;
+    }
+    setSearchLoading(true);
+    setSearchError(null);
+    setSearchQuery(query);
+    try {
+      const params = new URLSearchParams();
+      params.set("query", query.trim());
+      params.set("limit", "20");
+      params.set("offset", "0");
+      if (mode) params.set("mode", mode);
+      const response = await fetch(`/api/v1/search?${params.toString()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await readJson<any>(response);
+      setSearchResults(result.results || []);
+      setSearchTotal(result.total || 0);
+      setSearchMode(result.retrievalMode || null);
+      setSearchFallbackReason(result.fallbackReason || null);
+      setSearchByType(result.by_type || {});
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : "Search failed.");
+      setSearchResults([]);
+      setSearchTotal(0);
+    } finally { setSearchLoading(false); }
   }
 
   async function updateMyFeedback(feedbackId: string, event: React.FormEvent<HTMLFormElement>) {
@@ -4073,6 +4133,108 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
                   </article>
                 ))}
               </section>
+            </div>
+          </>
+        )}
+      </section>
+      <section className="search-panel" aria-labelledby="search-title">
+        <div className="workspace-heading">
+          <div>
+            <p className="eyebrow">Unified search</p>
+            <h2 id="search-title">Search across your materials</h2>
+            <p className="muted">Search documents, notes, flashcards, quizzes, learning objectives, and knowledge-graph concepts. Results are ranked by relevance and cite their sources.</p>
+          </div>
+        </div>
+
+        {searchLoading && <p className="muted" role="status">Searching…</p>}
+        {searchError && <p className="notice notice--error" role="alert">{searchError}</p>}
+
+        <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); void runSearch(searchQuery, searchMode); }}>
+          <label className="document-control" htmlFor="search-query">
+            Search your study materials
+            <input
+              id="search-query"
+              value={searchQuery}
+              maxLength={2_000}
+              minLength={1}
+              required
+              onChange={(event) => setSearchQuery(event.currentTarget.value)}
+              placeholder="For example, photosynthesis, chlorophyll, light energy"
+              aria-invalid={searchError ? true : undefined}
+              aria-describedby={searchError ? "search-query-error" : undefined}
+            />
+          </label>
+          <div className="search-mode-row">
+            <label>
+              <input
+                type="radio"
+                name="searchMode"
+                value="lexical"
+                checked={searchMode === null || searchMode === "lexical"}
+                onChange={() => void setSearchMode("lexical")}
+              />
+              Keyword
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="searchMode"
+                value="semantic"
+                checked={searchMode === "semantic"}
+                onChange={() => void setSearchMode("semantic")}
+              />
+              Semantic
+            </label>
+            <label>
+              <input
+                type="radio"
+                name="searchMode"
+                value="hybrid"
+                checked={searchMode === "hybrid"}
+                onChange={() => void setSearchMode("hybrid")}
+              />
+              Hybrid
+            </label>
+          </div>
+          <button type="submit" className="camera-action camera-action--primary" disabled={searchLoading}>
+            {searchLoading ? "Searching…" : "Search"}
+          </button>
+        </form>
+
+        {searchQuery && <p className="muted" role="status">
+          Searching for <strong>"{searchQuery}"</strong>{searchMode ? ` (${searchMode})` : ""}
+          {searchFallbackReason && ` · ${searchFallbackReason.replaceAll("_", " ")}`}
+        </p>}
+
+        {searchResults.length === 0 && searchQuery && !searchLoading && !searchError && (
+          <p className="notice" role="status">No results found for "{searchQuery}". Try different terms or upload more material.</p>
+        )}
+
+        {searchResults.length > 0 && (
+          <>
+            <p className="muted" role="status">
+              {searchTotal} result{searchTotal !== 1 ? "s" : ""} across {
+                Object.entries(searchByType).map(([type, count]) => `${count} ${type}`).join(", ")
+              }.
+            </p>
+            <div className="search-results-list">
+              {searchResults.map((result) => (
+                <article key={result.id} className="search-result-item" role="none">
+                  <div className="search-result-heading">
+                    <span className={`search-result-type search-result-type--${result.sourceType}`}>{result.resultType.replaceAll("_", " ")}</span>
+                    <span className={`search-result-score`}>{Math.round(result.score * 100)}% match</span>
+                  </div>
+                  <h4>{result.title}</h4>
+                  {result.sourceTitle && <p className="search-result-source"><strong>Source:</strong> {result.sourceTitle}</p>}
+                  {result.pageNumber != null && <p className="search-result-page"><strong>Page:</strong> {result.pageNumber}</p>}
+                  <p className="search-result-snippet">{result.snippet}</p>
+                  {result.citations.length > 0 && (
+                    <details className="search-result-citations"><summary>Source passages ({result.citations.length})</summary>
+                      <ul>{result.citations.map((citation) => <li key={citation.citationId}><blockquote>{citation.text}</blockquote><span><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · chunk <code>{citation.citationId}</code></span></li>)}</ul>
+                    </details>
+                  )}
+                </article>
+              ))}
             </div>
           </>
         )}

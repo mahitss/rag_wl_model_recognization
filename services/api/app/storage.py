@@ -4468,6 +4468,358 @@ def get_learning_objective(database_path: Path, objective_id: str) -> dict[str, 
     }
 
 
+def _snippet(text: str, query_terms: list[str], window: int = 120) -> str:
+    """Return a concise snippet around the first query-term match."""
+    if not text:
+        return ""
+    lowered = text.lower()
+    best_pos = -1
+    best_term = ""
+    for term in query_terms:
+        pos = lowered.find(term.lower())
+        if pos >= 0 and (best_pos < 0 or pos < best_pos):
+            best_pos = pos
+            best_term = term
+    if best_pos < 0:
+        return text[:window]
+    start = max(0, best_pos - window // 2)
+    end = min(len(text), best_pos + len(best_term) + window // 2)
+    snippet = text[start:end]
+    if start > 0:
+        snippet = "…" + snippet
+    if end < len(text):
+        snippet = snippet + "…"
+    return snippet
+
+
+def _score_result(
+    title: str, content: str, query_terms: list[str]
+) -> tuple[float, bool]:
+    """Score a result: exact title match > title contains > content contains."""
+    title_lower = title.lower()
+    content_lower = content.lower()
+    all_in_title = all(t in title_lower for t in query_terms)
+    any_in_title = any(t in title_lower for t in query_terms)
+    any_in_content = any(t in content_lower for t in query_terms)
+    if all_in_title:
+        return 1.0, True
+    if any_in_title:
+        return 0.8, True
+    if any_in_content:
+        return 0.5, True
+    return 0.0, False
+
+
+def search_content_sections(
+    database_path: Path,
+    *,
+    query: str,
+    user_id: str,
+    limit: int,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Search content-resource sections owned by the user by title/content."""
+    terms = [t.strip() for t in query.split() if t.strip()]
+    if not terms:
+        return [], 0
+    like_conditions = " OR ".join("crs.section_title LIKE ? OR crs.content LIKE ?" for _ in terms)
+    params: list[Any] = [user_id]
+    for term in terms:
+        params.append(f"%{term}%")
+        params.append(f"%{term}%")
+    params.append(limit)
+    params.append(offset)
+
+    with closing(connect_database(database_path)) as connection:
+        count_row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM content_resource_sections crs
+            JOIN content_resources cr ON cr.resource_id = crs.resource_id
+            WHERE cr.user_id = ? AND ({like_conditions})
+            """,
+            params[: 1 + 2 * len(terms)],
+        ).fetchone()
+        total = int(count_row["c"])
+
+        rows = connection.execute(
+            f"""
+            SELECT crs.section_id, crs.resource_id, crs.section_type, crs.section_title,
+                   crs.content, crs.citations_json, crs.version, crs.created_at,
+                   cr.updated_at, cr.title AS resource_title, cr.format
+            FROM content_resource_sections crs
+            JOIN content_resources cr ON cr.resource_id = crs.resource_id
+            WHERE cr.user_id = ? AND ({like_conditions})
+            ORDER BY crs.created_at DESC, crs.section_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        score, matched = _score_result(
+            row["section_title"], row["content"], terms
+        )
+        if not matched:
+            continue
+        citations = json.loads(row["citations_json"] or "[]")
+        results.append(
+            {
+                "result_type": "content_section",
+                "id": row["section_id"],
+                "title": row["section_title"],
+                "snippet": _snippet(row["content"], terms),
+                "score": score,
+                "source_type": "content_resource",
+                "source_id": row["resource_id"],
+                "source_title": row["resource_title"],
+                "page_number": None,
+                "citations": citations,
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    results.sort(key=lambda r: (-r["score"], r["updated_at"] or ""))
+    return results, total
+
+
+def search_quiz_questions(
+    database_path: Path,
+    *,
+    query: str,
+    user_id: str,
+    limit: int,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Search quiz questions owned by the user by topic/prompt."""
+    terms = [t.strip() for t in query.split() if t.strip()]
+    if not terms:
+        return [], 0
+    like_conditions = " OR ".join(
+        "qs.topic LIKE ? OR qq.prompt LIKE ? OR qq.explanation LIKE ?" for _ in terms
+    )
+    params: list[Any] = [user_id]
+    for term in terms:
+        params.append(f"%{term}%")
+        params.append(f"%{term}%")
+        params.append(f"%{term}%")
+    params.append(limit)
+    params.append(offset)
+
+    with closing(connect_database(database_path)) as connection:
+        count_row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM quiz_questions qq
+            JOIN quiz_sets qs ON qs.quiz_id = qq.quiz_id
+            WHERE qs.user_id = ? AND ({like_conditions})
+            """,
+            params[: 1 + 3 * len(terms)],
+        ).fetchone()
+        total = int(count_row["c"])
+
+        rows = connection.execute(
+            f"""
+            SELECT qq.question_id, qq.quiz_id, qq.question_type, qq.prompt,
+                   qq.options_json, qq.answer_key, qq.accepted_answers_json,
+                   qq.explanation, qs.created_at AS question_created_at,
+                   qs.topic AS quiz_topic, qs.created_at AS quiz_created_at
+            FROM quiz_questions qq
+            JOIN quiz_sets qs ON qs.quiz_id = qq.quiz_id
+            WHERE qs.user_id = ? AND ({like_conditions})
+            ORDER BY qs.created_at DESC, qq.question_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        score, matched = _score_result(
+            row["prompt"], row["explanation"] or "", terms
+        )
+        # Also match against the quiz topic
+        if any(t in (row["quiz_topic"] or "").lower() for t in terms):
+            matched = True
+            score = max(score, 0.8)
+        # Boost score if quiz topic matches
+        if any(t in (row["quiz_topic"] or "").lower() for t in terms):
+            score = min(1.0, score + 0.2)
+        if not matched:
+            continue
+        results.append(
+            {
+                "result_type": "quiz_question",
+                "id": row["question_id"],
+                "title": row["prompt"],
+                "snippet": _snippet(row["prompt"], terms),
+                "score": score,
+                "source_type": "quiz",
+                "source_id": row["quiz_id"],
+                "source_title": row["quiz_topic"],
+                "page_number": None,
+                "citations": [],
+                "created_at": row["question_created_at"],
+                "updated_at": row["quiz_created_at"],
+            }
+        )
+    results.sort(key=lambda r: (-r["score"], r["updated_at"] or ""))
+    return results, total
+
+
+def search_learning_objectives(
+    database_path: Path,
+    *,
+    query: str,
+    user_id: str,
+    limit: int,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Search learning objectives owned by the user by title/description/passage."""
+    terms = [t.strip() for t in query.split() if t.strip()]
+    if not terms:
+        return [], 0
+    like_conditions = " OR ".join(
+        "lo.title LIKE ? OR lo.description LIKE ? OR lo.source_passage LIKE ? OR lo.rationale LIKE ?"
+        for _ in terms
+    )
+    params: list[Any] = [user_id]
+    for term in terms:
+        params.append(f"%{term}%")
+        params.append(f"%{term}%")
+        params.append(f"%{term}%")
+        params.append(f"%{term}%")
+    params.append(limit)
+    params.append(offset)
+
+    with closing(connect_database(database_path)) as connection:
+        count_row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM learning_objectives lo
+            JOIN learning_paths lp ON lp.path_id = lo.path_id
+            WHERE lp.user_id = ? AND ({like_conditions})
+            """,
+            params[: 1 + 4 * len(terms)],
+        ).fetchone()
+        total = int(count_row["c"])
+
+        rows = connection.execute(
+            f"""
+            SELECT lo.objective_id, lo.path_id, lo.title, lo.description,
+                   lo.status, lo.source_document_id, lo.source_chunk_id,
+                   lo.source_passage, lo.created_at, lo.updated_at,
+                   lp.title AS path_title
+            FROM learning_objectives lo
+            JOIN learning_paths lp ON lp.path_id = lo.path_id
+            WHERE lp.user_id = ? AND ({like_conditions})
+            ORDER BY lo.updated_at DESC, lo.objective_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        score, matched = _score_result(
+            row["title"], row["description"] or "", terms
+        )
+        passage = row["source_passage"] or ""
+        if any(t in passage.lower() for t in terms):
+            score = min(1.0, score + 0.1)
+        if not matched:
+            continue
+        results.append(
+            {
+                "result_type": "learning_objective",
+                "id": row["objective_id"],
+                "title": row["title"],
+                "snippet": _snippet(row["description"] or row["source_passage"] or "", terms),
+                "score": score,
+                "source_type": "learning_objective",
+                "source_id": row["path_id"],
+                "source_title": row["path_title"],
+                "page_number": None,
+                "citations": [],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+    results.sort(key=lambda r: (-r["score"], r["updated_at"] or ""))
+    return results, total
+
+
+def search_knowledge_concepts(
+    database_path: Path,
+    *,
+    query: str,
+    user_id: str,
+    limit: int,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Search knowledge-graph concepts owned by the user by name/aliases."""
+    terms = [t.strip() for t in query.split() if t.strip()]
+    if not terms:
+        return [], 0
+    like_conditions = " OR ".join(
+        "c.canonical_name LIKE ? OR c.aliases_json LIKE ?" for _ in terms
+    )
+    params: list[Any] = [user_id]
+    for term in terms:
+        params.append(f"%{term}%")
+        params.append(f"%{term}%")
+    params.append(limit)
+    params.append(offset)
+
+    with closing(connect_database(database_path)) as connection:
+        count_row = connection.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM knowledge_concepts c
+            WHERE c.user_id = ? AND ({like_conditions})
+            """,
+            params[: 1 + 2 * len(terms)],
+        ).fetchone()
+        total = int(count_row["c"])
+
+        rows = connection.execute(
+            f"""
+            SELECT c.concept_id, c.canonical_name, c.aliases_json
+            FROM knowledge_concepts c
+            WHERE c.user_id = ? AND ({like_conditions})
+            ORDER BY c.canonical_name COLLATE NOCASE ASC
+            LIMIT ? OFFSET ?
+            """,
+            params,
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        aliases = json.loads(row["aliases_json"] or "[]")
+        score, matched = _score_result(row["canonical_name"], ", ".join(aliases), terms)
+        if not matched:
+            continue
+        results.append(
+            {
+                "result_type": "knowledge_concept",
+                "id": row["concept_id"],
+                "title": row["canonical_name"],
+                "snippet": _snippet(row["canonical_name"] + " " + ", ".join(aliases), terms),
+                "score": score,
+                "source_type": "knowledge_concept",
+                "source_id": row["concept_id"],
+                "source_title": None,
+                "page_number": None,
+                "citations": [],
+                "created_at": None,
+                "updated_at": None,
+            }
+        )
+    results.sort(key=lambda r: (-r["score"], r["title"]))
+    return results, total
+
+
 def list_learning_objectives(
     database_path: Path,
     *,

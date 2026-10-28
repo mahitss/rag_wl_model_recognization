@@ -1277,3 +1277,63 @@ class ContentResourceValidationListResponse(ApiModel):
 class ContentSectionVerifyRequest(ApiModel):
     verificationStatus: Literal["verified", "needs_review", "insufficient_evidence"]
     verificationNotes: str | None = Field(default=None, max_length=4000)
+
+
+# ---------------------------------------------------------------------------
+# M41: Intelligent Search & Knowledge Discovery.
+# Unified search across documents, content resources, quizzes, learning
+# objectives, and knowledge-graph concepts with user isolation.
+# ---------------------------------------------------------------------------
+
+
+class SearchResultItem(ApiModel):
+    """One unified search result with provenance and a snippet."""
+
+    result_type: Literal[
+        "document_passage",
+        "content_section",
+        "quiz_question",
+        "learning_objective",
+        "knowledge_concept",
+    ]
+    id: str
+    title: str
+    snippet: str
+    score: float
+    source_type: Literal[
+        "document", "content_resource", "quiz", "learning_objective", "knowledge_concept"
+    ]
+    source_id: str
+    source_title: str | None = None
+    page_number: int | None = None
+    citations: list[CitationResponse] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class UnifiedSearchRequest(ApiModel):
+    query: str = Field(min_length=1, max_length=2_000)
+    resource_types: list[
+        Literal[
+            "document",
+            "content_resource",
+            "quiz",
+            "learning_objective",
+            "knowledge_concept",
+        ]
+    ] | None = Field(default=None, max_length=10)
+    document_ids: list[str] | None = Field(default=None, max_length=50)
+    limit: int = Field(default=20, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
+    mode: Literal["lexical", "semantic", "hybrid"] | None = None
+
+
+class UnifiedSearchResponse(ApiModel):
+    results: list[SearchResultItem]
+    total: int
+    limit: int
+    offset: int
+    query: str
+    retrieval_mode: str
+    fallback_reason: str | None = None
+    by_type: dict[str, int]

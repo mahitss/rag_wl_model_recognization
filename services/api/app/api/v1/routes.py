@@ -98,6 +98,8 @@ from app.schemas import (
     TutorAnswerRequest,
     TutorAnswerResponse,
     TutorStatusResponse,
+    UnifiedSearchRequest,
+    UnifiedSearchResponse,
 )
 from app.storage import (
     complete_study_session,
@@ -141,6 +143,10 @@ from app.storage import (
     record_product_event,
     record_quiz_attempt,
     replace_image_region_citations,
+    search_content_sections,
+    search_knowledge_concepts,
+    search_learning_objectives,
+    search_quiz_questions,
     start_study_session,
     store_knowledge_extraction,
     store_learning_image,
@@ -1474,6 +1480,161 @@ def retrieve_evidence(
         embeddings=_embedding_service(request),
         user_id=current_user.user_id,
     )
+
+
+@router.post("/search", response_model=UnifiedSearchResponse, tags=["search"])
+def unified_search(
+    request: Request, payload: UnifiedSearchRequest, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    """Unified search across documents, content resources, quizzes,
+    learning objectives, and knowledge-graph concepts.
+
+    Every resource type is searched with the authenticated user's
+    ownership filter.  Results are ranked by relevance and returned
+    with source provenance and snippets.
+    """
+    settings = _settings(request)
+    if payload.limit > settings.max_retrieval_results:
+        raise ApiError(
+            422,
+            "INVALID_REQUEST",
+            f"The result limit cannot exceed {settings.max_retrieval_results}.",
+        )
+
+    resource_types = payload.resource_types or [
+        "document",
+        "content_resource",
+        "quiz",
+        "learning_objective",
+        "knowledge_concept",
+    ]
+
+    all_results: list[dict[str, Any]] = []
+    retrieval_mode = "lexical"
+    fallback_reason: str | None = None
+
+    # --- Document passages (reuses existing FTS5/semantic retrieval) ---
+    if "document" in resource_types:
+        try:
+            doc_search = retrieve_with_mode(
+                settings.database_path,
+                query=payload.query,
+                document_ids=payload.document_ids,
+                limit=min(payload.limit, settings.max_retrieval_results),
+                mode=payload.mode or settings.retrieval_mode,
+                settings=settings,
+                embeddings=_embedding_service(request),
+                user_id=current_user.user_id,
+            )
+            retrieval_mode = doc_search["retrievalMode"]
+            fallback_reason = doc_search.get("fallbackReason")
+            for item in doc_search["results"]:
+                all_results.append(
+                    {
+                        "result_type": "document_passage",
+                        "id": item["citationId"],
+                        "title": item["displayFilename"],
+                        "snippet": item["text"][:200],
+                        "score": 1.0 / max(1, item["retrieval"].get("rank", 1)),
+                        "source_type": "document",
+                        "source_id": item["documentId"],
+                        "source_title": item["displayFilename"],
+                        "page_number": item["pageNumber"],
+                        "citations": [item],
+                        "created_at": None,
+                        "updated_at": None,
+                    }
+                )
+        except ApiError:
+            raise
+        except (OSError, sqlite3.Error) as exc:
+            raise ApiError(
+                503, "STORAGE_UNAVAILABLE", "Local search storage is unavailable."
+            ) from exc
+
+    # --- Content resource sections ---
+    if "content_resource" in resource_types:
+        try:
+            sections, section_total = search_content_sections(
+                settings.database_path,
+                query=payload.query,
+                user_id=current_user.user_id,
+                limit=payload.limit,
+                offset=payload.offset,
+            )
+            all_results.extend(sections)
+        except (OSError, sqlite3.Error) as exc:
+            raise ApiError(
+                503, "STORAGE_UNAVAILABLE", "Local search storage is unavailable."
+            ) from exc
+
+    # --- Quiz questions ---
+    if "quiz" in resource_types:
+        try:
+            questions, question_total = search_quiz_questions(
+                settings.database_path,
+                query=payload.query,
+                user_id=current_user.user_id,
+                limit=payload.limit,
+                offset=payload.offset,
+            )
+            all_results.extend(questions)
+        except (OSError, sqlite3.Error) as exc:
+            raise ApiError(
+                503, "STORAGE_UNAVAILABLE", "Local search storage is unavailable."
+            ) from exc
+
+    # --- Learning objectives ---
+    if "learning_objective" in resource_types:
+        try:
+            objectives, objective_total = search_learning_objectives(
+                settings.database_path,
+                query=payload.query,
+                user_id=current_user.user_id,
+                limit=payload.limit,
+                offset=payload.offset,
+            )
+            all_results.extend(objectives)
+        except (OSError, sqlite3.Error) as exc:
+            raise ApiError(
+                503, "STORAGE_UNAVAILABLE", "Local search storage is unavailable."
+            ) from exc
+
+    # --- Knowledge graph concepts ---
+    if "knowledge_concept" in resource_types:
+        try:
+            concepts, concept_total = search_knowledge_concepts(
+                settings.database_path,
+                query=payload.query,
+                user_id=current_user.user_id,
+                limit=payload.limit,
+                offset=payload.offset,
+            )
+            all_results.extend(concepts)
+        except (OSError, sqlite3.Error) as exc:
+            raise ApiError(
+                503, "STORAGE_UNAVAILABLE", "Local search storage is unavailable."
+            ) from exc
+
+    # --- Rank, paginate, and count ---
+    all_results.sort(key=lambda r: (-r["score"], r["updated_at"] or "", r["id"]))
+    total = len(all_results)
+    paginated = all_results[payload.offset : payload.offset + payload.limit]
+
+    by_type: dict[str, int] = {}
+    for r in all_results:
+        by_type[r["source_type"]] = by_type.get(r["source_type"], 0) + 1
+
+    return {
+        "results": paginated,
+        "total": total,
+        "limit": payload.limit,
+        "offset": payload.offset,
+        "query": payload.query,
+        "retrieval_mode": retrieval_mode,
+        "fallback_reason": fallback_reason,
+        "by_type": by_type,
+    }
 
 
 @router.post("/answers", response_model=AnswerResponse, tags=["retrieval"])

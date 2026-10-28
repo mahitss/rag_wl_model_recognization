@@ -50,6 +50,8 @@ The original M2 milestone, curated diagram concept selection, is now implemented
 | M9: Multimodal retrieval (still outstanding; knowledge graph delivered early as an optional capability) | M7 | 4–8+ weeks | figure assets and captions provenance, evaluated visual retrieval, clear text/image capability boundary |
 | M12: Personalized AI study coach (rule-based daily plan implemented) | M8/M10 | 1–2 weeks | use persisted progress for explainable priorities, source links, learner decisions, and evaluated usefulness |
 
+**M40: End-to-End Learning Intelligence** | M12 | 1–2 weeks | All subsystems integrated into one coherent 10-step learner journey (upload → inspect → answer → explore → generate → validate → quiz → mastery → study plan → analytics). Content validation UI added. Broken contracts fixed (verification_method CHECK constraint, schema Literal type, regenerate route method). Complete E2E regression test added.
+
 **M10 delivery note:** The local dashboard now reports persisted quiz attempts, completed study sessions, mastery summaries, and due reviews. This is a minimal analytics/review surface rather than an adaptive planner; the deterministic rules still need learner-task evaluation.
 
 **M11 image-learning update:** Learners can store local PNG/JPEG material, mark normalized image regions, optionally map them to curated concepts, retrieve indexed document passages, and ask the existing grounded tutor. Optional local Tesseract OCR reports unavailable/empty/failure states explicitly. This bounded upload-and-region workflow does not complete the original M9 goal of evaluated multimodal figure retrieval; no image embedding or image-to-image retrieval is introduced. Camera frames remain a separate local preview/tracking path and are not stored.

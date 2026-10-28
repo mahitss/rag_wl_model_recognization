@@ -254,6 +254,11 @@ type ContentResourceSection = {
   citations: Citation[];
   version: number;
   createdAt: string;
+  verificationStatus?: "verified" | "needs_review" | "insufficient_evidence" | null;
+  verificationMethod?: "deterministic" | "human" | null;
+  verificationDetails?: { reviewerNotes?: string } | null;
+  verifiedAt?: string | null;
+  verifiedBy?: string | null;
 };
 type ContentResource = {
   resourceId: string;
@@ -279,6 +284,31 @@ type ContentResourceCreateRequest = {
   topic: string;
   documentIds?: string[];
   spaceId?: string;
+};
+
+type ContentResourceValidation = {
+  validationId: string;
+  resourceId: string;
+  userId: string;
+  citationValidity: boolean;
+  evidenceCoverage: number;
+  schemaValidity: boolean;
+  unsupportedClaimCount: number;
+  questionAnswerCorrectness: number | null;
+  verificationMethod: string;
+  status: "verified" | "needs_review" | "insufficient_evidence";
+  details: {
+    invalidCitations: Array<{ citationId: string | null; reason: string }>;
+    sectionResults: Array<{
+      sectionId: string;
+      citationValidity: boolean;
+      schemaValidity: boolean;
+      evidenceCoverage: number;
+      unsupportedClaimCount: number;
+      questionAnswerCorrectness: number | null;
+    }>;
+  };
+  sections: ContentResourceSection[];
 };
 
 type Workspace = {
@@ -684,6 +714,13 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [newContentFormat, setNewContentFormat] = useState<"notes" | "summary" | "flashcards" | "questions" | "revision_sheet" | "concept_outline">("notes");
   const [newContentDetail, setNewContentDetail] = useState<"brief" | "standard" | "comprehensive">("standard");
   const [creatingContent, setCreatingContent] = useState(false);
+
+  // --- M39: Content validation ---
+  const [contentValidation, setContentValidation] = useState<ContentResourceValidation | null>(null);
+  const [contentValidationLoading, setContentValidationLoading] = useState(false);
+  const [contentValidationError, setContentValidationError] = useState<string | null>(null);
+  const [verifyingSectionId, setVerifyingSectionId] = useState<string | null>(null);
+  const [regeneratingSectionId, setRegeneratingSectionId] = useState<string | null>(null);
 
 
   // --- Private beta feedback state ---
@@ -1684,9 +1721,103 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       if (selectedResourceId === resourceId) {
         setSelectedResource(null);
         setSelectedResourceId(null);
+        setContentValidation(null);
       }
     } catch (error) {
       setContentResourcesError(error instanceof Error ? error.message : "Could not delete content resource.");
+    }
+  }
+
+  // --- M39: Content validation ---
+  async function validateContentResource(resourceId: string) {
+    setContentValidationLoading(true);
+    setContentValidationError(null);
+    setContentValidation(null);
+    try {
+      const response = await fetch(`/api/v1/content/resources/${encodeURIComponent(resourceId)}/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await readJson<ContentResourceValidation>(response);
+      setContentValidation(result);
+      // Refresh the resource to get updated verification statuses.
+      await loadContentResource(resourceId);
+    } catch (error) {
+      setContentValidationError(error instanceof Error ? error.message : "Could not validate this content resource.");
+    } finally { setContentValidationLoading(false); }
+  }
+
+  async function verifyContentSection(resourceId: string, sectionId: string, status: "verified" | "needs_review" | "insufficient_evidence", notes?: string) {
+    setVerifyingSectionId(sectionId);
+    try {
+      const response = await fetch(`/api/v1/content/resources/${encodeURIComponent(resourceId)}/sections/${encodeURIComponent(sectionId)}/verify`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ verificationStatus: status, verificationNotes: notes || undefined }),
+      });
+      const result = await readJson<any>(response);
+      // Update the section in the selected resource.
+      if (selectedResource) {
+        setSelectedResource({
+          ...selectedResource,
+          sections: selectedResource.sections.map((section) =>
+            section.sectionId === sectionId
+              ? {
+                  ...section,
+                  verificationStatus: result.verificationStatus,
+                  verificationMethod: result.verificationMethod,
+                  verificationDetails: result.verificationDetails,
+                  verifiedAt: result.verifiedAt,
+                  verifiedBy: result.verifiedBy,
+                }
+              : section
+          ),
+        });
+      }
+      // Refresh validation to reflect updated statuses.
+      if (contentValidation?.resourceId === resourceId) {
+        await validateContentResource(resourceId);
+      }
+    } catch (error) {
+      setContentValidationError(error instanceof Error ? error.message : "Could not record the review decision.");
+    } finally { setVerifyingSectionId(null); }
+  }
+
+  async function regenerateContentSection(resourceId: string, sectionId: string, content: string, citations: any[], sectionType?: string, sectionTitle?: string) {
+    setRegeneratingSectionId(sectionId);
+    try {
+      const response = await fetch(`/api/v1/content/resources/${encodeURIComponent(resourceId)}/sections/${encodeURIComponent(sectionId)}/regenerate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, citations, ...(sectionType ? { sectionType } : {}), ...(sectionTitle ? { sectionTitle } : {}) }),
+      });
+      const result = await readJson<any>(response);
+      if (selectedResource) {
+        setSelectedResource({
+          ...selectedResource,
+          sections: selectedResource.sections.map((section) =>
+            section.sectionId === sectionId ? { ...result } : section
+          ),
+        });
+      }
+      setContentValidation(null);
+    } catch (error) {
+      setContentValidationError(error instanceof Error ? error.message : "Could not regenerate this section.");
+    } finally { setRegeneratingSectionId(null); }
+  }
+
+  async function linkContentResourceToQuiz(resourceId: string, quizId: string) {
+    try {
+      const response = await fetch(`/api/v1/content/resources/${encodeURIComponent(resourceId)}/quizzes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quizId }),
+      });
+      await readJson<any>(response);
+      await loadContentResource(resourceId);
+      await loadContentResources();
+    } catch (error) {
+      setContentValidationError(error instanceof Error ? error.message : "Could not link this resource to a quiz.");
     }
   }
 
@@ -3867,6 +3998,43 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
                   <button type="button" className="camera-action" onClick={() => void deleteContentResource(selectedResource.resourceId)}>Delete resource</button>
                 </div>
               )}
+              {!contentValidationLoading && !contentValidation && (
+                <button type="button" className="camera-action camera-action--primary" onClick={() => void validateContentResource(selectedResource.resourceId)}>
+                  Validate content
+                </button>
+              )}
+              {contentValidationLoading && <p className="muted" role="status">Validating content against sources…</p>}
+              {contentValidationError && <p className="notice notice--error" role="alert">{contentValidationError}</p>}
+              {contentValidation && (
+                <details className="validation-results" open>
+                  <summary>Validation results</summary>
+                  <div className="validation-summary">
+                    <span><strong>Status:</strong> {contentValidation.status}</span>
+                    <span><strong>Citations valid:</strong> {contentValidation.citationValidity ? "Yes" : "No"}</span>
+                    <span><strong>Schema valid:</strong> {contentValidation.schemaValidity ? "Yes" : "No"}</span>
+                    <span><strong>Unsupported claims:</strong> {contentValidation.unsupportedClaimCount}</span>
+                    <span><strong>Evidence coverage:</strong> {(contentValidation.evidenceCoverage * 100).toFixed(0)}%</span>
+                  </div>
+                  {contentValidation.details.invalidCitations.length > 0 && (
+                    <div>
+                      <h4>Invalid citations</h4>
+                      <ul>{contentValidation.details.invalidCitations.map((c) => <li key={c.citationId ?? ""}>{c.citationId ?? "unknown"} — {c.reason}</li>)}</ul>
+                    </div>
+                  )}
+                  {contentValidation.details.sectionResults.length > 0 && (
+                    <div>
+                      <h4>Section results</h4>
+                      <ul>
+                        {contentValidation.details.sectionResults.map((sr) => (
+                          <li key={sr.sectionId}>
+                            <strong>{sr.sectionId}</strong> · schema {sr.schemaValidity ? "ok" : "fail"} · coverage {(sr.evidenceCoverage * 100).toFixed(0)}% · unsupported {sr.unsupportedClaimCount}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </details>
+              )}
             </div>
 
             <div className="workspace-grid">
@@ -3877,12 +4045,31 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
                   <article key={section.sectionId} className="workspace-discussion-item" role="none">
                     <h4>{section.sectionTitle}</h4>
                     <span className={`section-type section-type--${section.sectionType}`}>{section.sectionType}</span>
+                    {section.verificationStatus && (
+                      <span className={`verification-badge verification--${section.verificationStatus}`}>{section.verificationStatus.replaceAll("_", " ")}</span>
+                    )}
                     <p>{section.content}</p>
                     {section.citations.length > 0 && (
                       <details className="topic-citations"><summary>Source passages ({section.citations.length})</summary>
                         <ul>{section.citations.map((citation) => <li key={citation.citationId}><blockquote>{citation.text}</blockquote><span><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · chunk <code>{citation.citationId}</code></span></li>)}</ul>
                       </details>
                     )}
+                    <div className="section-actions">
+                      {!section.verificationStatus && (
+                        <>
+                          <button type="button" className="camera-action" disabled={verifyingSectionId === section.sectionId || regeneratingSectionId === section.sectionId} onClick={() => void verifyContentSection(selectedResource.resourceId, section.sectionId, "verified")}>Mark verified</button>
+                          <button type="button" className="camera-action" disabled={verifyingSectionId === section.sectionId || regeneratingSectionId === section.sectionId} onClick={() => void verifyContentSection(selectedResource.resourceId, section.sectionId, "needs_review")}>Mark needs review</button>
+                          <button type="button" className="camera-action" disabled={verifyingSectionId === section.sectionId || regeneratingSectionId === section.sectionId} onClick={() => void verifyContentSection(selectedResource.resourceId, section.sectionId, "insufficient_evidence")}>Mark insufficient evidence</button>
+                        </>
+                      )}
+                      {section.verificationStatus === "verified" && (
+                        <span className="muted">Reviewed by {section.verifiedBy}</span>
+                      )}
+                      <button type="button" className="camera-action" disabled={verifyingSectionId === section.sectionId || regeneratingSectionId === section.sectionId} onClick={() => {
+                        const newContent = window.prompt("New content for this section:", section.content);
+                        if (newContent) void regenerateContentSection(selectedResource.resourceId, section.sectionId, newContent, section.citations, section.sectionType, section.sectionTitle);
+                      }}>Regenerate</button>
+                    </div>
                   </article>
                 ))}
               </section>

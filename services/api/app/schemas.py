@@ -1261,7 +1261,7 @@ class ContentResourceValidation(ApiModel):
     schemaValidity: bool
     unsupportedClaimCount: int
     questionAnswerCorrectness: float | None
-    verificationMethod: Literal["deterministic", "deterministic_semantic_estimate"]
+    verificationMethod: Literal["deterministic", "semantic_estimate"]
     details: dict[str, Any]
     sections: list[dict[str, Any]] = []
     status: Literal["verified", "needs_review", "insufficient_evidence"] | None = None

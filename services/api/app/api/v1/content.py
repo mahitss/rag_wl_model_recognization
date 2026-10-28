@@ -331,7 +331,7 @@ def edit_content_section_route(
     return section
 
 
-@router.post(
+@router.patch(
     "/resources/{resource_id}/sections/{section_id}/regenerate",
     response_model=ContentResourceSection,
 )

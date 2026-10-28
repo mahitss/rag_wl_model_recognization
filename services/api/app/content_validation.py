@@ -430,7 +430,7 @@ def validate_resource(
 
     verification_method = "deterministic"
     if settings is not None and getattr(settings, "tutor_configured", False):
-        verification_method = "deterministic_semantic_estimate"
+        verification_method = "semantic_estimate"
 
     validation_record = {
         "validationId": validation_id,

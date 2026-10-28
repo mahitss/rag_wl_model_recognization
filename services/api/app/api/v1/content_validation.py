@@ -22,13 +22,11 @@ from app.errors import ApiError
 from app.schemas import (
     ContentResourceSectionVerification,
     ContentResourceValidation,
-    ContentSectionRegenerateRequest,
     ContentSectionVerifyRequest,
 )
 from app.storage import (
     get_content_resource,
     get_latest_content_validation,
-    regenerate_content_section,
     verify_content_section,
 )
 
@@ -132,36 +130,6 @@ def verify_content_section_route(
         )
     except ValueError as exc:
         raise ApiError(400, "INVALID_VERIFICATION", str(exc)) from exc
-    except sqlite3.Error as exc:
-        raise ApiError(503, "STORAGE_UNAVAILABLE", "Local storage is unavailable.") from exc
-    if section is None:
-        raise ApiError(404, "CONTENT_SECTION_NOT_FOUND", "Section not found or access denied.")
-    return section
-
-
-@router.patch(
-    "/resources/{resource_id}/sections/{section_id}/regenerate",
-    response_model=ContentResourceSectionVerification,
-)
-def regenerate_content_section_route(
-    request: Request,
-    resource_id: str,
-    section_id: str,
-    payload: ContentSectionRegenerateRequest,
-    current_user: AuthUser = Depends(require_auth),
-) -> dict[str, Any]:
-    """Regenerate a section's content, archiving the previous version as a revision."""
-    try:
-        section = regenerate_content_section(
-            _database_path(request),
-            resource_id=resource_id,
-            section_id=section_id,
-            user_id=current_user.user_id,
-            section_type=payload.sectionType,
-            section_title=payload.sectionTitle,
-            content=payload.content,
-            citations=payload.citations,
-        )
     except sqlite3.Error as exc:
         raise ApiError(503, "STORAGE_UNAVAILABLE", "Local storage is unavailable.") from exc
     if section is None:

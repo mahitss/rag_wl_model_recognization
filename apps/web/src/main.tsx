@@ -412,6 +412,65 @@ type CompanionMessagesResponse = {
 };
 
 
+// --- M45: AI Observability & Model Evaluation Dashboard ---
+type ModelLatencySummary = {
+  count: number;
+  p50Ms: number;
+  p95Ms: number;
+  maxMs: number;
+};
+type ModelMetricsSnapshot = {
+  taskCounts: { [key: string]: number };
+  outcomeCounts: { [key: string]: number };
+  providerCounts: { [key: string]: number };
+  totalObservations: number;
+  successRate: number | null;
+  failureRate: number | null;
+  fallbackCount: number;
+  fallbackRate: number | null;
+  latencyMs: ModelLatencySummary;
+  recentFailures: Array<{
+    timestamp: string;
+    taskType: string;
+    modelId: string;
+    outcome: string;
+    latencyMs: number;
+    fallbackOccurred: boolean;
+  }>;
+};
+type ModelEvaluationRequest = {
+  taskType: string;
+  dataset: string;
+  metric: string;
+};
+type ModelEvaluationResult = {
+  taskType: string;
+  dataset: string;
+  metric: string;
+  value: number | { [key: string]: any } | null;
+  details: { [key: string]: any } | null;
+  evaluatedAt: string | null;
+};
+
+
+async function fetchModelObservabilitySnapshot(): Promise<ModelMetricsSnapshot> {
+  const response = await fetch("/api/v1/admin/models/observability/snapshot", {
+    method: "GET",
+    headers: { "Content-Type": "application/json" },
+  });
+  return readJson<ModelMetricsSnapshot>(response);
+}
+
+async function runModelEvaluation(payload: ModelEvaluationRequest): Promise<ModelEvaluationResult> {
+  const response = await fetch("/api/v1/admin/models/evaluate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return readJson<ModelEvaluationResult>(response);
+}
+
+
 type Workspace = {
   spaceId: string;
   ownerId: string;
@@ -840,6 +899,17 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [confirmAction, setConfirmAction] = useState<CompanionAction | null>(null);
   const [confirmPayload, setConfirmPayload] = useState<{ [key: string]: any }>({});
 
+  // --- M45: AI Observability & Model Evaluation Dashboard state ---
+  const [observabilitySnapshot, setObservabilitySnapshot] = useState<ModelMetricsSnapshot | null>(null);
+  const [observabilityLoading, setObservabilityLoading] = useState(false);
+  const [observabilityError, setObservabilityError] = useState<string | null>(null);
+  const [evaluationResult, setEvaluationResult] = useState<ModelEvaluationResult | null>(null);
+  const [evaluationLoading, setEvaluationLoading] = useState(false);
+  const [evaluationError, setEvaluationError] = useState<string | null>(null);
+  const [evalTaskType, setEvalTaskType] = useState("tutor");
+  const [evalDataset, setEvalDataset] = useState("retrieval_eval");
+  const [evalMetric, setEvalMetric] = useState("retrieval_quality");
+
   // --- M41: Unified search ---
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -1048,6 +1118,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     if (isAdmin) {
       void loadAdminFeedback();
       void loadImprovementTasks();
+      void refreshObservability();
     }
     // Load onboarding state for the current user from localStorage.
     if (username) {
@@ -2234,6 +2305,34 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     } catch (error) {
       setImprovementTasksError(error instanceof Error ? error.message : "Could not load improvement tasks.");
     } finally { setImprovementTasksLoading(false); }
+  }
+
+  async function refreshObservability() {
+    if (!isAdmin) return;
+    setObservabilityLoading(true);
+    setObservabilityError(null);
+    try {
+      const snapshot = await fetchModelObservabilitySnapshot();
+      setObservabilitySnapshot(snapshot);
+    } catch (error) {
+      setObservabilityError(error instanceof Error ? error.message : "Could not load model observability snapshot.");
+    } finally { setObservabilityLoading(false); }
+  }
+
+  async function runEvaluation() {
+    setEvaluationLoading(true);
+    setEvaluationError(null);
+    setEvaluationResult(null);
+    try {
+      const result = await runModelEvaluation({
+        taskType: evalTaskType,
+        dataset: evalDataset,
+        metric: evalMetric,
+      });
+      setEvaluationResult(result);
+    } catch (error) {
+      setEvaluationError(error instanceof Error ? error.message : "Could not run model evaluation.");
+    } finally { setEvaluationLoading(false); }
   }
 
   async function createImprovementTask(event: React.FormEvent<HTMLFormElement>) {
@@ -4651,6 +4750,140 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
         )}
       </section>
       {/* --- End M43 Companion Panel --- */}
+
+      {isAdmin && (
+        <section className="model-observability-panel" aria-labelledby="model-observability-title">
+          <div className="workspace-heading">
+            <div>
+              <p className="eyebrow">AI model observability (admin only)</p>
+              <h2 id="model-observability-title">Model execution dashboard</h2>
+              <p className="muted">Telemetry is privacy-safe: no user IDs, document IDs, prompts, secrets, or raw model outputs are stored.</p>
+            </div>
+          </div>
+
+          {observabilityLoading && <p className="muted" role="status">Loading observability snapshot…</p>}
+          {observabilityError && <p className="notice notice--error" role="alert">{observabilityError}</p>}
+
+          <section className="model-observability-snapshot">
+            <h3>Snapshot</h3>
+            {!observabilitySnapshot && <p className="muted">Loading snapshot…</p>}
+            {observabilitySnapshot && <>
+              <div className="analytics-stats">
+                <div><dt>Total observations</dt><dd>{observabilitySnapshot.totalObservations}</dd></div>
+                <div><dt>Success rate</dt><dd>{observabilitySnapshot.successRate === null ? "n/a" : `${Math.round(observabilitySnapshot.successRate * 100)}%`}</dd></div>
+                <div><dt>Failure rate</dt><dd>{observabilitySnapshot.failureRate === null ? "n/a" : `${Math.round(observabilitySnapshot.failureRate * 100)}%`}</dd></div>
+                <div><dt>Fallbacks</dt><dd>{observabilitySnapshot.fallbackCount}</dd></div>
+              </div>
+              <div className="model-observability-breakdown">
+                <h4>Task types</h4>
+                <ul>
+                  {Object.entries(observabilitySnapshot.taskCounts).map(([task, count]) => (
+                    <li key={task}><strong>{task}</strong> · {count}</li>
+                  ))}
+                  {Object.keys(observabilitySnapshot.taskCounts).length === 0 && <li className="muted">No observations yet.</li>}
+                </ul>
+                <h4>Outcomes</h4>
+                <ul>
+                  {Object.entries(observabilitySnapshot.outcomeCounts).map(([outcome, count]) => (
+                    <li key={outcome}><strong>{outcome}</strong> · {count}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="model-observability-latency">
+                <h4>Latency (ms)</h4>
+                <ul>
+                  <li><strong>p50:</strong> {observabilitySnapshot.latencyMs.p50Ms} ms</li>
+                  <li><strong>p95:</strong> {observabilitySnapshot.latencyMs.p95Ms} ms</li>
+                  <li><strong>max:</strong> {observabilitySnapshot.latencyMs.maxMs} ms</li>
+                </ul>
+              </div>
+              {observabilitySnapshot.recentFailures.length > 0 && (
+                <details>
+                  <summary>Recent failures</summary>
+                  <ul className="evidence-list">
+                    {observabilitySnapshot.recentFailures.slice(0, 10).map((failure, index) => (
+                      <li key={index}>
+                        <span>{failure.timestamp}</span>
+                        <span>{failure.taskType} · {failure.outcome}</span>
+                        <span>{failure.latencyMs.toFixed(1)} ms · fallback: {String(failure.fallbackOccurred)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              )}
+            </>}
+          </section>
+
+          <section className="model-evaluation-panel">
+            <h3>Run quality evaluation</h3>
+            <p className="muted">Runs offline against bundled datasets. No external model calls.</p>
+            <form className="workspace-form" onSubmit={(event) => { event.preventDefault(); void runEvaluation(); }}>
+              <label className="document-control" htmlFor="eval-task-type">
+                Task type
+                <select
+                  id="eval-task-type"
+                  value={evalTaskType}
+                  onChange={(event) => setEvalTaskType(event.currentTarget.value as "tutor" | "quiz" | "flashcard" | "progress" | "recommend" | "manage")}
+                >
+                  <option value="tutor">Tutor</option>
+                  <option value="quiz">Quiz</option>
+                  <option value="flashcard">Flashcard</option>
+                  <option value="progress">Progress</option>
+                  <option value="recommend">Recommend</option>
+                  <option value="manage">Manage</option>
+                </select>
+              </label>
+              <label className="document-control" htmlFor="eval-dataset">
+                Dataset
+                <select
+                  id="eval-dataset"
+                  value={evalDataset}
+                  onChange={(event) => setEvalDataset(event.currentTarget.value as "retrieval_eval" | "generated" | "quality_v2" | "observability")}
+                >
+                  <option value="retrieval_eval">Retrieval eval</option>
+                  <option value="quality_v2">Quality v2</option>
+                  <option value="observability">Observability (runtime telemetry)</option>
+                </select>
+              </label>
+              <label className="document-control" htmlFor="eval-metric">
+                Metric
+                <select
+                  id="eval-metric"
+                  value={evalMetric}
+                  onChange={(event) => setEvalMetric(event.currentTarget.value as any)}
+                >
+                  <option value="retrieval_quality">Retrieval quality</option>
+                  <option value="citation_validity">Citation validity</option>
+                  <option value="evidence_coverage">Evidence coverage</option>
+                  <option value="quiz_schema_validity">Quiz schema validity</option>
+                  <option value="model_failure_rate">Model failure rate</option>
+                  <option value="model_timeout_rate">Model timeout rate</option>
+                </select>
+              </label>
+              {evaluationLoading && <p className="muted" role="status">Running evaluation…</p>}
+              {evaluationError && <p className="notice notice--error" role="alert">{evaluationError}</p>}
+              {evaluationResult && (
+                <details className="validation-results" open>
+                  <summary>Evaluation result</summary>
+                  <div className="validation-summary">
+                    <span><strong>Task:</strong> {evaluationResult.taskType}</span>
+                    <span><strong>Dataset:</strong> {evaluationResult.dataset}</span>
+                    <span><strong>Metric:</strong> {evaluationResult.metric}</span>
+                    <span><strong>Value:</strong> {evaluationResult.value === null ? "n/a" : String(evaluationResult.value)}</span>
+                    <span><strong>Evaluated at:</strong> {evaluationResult.evaluatedAt ?? "n/a"}</span>
+                  </div>
+                  {evaluationResult.details && (
+                    <details><summary>Details</summary><pre>{JSON.stringify(evaluationResult.details, null, 2)}</pre></details>
+                  )}
+                </details>
+              )}
+              <button type="submit" className="camera-action camera-action--primary" disabled={evaluationLoading}>
+                {evaluationLoading ? "Evaluating…" : "Run evaluation"}
+              </button>
+            </form>
+          </section>
+        </section>
+      )}
 
     </main>
   );

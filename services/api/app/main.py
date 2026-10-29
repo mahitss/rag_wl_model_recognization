@@ -13,6 +13,7 @@ from app.api.v1.auth_routes import router as auth_router
 from app.api.v1.companion_routes import router as companion_router
 from app.api.v1.content import router as content_router
 from app.api.v1.content_validation import router as content_validation_router
+from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
@@ -115,6 +116,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(content_validation_router)
     # Companion router (personal AI learning companion, user-scoped)
     application.include_router(companion_router)
+    # Model observability & evaluation admin routes (admin only)
+    application.include_router(model_routes_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

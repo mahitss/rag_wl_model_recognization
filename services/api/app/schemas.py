@@ -1462,3 +1462,68 @@ class CompanionMessagesResponse(ApiModel):
     total: int
     limit: int
     offset: int
+
+
+# ---------------------------------------------------------------------------
+# M45: AI Observability & Model Evaluation Dashboard.
+# Model execution telemetry and quality evaluation are admin-only.
+# No user IDs, document IDs, prompts, secrets, or raw model outputs are stored.
+# ---------------------------------------------------------------------------
+
+
+class ModelTaskOutcome(str):
+    pass
+
+
+class ModelObservationResponse(ApiModel):
+    task_type: Literal["tutor", "quiz", "flashcard", "progress", "recommend", "manage"]
+    provider: Literal["local"]
+    model_id: str
+    outcome: Literal["success", "timeout", "cancellation", "failure"]
+    latency_ms: float
+    fallback_occurred: bool
+    citation_validation: Literal["valid", "invalid", "not_applicable"] | None = None
+    abstention: bool | None = None
+    timestamp: str
+
+
+class ModelLatencySummary(ApiModel):
+    count: int
+    p50_ms: float
+    p95_ms: float
+    max_ms: float
+
+
+class ModelMetricsSnapshotResponse(ApiModel):
+    task_counts: dict[str, int]
+    outcome_counts: dict[str, int]
+    provider_counts: dict[str, int]
+    total_observations: int
+    success_rate: float | None = None
+    failure_rate: float | None = None
+    fallback_count: int
+    fallback_rate: float | None = None
+    latency_ms: ModelLatencySummary
+    recent_failures: list[dict[str, Any]]
+
+
+class ModelEvaluationCreateRequest(ApiModel):
+    task_type: Literal["tutor", "quiz", "flashcard", "progress", "recommend", "manage"]
+    dataset: Literal["retrieval_eval", "generated", "quality_v2", "observability"]
+    metric: Literal[
+        "retrieval_quality",
+        "citation_validity",
+        "evidence_coverage",
+        "quiz_schema_validity",
+        "model_failure_rate",
+        "model_timeout_rate",
+    ]
+
+
+class ModelEvaluationResponse(ApiModel):
+    task_type: str
+    dataset: str
+    metric: str
+    value: float | dict[str, Any] | None = None
+    details: dict[str, Any] | None = None
+    evaluated_at: str

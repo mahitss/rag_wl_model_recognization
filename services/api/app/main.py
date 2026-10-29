@@ -10,6 +10,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.v1.auth_routes import router as auth_router
+from app.api.v1.companion_routes import router as companion_router
 from app.api.v1.content import router as content_router
 from app.api.v1.content_validation import router as content_validation_router
 from app.api.v1.routes import make_error_response, router
@@ -112,6 +113,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(content_router)
     # Content studio validation router (evidence verification requires ownership)
     application.include_router(content_validation_router)
+    # Companion router (personal AI learning companion, user-scoped)
+    application.include_router(companion_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

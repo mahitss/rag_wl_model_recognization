@@ -352,6 +352,66 @@ type RevisionQueueResponse = {
   offset: number;
 };
 
+// --- M43: Personal AI Learning Companion ---
+type CompanionAction = {
+  action: "start_quiz" | "start_revision" | "start_session" | "create_path" | "accept_recommendation" | "dismiss_recommendation" | "none";
+  description: string;
+  payload: { [key: string]: any };
+  requiresConfirmation: boolean;
+};
+type CompanionMessage = {
+  messageId: string;
+  conversationId: string;
+  role: "user" | "assistant";
+  content: string;
+  citations: Citation[];
+  status: "ok" | "insufficient_evidence" | "model_unavailable" | "error";
+  createdAt: string;
+};
+type CompanionConversation = {
+  conversationId: string;
+  userId: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+};
+type CompanionConversationListResponse = {
+  conversations: CompanionConversation[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+type CompanionConversationCreateRequest = {
+  title?: string;
+};
+type CompanionMessageRequest = {
+  message: string;
+  conversationId?: string;
+  mode?: "ask" | "quiz" | "revision" | "progress" | "recommend" | "manage";
+  documentIds?: string[];
+  limit?: number;
+};
+type CompanionMessageResponse = {
+  messageId: string;
+  conversationId: string;
+  role: "assistant";
+  content: string;
+  status: "answered" | "insufficient_evidence" | "model_unavailable" | "error";
+  citations: Citation[];
+  retrievalMode?: string;
+  fallbackReason?: string | null;
+  action: CompanionAction | null;
+  requiresConfirmation: boolean;
+  createdAt: string;
+};
+type CompanionMessagesResponse = {
+  messages: CompanionMessage[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+
 type Workspace = {
   spaceId: string;
   ownerId: string;
@@ -763,7 +823,24 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [verifyingSectionId, setVerifyingSectionId] = useState<string | null>(null);
   const [regeneratingSectionId, setRegeneratingSectionId] = useState<string | null>(null);
 
-  // --- M42: Revision queue ---  const [revisionQueue, setRevisionQueue] = useState<RevisionQueueItem[]>([]);  const [revisionTotal, setRevisionTotal] = useState(0);  const [revisionLoading, setRevisionLoading] = useState(false);  const [revisionError, setRevisionError] = useState<string | null>(null);  // --- M41: Unified search ---
+  // --- M42: Revision queue ---  const [revisionQueue, setRevisionQueue] = useState<RevisionQueueItem[]>([]);  const [revisionTotal, setRevisionTotal] = useState(0);  const [revisionLoading, setRevisionLoading] = useState(false);  const [revisionError, setRevisionError] = useState<string | null>(null);
+
+  // --- M43: Personal AI Learning Companion ---
+  const [conversations, setConversations] = useState<CompanionConversation[]>([]);
+  const [conversationTotal, setConversationTotal] = useState(0);
+  const [conversationLoading, setConversationLoading] = useState(false);
+  const [conversationError, setConversationError] = useState<string | null>(null);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<CompanionMessage[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [composingMessage, setComposingMessage] = useState("");
+  const [sendingMessage, setSendingMessage] = useState(false);
+  const [messageError, setMessageError] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<CompanionAction | null>(null);
+  const [confirmPayload, setConfirmPayload] = useState<{ [key: string]: any }>({});
+
+  // --- M41: Unified search ---
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
@@ -967,6 +1044,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     void loadMyFeedback();
     void loadWorkspaces();
     void loadContentResources();
+    void loadConversations();
     if (isAdmin) {
       void loadAdminFeedback();
       void loadImprovementTasks();
@@ -1870,7 +1948,153 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       setContentValidationError(error instanceof Error ? error.message : "Could not link this resource to a quiz.");
     }
   }
-  // --- M42: Revision queue API ---  async function runRevisionQueue(limit: number = 20, offset: number = 0) {    setRevisionLoading(true);    setRevisionError(null);    try {      const params = new URLSearchParams();      params.set("limit", String(limit));      params.set("offset", String(offset));      const response = await fetch(`/api/v1/revision/queue?${params.toString()}`, {        method: "GET",        headers: { "Content-Type": "application/json" },      });      const result = await readJson<RevisionQueueResponse>(response);      setRevisionQueue(result.items);      setRevisionTotal(result.total);    } catch (error) {      setRevisionError(error instanceof Error ? error.message : "Could not load revision queue.");      setRevisionQueue([]);      setRevisionTotal(0);    } finally { setRevisionLoading(false); }  }  async function submitSectionReview(itemType: "flashcard" | "quiz", itemId: string, result: "remembered" | "partially" | "forgotten", confidenceRating: number | null = null) {    setRevisionError(null);    try {      const response = await fetch(`/api/v1/revision/review/${item_type}/${encodeURIComponent(itemId)}`, {        method: "POST",        headers: { "Content-Type": "application/json" },        body: JSON.stringify({ result, confidenceRating }),      });      const updated = await readJson<any>(response);      // Refresh the revision queue to reflect updated due dates      await runRevisionQueue();      return updated;    } catch (error) {      setRevisionError(error instanceof Error ? error.message : "Could not record review decision.");      throw error;    }  }
+  // --- M42: Revision queue API ---  async function runRevisionQueue(limit: number = 20, offset: number = 0) {    setRevisionLoading(true);    setRevisionError(null);    try {      const params = new URLSearchParams();      params.set("limit", String(limit));      params.set("offset", String(offset));      const response = await fetch(`/api/v1/revision/queue?${params.toString()}`, {        method: "GET",        headers: { "Content-Type": "application/json" },      });      const result = await readJson<RevisionQueueResponse>(response);      setRevisionQueue(result.items);      setRevisionTotal(result.total);    } catch (error) {      setRevisionError(error instanceof Error ? error.message : "Could not load revision queue.");      setRevisionQueue([]);      setRevisionTotal(0);    } finally { setRevisionLoading(false); }  }  async function submitSectionReview(itemType: "flashcard" | "quiz", itemId: string, result: "remembered" | "partially" | "forgotten", confidenceRating: number | null = null) {    setRevisionError(null);    try {      const response = await fetch(`/api/v1/revision/review/${item_type}/${encodeURIComponent(itemId)}`, {        method: "POST",        headers: { "Content-Type": "application/json" },        body: JSON.stringify({ result, confidenceRating }),      });      const updated = await readJson<any>(response);      // Refresh the revision queue to reflect updated due dates      await runRevisionQueue();      return updated;    } catch (error) {
+
+  // --- M43: Personal AI Learning Companion API ---
+  async function loadConversations(limit: number = 20, offset: number = 0) {
+    setConversationLoading(true);
+    setConversationError(null);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      params.set("offset", String(offset));
+      const response = await fetch(`/api/v1/companion/conversations?${params.toString()}`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await readJson<CompanionConversationListResponse>(response);
+      setConversations(result.conversations);
+      setConversationTotal(result.total);
+    } catch (error) {
+      setConversationError(error instanceof Error ? error.message : "Could not load conversations.");
+      setConversations([]);
+      setConversationTotal(0);
+    } finally { setConversationLoading(false); }
+  }
+
+  async function createConversation(title: string | null = null) {
+    setConversationError(null);
+    try {
+      const response = await fetch("/api/v1/companion/conversations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      const conversation = await readJson<CompanionConversation>(response);
+      setSelectedConversationId(conversation.conversationId);
+      setMessages([]);
+      await loadConversations();
+      return conversation;
+    } catch (error) {
+      setConversationError(error instanceof Error ? error.message : "Could not create conversation.");
+      throw error;
+    }
+  }
+
+  async function deleteConversation(conversationId: string) {
+    if (!window.confirm("Delete this conversation and all its messages? This cannot be undone.")) return;
+    setConversationError(null);
+    try {
+      await fetch(`/api/v1/companion/conversations/${encodeURIComponent(conversationId)}`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+      });
+      setConversations(prev => prev.filter(c => c.conversationId !== conversationId));
+      setConversationTotal(Math.max(0, conversationTotal - 1));
+      if (selectedConversationId === conversationId) {
+        setSelectedConversationId(null);
+        setMessages([]);
+      }
+    } catch (error) {
+      setConversationError(error instanceof Error ? error.message : "Could not delete conversation.");
+      throw error;
+    }
+  }
+
+  async function loadMessages(conversationId: string, limit: number = 50, offset: number = 0) {
+    setMessagesLoading(true);
+    setMessagesError(null);
+    try {
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      params.set("offset", String(offset));
+      const response = await fetch(`/api/v1/companion/conversations/${encodeURIComponent(conversationId)}/messages?${params.toString()}`, {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      const result = await readJson<CompanionMessagesResponse>(response);
+      setMessages(result.messages);
+    } catch (error) {
+      setMessagesError(error instanceof Error ? error.message : "Could not load messages.");
+      setMessages([]);
+    } finally { setMessagesLoading(false); }
+  }
+
+  async function sendCompanionMessage(message: string, conversationId: string, mode: CompanionMessageRequest["mode"] | null = null, confidenceRating: number | null = null) {
+    setMessageError(null);
+    try {
+      const response = await fetch("/api/v1/companion/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message, conversationId, mode }),
+      });
+      const result = await readJson<CompanionMessageResponse>(response);
+      setMessages(prev => [...prev, {
+        messageId: result.messageId,
+        conversationId: result.conversationId,
+        role: result.role,
+        content: result.content,
+        citations: result.citations,
+        status: result.status,
+        createdAt: result.createdAt,
+      }]);
+      if (result.action && result.action.requiresConfirmation) {
+        setConfirmAction(result.action);
+        setConfirmPayload(result.action.payload);
+      }
+      return result;
+    } catch (error) {
+      setMessageError(error instanceof Error ? error.message : "Could not send message.");
+      throw error;
+    }
+  }
+
+  async function confirmCompanionAction() {
+    if (!confirmAction) return;
+    setMessageError(null);
+    try {
+      const response = await fetch("/api/v1/companion/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: `Confirm: ${confirmAction.description}`,
+          conversationId: selectedConversationId,
+          mode: confirmAction.action === "start_quiz" ? "quiz" : confirmAction.action === "start_revision" ? "revision" : "ask",
+          ...confirmPayload,
+        }),
+      });
+      const result = await readJson<CompanionMessageResponse>(response);
+      setMessages(prev => [...prev, {
+        messageId: result.messageId,
+        conversationId: result.conversationId,
+        role: result.role,
+        content: result.content,
+        citations: result.citations,
+        status: result.status,
+        createdAt: result.createdAt,
+      }]);
+      setConfirmAction(null);
+      setConfirmPayload({});
+      return result;
+    } catch (error) {
+      setMessageError(error instanceof Error ? error.message : "Could not confirm action.");
+      throw error;
+    } finally {
+      setConfirmAction(null);
+      setConfirmPayload({});
+    }
+  }
+
   // --- M41: Unified search ---
   async function runSearch(query: string, mode: "lexical" | "semantic" | "hybrid" | null = null) {
     if (!query.trim()) {
@@ -4320,6 +4544,114 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
           </>
         )}
       </section>
+
+      {/* --- M43: Personal AI Learning Companion Panel --- */}
+      <section className="companion-panel" aria-labelledby="companion-title">
+        <div className="workspace-heading">
+          <div>
+            <p className="eyebrow">Personal AI Learning Companion</p>
+            <h3 id="companion-title">Companion Chat</h3>
+            <p className="muted">Ask questions about your learning materials, start quizzes, review due items, and get study recommendations.</p>
+          </div>
+        </div>
+
+        {conversationLoading && <p className="muted" role="status">Loading conversations…</p>}
+        {conversationError && <p className="notice notice--error" role="alert">{conversationError}</p>}
+
+        {!conversationLoading && conversations.length === 0 && (
+          <p className="notice" role="status">No conversations yet. Send a message to start a conversation.</p>
+        )}
+
+        {!conversationLoading && conversations.length > 0 && (
+          <div className="conversation-list">
+            {conversations.map((conv) => (
+              <button
+                key={conv.conversationId}
+                type="button"
+                className={`conversation-item ${selectedConversationId === conv.conversationId ? 'active' : ''}`}
+                onClick={() => {
+                  setSelectedConversationId(conv.conversationId);
+                  void loadMessages(conv.conversationId);
+                }}
+              >
+                <div className="conversation-title">{conv.title}</div>
+                <div className="conversation-updated">{new Date(conv.updatedAt).toLocaleDateString()}</div>
+              </button>
+            ))}
+            <button type="button" className="camera-action camera-action--primary" onClick={() => void createConversation()}>
+              New conversation
+            </button>
+          </div>
+        )}
+
+        {selectedConversationId && (
+          <div className="chat-area">
+            {messagesLoading && <p className="muted" role="status">Loading messages…</p>}
+            {messagesError && <p className="notice notice--error" role="alert">{messagesError}</p>}
+
+            {!messagesLoading && messages.length === 0 && (
+              <p className="notice" role="status">No messages yet. Send a message to start chatting.</p>
+            )}
+
+            {!messagesLoading && messages.length > 0 && (
+              <div className="chat-messages" role="log" aria-label="Conversation messages">
+                {messages.map((msg) => (
+                  <div key={msg.messageId} className={`chat-message ${msg.role}`}>
+                    <div className="chat-message-content">{msg.content}</div>
+                    {msg.citations.length > 0 && (
+                      <details className="chat-citations"><summary>Sources ({msg.citations.length})</summary>
+                        <ul>{msg.citations.map((citation) => <li key={citation.citationId}><blockquote>{citation.text}</blockquote><span><strong>{citation.displayFilename}</strong> page {citation.pageNumber}</span></li>)}</ul>
+                      </details>
+                    )}
+                    <div className="chat-message-meta">{msg.status}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {confirmAction && (
+              <div className="confirm-action">
+                <p>Confirm: {confirmAction.description}</p>
+                <button type="button" className="camera-action camera-action--primary" onClick={() => void confirmCompanionAction()}>
+                  Confirm
+                </button>
+                <button type="button" className="camera-action" onClick={() => { setConfirmAction(null); setConfirmPayload({}); }}>
+                  Cancel
+                </button>
+              </div>
+            )}
+            <div className="chat-input-area">
+              <input
+                type="text"
+                placeholder="Ask a question, start a quiz, or ask for study recommendations…"
+                value={composingMessage}
+                onChange={(event) => setComposingMessage(event.currentTarget.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendCompanionMessage(composingMessage, selectedConversationId!);
+                    setComposingMessage("");
+                  }
+                }}
+                disabled={sendingMessage || !selectedConversationId}
+              />
+              <button
+                type="button"
+                className="camera-action camera-action--primary"
+                onClick={() => {
+                  if (!composingMessage.trim() || !selectedConversationId) return;
+                  void sendCompanionMessage(composingMessage, selectedConversationId);
+                  setComposingMessage("");
+                }}
+                disabled={sendingMessage || !composingMessage.trim() || !selectedConversationId}
+              >
+                Send
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+      {/* --- End M43 Companion Panel --- */}
+
     </main>
   );
 }

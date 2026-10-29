@@ -14,7 +14,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 20
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -2349,6 +2349,54 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_flashcard_review_user_id "
                     "ON flashcard_review_items(user_id)"
+                )
+
+            if version < 20:
+                # M43: Personal AI Learning Companion - conversation persistence.
+                connection.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS conversations (
+                        conversation_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    '''
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversations_user_id "
+                    "ON conversations(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversations_updated_at "
+                    "ON conversations(updated_at DESC)"
+                )
+                connection.execute(
+                    '''
+                    CREATE TABLE IF NOT EXISTS conversation_messages (
+                        message_id TEXT PRIMARY KEY,
+                        conversation_id TEXT NOT NULL REFERENCES conversations(
+                            conversation_id
+                        ) ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+                        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 8000),
+                        citations_json TEXT NOT NULL DEFAULT '[]',
+                        tool_calls_json TEXT NOT NULL DEFAULT '[]',
+                        status TEXT NOT NULL DEFAULT 'ok'
+                            CHECK (status IN ('ok', 'insufficient_evidence', 'model_unavailable', 'error')),
+                        created_at TEXT NOT NULL
+                    )
+                    '''
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_messages_conversation_id "
+                    "ON conversation_messages(conversation_id, created_at ASC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_conversation_messages_role "
+                    "ON conversation_messages(role)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -6958,3 +7006,243 @@ def verify_content_section(
         "verifiedAt": now,
         "verifiedBy": user_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# M43: Personal AI Learning Companion - conversation persistence.
+# ---------------------------------------------------------------------------
+
+
+def create_conversation(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str | None = None,
+) -> dict[str, Any]:
+    """Create a new conversation and return its record."""
+    conversation_id = f"conv_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    display_title = (title or "New conversation").strip()
+    if not display_title:
+        display_title = "New conversation"
+    if len(display_title) > 200:
+        display_title = display_title[:200]
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO conversations(
+                    conversation_id, user_id, title, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (conversation_id, user_id, display_title, now, now),
+            )
+    return {
+        "conversationId": conversation_id,
+        "userId": user_id,
+        "title": display_title,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_conversations(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """List the user's conversations, newest first."""
+    with closing(connect_database(database_path)) as connection:
+        count_row = connection.execute(
+            "SELECT COUNT(*) AS c FROM conversations WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        total = int(count_row["c"])
+        rows = connection.execute(
+            """
+            SELECT conversation_id, user_id, title, created_at, updated_at
+            FROM conversations WHERE user_id = ?
+            ORDER BY updated_at DESC, created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (user_id, limit, offset),
+        ).fetchall()
+    return (
+        [
+            {
+                "conversationId": row["conversation_id"],
+                "userId": row["user_id"],
+                "title": row["title"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ],
+        total,
+    )
+
+
+def get_conversation(
+    database_path: Path,
+    *,
+    conversation_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return one conversation if it belongs to the user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT conversation_id, user_id, title, created_at, updated_at
+            FROM conversations WHERE conversation_id = ? AND user_id = ?
+            """,
+            (conversation_id, user_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "conversationId": row["conversation_id"],
+        "userId": row["user_id"],
+        "title": row["title"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def delete_conversation(
+    database_path: Path,
+    *,
+    conversation_id: str,
+    user_id: str,
+) -> bool:
+    """Delete a conversation and all its messages if owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                "SELECT 1 FROM conversations WHERE conversation_id = ? AND user_id = ?",
+                (conversation_id, user_id),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                "DELETE FROM conversation_messages WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+            connection.execute(
+                "DELETE FROM conversations WHERE conversation_id = ?",
+                (conversation_id,),
+            )
+    return True
+
+
+def add_message(
+    database_path: Path,
+    *,
+    conversation_id: str,
+    role: str,
+    content: str,
+    citations: list[dict[str, Any]] | None = None,
+    tool_calls: list[dict[str, Any]] | None = None,
+    status: str = "ok",
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Append a message to a conversation and return its record."""
+    if role not in {"user", "assistant"}:
+        raise ValueError("role must be 'user' or 'assistant'")
+    if status not in {"ok", "insufficient_evidence", "model_unavailable", "error"}:
+        raise ValueError("invalid status")
+    message_id = f"msg_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    citations_json = json.dumps(citations or [], separators=(",", ":"))
+    tool_calls_json = json.dumps(tool_calls or [], separators=(",", ":"))
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            if user_id is not None:
+                owner = connection.execute(
+                    "SELECT 1 FROM conversations WHERE conversation_id = ? AND user_id = ?",
+                    (conversation_id, user_id),
+                ).fetchone()
+                if owner is None:
+                    raise ValueError("Conversation is not owned by the requested user")
+            connection.execute(
+                """
+                INSERT INTO conversation_messages(
+                    message_id, conversation_id, role, content,
+                    citations_json, tool_calls_json, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    conversation_id,
+                    role,
+                    content,
+                    citations_json,
+                    tool_calls_json,
+                    status,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE conversations SET updated_at = ? WHERE conversation_id = ?",
+                (now, conversation_id),
+            )
+    return {
+        "messageId": message_id,
+        "conversationId": conversation_id,
+        "role": role,
+        "content": content,
+        "citations": citations or [],
+        "toolCalls": tool_calls or [],
+        "status": status,
+        "createdAt": now,
+    }
+
+
+def get_messages(
+    database_path: Path,
+    *,
+    conversation_id: str,
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return messages for a conversation, oldest first."""
+    with closing(connect_database(database_path)) as connection:
+        count_row = connection.execute(
+            """
+            SELECT COUNT(*) AS c FROM conversation_messages cm
+            JOIN conversations c ON c.conversation_id = cm.conversation_id
+            WHERE cm.conversation_id = ? AND c.user_id = ?
+            """,
+            (conversation_id, user_id),
+        ).fetchone()
+        total = int(count_row["c"])
+        rows = connection.execute(
+            """
+            SELECT message_id, conversation_id, role, content,
+                   citations_json, tool_calls_json, status, created_at
+            FROM conversation_messages cm
+            JOIN conversations c ON c.conversation_id = cm.conversation_id
+            WHERE cm.conversation_id = ? AND c.user_id = ?
+            ORDER BY cm.created_at ASC, cm.message_id ASC
+            LIMIT ? OFFSET ?
+            """,
+            (conversation_id, user_id, limit, offset),
+        ).fetchall()
+    return (
+        [
+            {
+                "messageId": row["message_id"],
+                "conversationId": row["conversation_id"],
+                "role": row["role"],
+                "content": row["content"],
+                "citations": json.loads(row["citations_json"] or "[]"),
+                "toolCalls": json.loads(row["tool_calls_json"] or "[]"),
+                "status": row["status"],
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ],
+        total,
+    )

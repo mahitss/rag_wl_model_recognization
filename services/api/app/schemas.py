@@ -1374,3 +1374,91 @@ class RevisionQueueResponse(ApiModel):
     total: int
     limit: int
     offset: int
+
+# ---------------------------------------------------------------------------
+# M43: Personal AI Learning Companion.
+# Unified conversational interface for grounded Q&A, quiz revision,
+# progress summaries, recommendations, and study-plan management.
+# ---------------------------------------------------------------------------
+
+
+class CompanionMessageMode(str):
+    pass
+
+
+class CompanionMessageRequest(ApiModel):
+    """One turn in the conversational companion interface."""
+    message: str = Field(min_length=1, max_length=4_000)
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=80)
+    mode: Literal["ask", "quiz", "revision", "progress", "recommend", "manage"] | None = None
+    document_ids: list[str] | None = Field(default=None, max_length=50)
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class CompanionAction(ApiModel):
+    """A suggested follow-up action the companion can execute."""
+    action: Literal[
+        "start_quiz",
+        "start_revision",
+        "start_session",
+        "create_path",
+        "accept_recommendation",
+        "dismiss_recommendation",
+        "none",
+    ]
+    description: str
+    payload: dict[str, Any] = {}
+    requires_confirmation: bool = False
+
+
+class CompanionMessageResponse(ApiModel):
+    """Companion reply with citations and optional suggested action."""
+    message_id: str
+    conversation_id: str
+    role: Literal["assistant"]
+    content: str
+    status: Literal["answered", "insufficient_evidence", "model_unavailable", "error"]
+    citations: list[CitationResponse] = Field(default_factory=list)
+    retrieval_mode: Literal["lexical", "semantic", "hybrid", "lexical_fallback"] | None = None
+    fallback_reason: str | None = None
+    action: CompanionAction | None = None
+    requires_confirmation: bool = False
+    created_at: str
+
+
+class CompanionConversationResponse(ApiModel):
+    """One persisted conversation."""
+    conversation_id: str
+    user_id: str
+    title: str
+    created_at: str
+    updated_at: str
+
+
+class CompanionConversationListResponse(ApiModel):
+    conversations: list[CompanionConversationResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class CompanionConversationCreateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+
+
+class CompanionMessage(ApiModel):
+    """One persisted message in a conversation."""
+    message_id: str
+    conversation_id: str
+    role: Literal["user", "assistant"]
+    content: str
+    citations: list[CitationResponse] = Field(default_factory=list)
+    status: Literal["ok", "insufficient_evidence", "model_unavailable", "error"]
+    created_at: str
+
+
+class CompanionMessagesResponse(ApiModel):
+    messages: list[CompanionMessage]
+    total: int
+    limit: int
+    offset: int

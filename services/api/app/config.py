@@ -1,12 +1,17 @@
 """Validated environment-backed configuration for the local API."""
 
+from __future__ import annotations
+
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlsplit
 
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+if TYPE_CHECKING:
+    from app.model_router import ModelRouter
 
 
 class Settings(BaseSettings):
@@ -244,6 +249,17 @@ class Settings(BaseSettings):
     @property
     def tutor_configured(self) -> bool:
         return self.tutor_base_url is not None
+
+    @property
+    def model_router(self) -> ModelRouter:
+        """Build a unified model router from the current settings.
+
+        The router is constructed lazily to avoid a circular import
+        (app.model_router imports from app.config).
+        """
+        from app.model_router import ModelRouter
+
+        return ModelRouter(self)
 
     @property
     def configured_admin_usernames(self) -> set[str]:

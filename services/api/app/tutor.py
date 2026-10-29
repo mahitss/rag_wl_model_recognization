@@ -13,8 +13,17 @@ class TutorUnavailable(Exception):
     """The optional local tutor endpoint is disabled or unreachable."""
 
 
+class TutorTimeoutError(TutorUnavailable):
+    """The local tutor request timed out."""
+
+
 class InvalidTutorResponse(Exception):
     """The model returned output that cannot be safely grounded."""
+
+
+# Maximum response body size accepted from the tutor endpoint.  Prevents a
+# misbehaving or malicious local model from exhausting memory.
+MAX_TUTOR_RESPONSE_BYTES = 256 * 1024
 
 
 class _RejectRedirects(HTTPRedirectHandler):
@@ -118,8 +127,18 @@ def local_chat_completion(
         opener = build_opener(_RejectRedirects)
         with opener.open(request, timeout=settings.tutor_timeout_seconds) as response:
             response_body = response.read()
-    except (URLError, TimeoutError, OSError) as exc:
-        raise TutorUnavailable from exc
+    except TimeoutError as exc:
+        raise TutorTimeoutError(
+            f"Tutor request timed out after {settings.tutor_timeout_seconds}s"
+        ) from exc
+    except (URLError, OSError) as exc:
+        raise TutorUnavailable(
+            f"Tutor endpoint unreachable: {exc}"
+        ) from exc
+    if len(response_body) > MAX_TUTOR_RESPONSE_BYTES:
+        raise InvalidTutorResponse(
+            f"Tutor response exceeds {MAX_TUTOR_RESPONSE_BYTES} bytes"
+        )
     try:
         provider_body = json.loads(response_body)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:

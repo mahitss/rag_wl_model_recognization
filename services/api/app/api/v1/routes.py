@@ -1677,6 +1677,20 @@ def tutor_status(request: Request) -> dict[str, Any]:
     }
 
 
+@router.get("/models/status", tags=["models"])
+def model_status(request: Request) -> dict[str, Any]:
+    """Return the status of every model task configured for this instance.
+
+    Includes provider, model id, timeout, privacy level, availability, and
+    any recent failure.  Never exposes secrets, prompts, or request payloads.
+    """
+    settings = _settings(request)
+    router = settings.model_router
+    return {
+        "models": router.get_status(),
+    }
+
+
 @router.post("/tutor/answers", response_model=TutorAnswerResponse, tags=["tutor"])
 async def tutor_answer(
     request: Request, payload: TutorAnswerRequest, current_user: AuthUser = Depends(require_auth)

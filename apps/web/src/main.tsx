@@ -326,6 +326,32 @@ type SearchResult = {
   updatedAt: string | null;
 };
 
+type RevisionQueueItem = {
+  itemId: string;
+  itemType: "quiz" | "flashcard";
+  topic: string;
+  title: string;
+  prompt: string;
+  questionType: "multiple_choice" | "short_answer" | null;
+  options: { id: string; text: string }[] | null;
+  explanation: string | null;
+  lastResult: "remembered" | "partially" | "forgotten";
+  lastAttemptedAt: string | null;
+  dueAt: string;
+  citations: Citation[];
+  sourceType: "quiz" | "content_resource";
+  sectionTitle: string | null;
+  sectionType: "heading" | "body" | "flashcard" | "question" | "summary" | null;
+  resourceTitle: string | null;
+};
+
+type RevisionQueueResponse = {
+  items: RevisionQueueItem[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
 type Workspace = {
   spaceId: string;
   ownerId: string;
@@ -737,7 +763,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [verifyingSectionId, setVerifyingSectionId] = useState<string | null>(null);
   const [regeneratingSectionId, setRegeneratingSectionId] = useState<string | null>(null);
 
-  // --- M41: Unified search ---
+  // --- M42: Revision queue ---  const [revisionQueue, setRevisionQueue] = useState<RevisionQueueItem[]>([]);  const [revisionTotal, setRevisionTotal] = useState(0);  const [revisionLoading, setRevisionLoading] = useState(false);  const [revisionError, setRevisionError] = useState<string | null>(null);  // --- M41: Unified search ---
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searchTotal, setSearchTotal] = useState(0);
@@ -1844,7 +1870,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       setContentValidationError(error instanceof Error ? error.message : "Could not link this resource to a quiz.");
     }
   }
-
+  // --- M42: Revision queue API ---  async function runRevisionQueue(limit: number = 20, offset: number = 0) {    setRevisionLoading(true);    setRevisionError(null);    try {      const params = new URLSearchParams();      params.set("limit", String(limit));      params.set("offset", String(offset));      const response = await fetch(`/api/v1/revision/queue?${params.toString()}`, {        method: "GET",        headers: { "Content-Type": "application/json" },      });      const result = await readJson<RevisionQueueResponse>(response);      setRevisionQueue(result.items);      setRevisionTotal(result.total);    } catch (error) {      setRevisionError(error instanceof Error ? error.message : "Could not load revision queue.");      setRevisionQueue([]);      setRevisionTotal(0);    } finally { setRevisionLoading(false); }  }  async function submitSectionReview(itemType: "flashcard" | "quiz", itemId: string, result: "remembered" | "partially" | "forgotten", confidenceRating: number | null = null) {    setRevisionError(null);    try {      const response = await fetch(`/api/v1/revision/review/${item_type}/${encodeURIComponent(itemId)}`, {        method: "POST",        headers: { "Content-Type": "application/json" },        body: JSON.stringify({ result, confidenceRating }),      });      const updated = await readJson<any>(response);      // Refresh the revision queue to reflect updated due dates      await runRevisionQueue();      return updated;    } catch (error) {      setRevisionError(error instanceof Error ? error.message : "Could not record review decision.");      throw error;    }  }
   // --- M41: Unified search ---
   async function runSearch(query: string, mode: "lexical" | "semantic" | "hybrid" | null = null) {
     if (!query.trim()) {
@@ -4233,6 +4259,61 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
                       <ul>{result.citations.map((citation) => <li key={citation.citationId}><blockquote>{citation.text}</blockquote><span><strong>{citation.displayFilename}</strong> · page {citation.pageNumber} · chunk <code>{citation.citationId}</code></span></li>)}</ul>
                     </details>
                   )}
+                </article>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+      <section className="revision-queue-panel" aria-labelledby="revision-queue-title">
+        <div className="workspace-heading">
+          <div>
+            <p className="eyebrow">Smart Revision & Memory</p>
+            <h2 id="revision-queue-title">Revision Queue</h2>
+            <p className="muted">Review items due for practice based on your learning history. Spaced repetition helps you retain what you've learned.</p>
+          </div>
+        </div>
+
+        {revisionLoading && <p className="muted" role="status">Loading revision queue…</p>}
+        {revisionError && <p className="notice notice--error" role="alert">{revisionError}</p>}
+
+        {!revisionLoading && revisionTotal === 0 && (
+          <p className="notice" role="status">No items are due for review. Check back later or keep studying to build your review queue.</p>
+        )}
+
+        {!revisionLoading && revisionTotal > 0 && (
+          <>
+            <p className="muted" role="status">
+              {revisionTotal} item{revisionTotal !== 1 ? "s" : ""} due for review
+            </p>
+            <div className="revision-queue-list">
+              {revisionQueue.map((item) => (
+                <article key={item.itemId} className="revision-item" role="none">
+                  <div className="revision-item-header">
+                    <span className={`revision-item-type revision-item-type--${item.itemType}`}>{item.itemType}</span>
+                    <span className="revision-item-due">Due: {new Date(item.dueAt).toLocaleDateString()}</span>
+                  </div>
+                  <h4>{item.title}</h4>
+                  {item.prompt && <p>{item.prompt}</p>}
+                  {item.explanation && (
+                    <details className="revision-explanation"><summary>Explanation</summary><p>{item.explanation}</p></details>
+                  )}
+                  {item.citations.length > 0 && (
+                    <details className="revision-citations"><summary>Source passages ({item.citations.length})</summary>
+                      <ul>{item.citations.map((citation) => <li key={citation.citationId}><blockquote>{citation.text}</blockquote><span><strong>{citation.displayFilename}</strong> · page {citation.pageNumber}</span></li>)}</ul>
+                    </details>
+                  )}
+                  <div className="revision-actions">
+                    <button type="button" className="camera-action camera-action--primary" onClick={() => void submitSectionReview(item.itemType, item.itemId, "remembered")}>
+                      Remembered
+                    </button>
+                    <button type="button" className="camera-action" onClick={() => void submitSectionReview(item.itemType, item.itemId, "partially")}>
+                      Partially
+                    </button>
+                    <button type="button" className="camera-action" onClick={() => void submitSectionReview(item.itemType, item.itemId, "forgotten")}>
+                      Forgotten
+                    </button>
+                  </div>
                 </article>
               ))}
             </div>

@@ -14,7 +14,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 18
+SCHEMA_VERSION = 19
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -1361,10 +1361,11 @@ def initialize_storage(database_path: Path) -> None:
                         ON DELETE CASCADE,
                     topic_id TEXT NOT NULL,
                     topic TEXT NOT NULL,
-                    last_attempt_id TEXT NOT NULL REFERENCES quiz_attempts(attempt_id)
+                    last_attempt_id TEXT REFERENCES quiz_attempts(attempt_id)
                         ON DELETE CASCADE,
                     last_outcome TEXT NOT NULL CHECK (last_outcome IN (
-                        'correct', 'incorrect', 'ambiguous'
+                        'correct', 'incorrect', 'ambiguous',
+                        'remembered', 'partially', 'forgotten'
                     )),
                     attempted_at TEXT NOT NULL,
                     due_at TEXT NOT NULL
@@ -2319,6 +2320,37 @@ def initialize_storage(database_path: Path) -> None:
                     "ON content_resource_validations(created_at DESC)"
                 )
 
+            if version < 19:
+                # M42: Smart Revision & Memory Retention Engine.
+                # Flashcard review scheduling tables for spaced-repetition tracking.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS flashcard_review_items (
+                        section_id TEXT PRIMARY KEY REFERENCES content_resource_sections(section_id)
+                            ON DELETE CASCADE,
+                        resource_id TEXT NOT NULL REFERENCES content_resources(resource_id)
+                            ON DELETE CASCADE,
+                        section_title TEXT NOT NULL,
+                        last_result TEXT NOT NULL CHECK (last_result IN (
+                            'remembered', 'partially', 'forgotten'
+                        )),
+                        confidence_rating INTEGER CHECK (confidence_rating BETWEEN 1 AND 5),
+                        reviewed_at TEXT NOT NULL,
+                        due_at TEXT NOT NULL,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_flashcard_review_due "
+                    "ON flashcard_review_items(due_at, user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_flashcard_review_user_id "
+                    "ON flashcard_review_items(user_id)"
+                )
+
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.execute("PRAGMA foreign_keys = ON")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -2480,6 +2512,17 @@ def delete_document(database_path: Path, document_id: str, user_id: str | None =
                 "SELECT chunk_id FROM chunks WHERE document_id = ?",
                 (document_id,),
             ).fetchall()
+            # Cascade-delete content resources and their review items
+            # that reference this document in source_refs_json
+            resource_rows = connection.execute(
+                "SELECT resource_id FROM content_resources WHERE source_refs_json LIKE ?",
+                (f'%"documentId":"{document_id}"%',),
+            ).fetchall()
+            for row in resource_rows:
+                connection.execute(
+                    "DELETE FROM content_resources WHERE resource_id = ?",
+                    (row["resource_id"],),
+                )
             connection.execute("DELETE FROM documents WHERE document_id=?", (document_id,))
             connection.executemany(
                 "DELETE FROM chunks_fts WHERE chunk_id = ?",
@@ -3420,6 +3463,299 @@ def record_quiz_attempt(
                     user_id,
                 ),
             )
+
+
+def _revision_interval_days(result: str) -> int:
+    """Return the review interval in days for a given flashcard review result."""
+    return {"remembered": 7, "partially": 1, "forgotten": 1}[result]
+
+
+def get_revision_queue(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int,
+    offset: int = 0,
+    now: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return due/overdue revision items owned by the user."""
+    current = now if now is not None else datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        quiz_count = connection.execute(
+            "SELECT COUNT(*) AS c FROM topic_review_items WHERE user_id = ? AND due_at <= ?",
+            (user_id, current),
+        ).fetchone()["c"]
+        flashcard_count = connection.execute(
+            "SELECT COUNT(*) AS c FROM flashcard_review_items WHERE user_id = ? AND due_at <= ?",
+            (user_id, current),
+        ).fetchone()["c"]
+        total = int(quiz_count) + int(flashcard_count)
+
+        quiz_rows = connection.execute(
+            """
+            SELECT r.question_id AS item_id, r.topic_id, r.topic,
+                   r.last_outcome AS last_result, r.attempted_at, r.due_at,
+                   q.question_type, q.prompt, q.explanation,
+                   q.answer_key, q.accepted_answers_json, q.options_json,
+                   NULL AS section_title, NULL AS section_type,
+                   NULL AS resource_title, 'quiz' AS item_type
+            FROM topic_review_items r
+            JOIN quiz_questions q ON q.question_id = r.question_id
+            WHERE r.user_id = ? AND r.due_at <= ?
+            """,
+            (user_id, current),
+        ).fetchall()
+
+        flashcard_rows = connection.execute(
+            """
+            SELECT r.section_id AS item_id, r.resource_id,
+                   r.section_title AS topic, r.last_result,
+                   r.reviewed_at AS attempted_at, r.due_at,
+                   NULL AS question_type, NULL AS prompt,
+                   NULL AS explanation, NULL AS answer_key,
+                   NULL AS accepted_answers_json, NULL AS options_json,
+                   s.section_title, s.section_type, cr.title AS resource_title,
+                   'flashcard' AS item_type
+            FROM flashcard_review_items r
+            JOIN content_resource_sections s ON s.section_id = r.section_id
+            JOIN content_resources cr ON cr.resource_id = s.resource_id
+            WHERE r.user_id = ? AND r.due_at <= ?
+            """,
+            (user_id, current),
+        ).fetchall()
+
+        items: list[dict[str, Any]] = []
+        outcome_to_result = {
+            "correct": "remembered",
+            "incorrect": "forgotten",
+            "ambiguous": "partially",
+            "remembered": "remembered",
+            "partially": "partially",
+            "forgotten": "forgotten",
+        }
+        for row in quiz_rows:
+            citations: list[dict[str, Any]] = []
+            if row["question_type"] is not None:
+                citation_rows = connection.execute(
+                    """
+                    SELECT qc.citation_id AS citationId, c.document_id AS documentId,
+                           d.display_name AS displayFilename,
+                           c.page_number AS pageNumber, c.chunk_index AS chunkIndex,
+                           c.char_start AS charStart, c.char_end AS charEnd,
+                           c.text AS text, qc.retrieval_json AS retrieval
+                    FROM quiz_citations qc
+                    JOIN chunks c ON c.chunk_id = qc.citation_id
+                    JOIN documents d ON d.document_id = c.document_id
+                    WHERE qc.question_id = ? ORDER BY qc.position
+                    """,
+                    (row["item_id"],),
+                ).fetchall()
+                for cr in citation_rows:
+                    citations.append(
+                        {
+                            "citationId": cr["citationId"],
+                            "documentId": cr["documentId"],
+                            "displayFilename": cr["displayFilename"],
+                            "pageNumber": cr["pageNumber"],
+                            "chunkIndex": cr["chunkIndex"],
+                            "charStart": cr["charStart"],
+                            "charEnd": cr["charEnd"],
+                            "text": cr["text"],
+                            "retrieval": json.loads(cr["retrieval"]),
+                        }
+                    )
+            options = None
+            if row["options_json"] is not None:
+                options = [{"id": o["id"], "text": o["text"]} for o in json.loads(row["options_json"])]
+            items.append(
+                {
+                    "itemId": row["item_id"],
+                    "itemType": "quiz",
+                    "topicId": row["topic_id"],
+                    "topic": row["topic"],
+                    "title": row["prompt"],
+                    "prompt": row["prompt"],
+                    "questionType": row["question_type"],
+                "options": options,
+                "explanation": row["explanation"],
+                "lastResult": outcome_to_result.get(row["last_result"], row["last_result"]),
+                "lastAttemptedAt": row["attempted_at"],
+                "dueAt": row["due_at"],
+                "citations": citations,
+                "sourceType": "quiz",
+                }
+            )
+
+        for row in flashcard_rows:
+            items.append(
+                {
+                    "itemId": row["item_id"],
+                    "itemType": "flashcard",
+                    "resourceId": row["resource_id"],
+                    "topic": row["section_title"],
+                    "title": row["section_title"],
+                    "prompt": row["section_title"],
+                    "questionType": None,
+                    "options": None,
+                    "explanation": None,
+                    "lastResult": row["last_result"],
+                    "lastAttemptedAt": row["attempted_at"],
+                    "dueAt": row["due_at"],
+                    "citations": [],
+                    "sourceType": "content_resource",
+                    "sectionTitle": row["section_title"],
+                    "sectionType": row["section_type"],
+                    "resourceTitle": row["resource_title"],
+                }
+            )
+
+        items.sort(key=lambda item: item["dueAt"])
+        paginated = items[offset : offset + limit]
+        return paginated, total
+
+
+def record_flashcard_review(
+    database_path: Path,
+    *,
+    section_id: str,
+    result: str,
+    confidence_rating: int | None,
+    user_id: str,
+    reviewed_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Record a human review decision for a flashcard section."""
+    if result not in {"remembered", "partially", "forgotten"}:
+        raise ValueError("result must be 'remembered', 'partially', or 'forgotten'")
+    if confidence_rating is not None and not (1 <= confidence_rating <= 5):
+        raise ValueError("confidence_rating must be between 1 and 5")
+
+    now = reviewed_at if reviewed_at is not None else datetime.now(UTC).isoformat()
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=UTC)
+    interval_days = _revision_interval_days(result)
+    due_at = (now_dt + timedelta(days=interval_days)).astimezone(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            section = connection.execute(
+                """SELECT s.section_id, s.resource_id, s.section_title,
+                          cr.user_id
+                   FROM content_resource_sections s
+                   JOIN content_resources cr ON cr.resource_id = s.resource_id
+                   WHERE s.section_id = ?""",
+                (section_id,),
+            ).fetchone()
+            if section is None:
+                return None
+            if section["user_id"] != user_id:
+                return None
+
+            connection.execute(
+                """INSERT INTO flashcard_review_items(
+                           section_id, resource_id, section_title,
+                           last_result, confidence_rating, reviewed_at,
+                           due_at, user_id
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(section_id) DO UPDATE SET
+                           resource_id=excluded.resource_id,
+                           section_title=excluded.section_title,
+                           last_result=excluded.last_result,
+                           confidence_rating=excluded.confidence_rating,
+                           reviewed_at=excluded.reviewed_at,
+                           due_at=excluded.due_at""",
+                (
+                    section_id,
+                    section["resource_id"],
+                    section["section_title"],
+                    result,
+                    confidence_rating,
+                    now,
+                    due_at,
+                    user_id,
+                ),
+            )
+
+    return {
+        "sectionId": section_id,
+        "resourceId": section["resource_id"],
+        "sectionTitle": section["section_title"],
+        "result": result,
+        "confidenceRating": confidence_rating,
+        "reviewedAt": now,
+        "dueAt": due_at,
+    }
+
+
+def record_quiz_review(
+    database_path: Path,
+    *,
+    question_id: str,
+    result: str,
+    confidence_rating: int | None,
+    user_id: str,
+    reviewed_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Record a human review decision for a quiz question."""
+    if result not in {"remembered", "partially", "forgotten"}:
+        raise ValueError("result must be 'remembered', 'partially', or 'forgotten'")
+    if confidence_rating is not None and not (1 <= confidence_rating <= 5):
+        raise ValueError("confidence_rating must be between 1 and 5")
+
+    now = reviewed_at if reviewed_at is not None else datetime.now(UTC).isoformat()
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=UTC)
+    interval_days = _revision_interval_days(result)
+    due_at = (now_dt + timedelta(days=interval_days)).astimezone(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            question = connection.execute(
+                """SELECT q.question_id, s.topic_id, s.topic
+                   FROM quiz_questions q
+                   JOIN quiz_sets s ON s.quiz_id = q.quiz_id
+                   WHERE q.question_id = ? AND q.user_id IS ? AND s.user_id IS ?""",
+                (question_id, user_id, user_id),
+            ).fetchone()
+            if question is None:
+                return None
+
+            connection.execute(
+                """INSERT INTO topic_review_items(
+                           question_id, topic_id, topic, last_attempt_id,
+                           last_outcome, attempted_at, due_at, user_id
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(question_id) DO UPDATE SET
+                           topic_id=excluded.topic_id, topic=excluded.topic,
+                           last_attempt_id=excluded.last_attempt_id,
+                           last_outcome=excluded.last_outcome,
+                           attempted_at=excluded.attempted_at,
+                           due_at=excluded.due_at""",
+                (
+                    question_id,
+                    question["topic_id"],
+                    question["topic"],
+                    None,
+                    result,
+                    now,
+                    due_at,
+                    user_id,
+                ),
+            )
+
+    return {
+        "questionId": question_id,
+        "topicId": question["topic_id"],
+        "topic": question["topic"],
+        "result": result,
+        "confidenceRating": confidence_rating,
+        "reviewedAt": now,
+        "dueAt": due_at,
+    }
+
+
 
 
 def start_study_session(

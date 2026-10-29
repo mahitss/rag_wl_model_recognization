@@ -1337,3 +1337,40 @@ class UnifiedSearchResponse(ApiModel):
     retrieval_mode: str
     fallback_reason: str | None = None
     by_type: dict[str, int]
+
+
+# ---------------------------------------------------------------------------
+# M42: Smart Revision & Memory Retention Engine.
+# Unified revision queue and review submission for spaced-repetition review
+# of flashcards and quiz questions.
+# ---------------------------------------------------------------------------
+
+
+class RevisionQueueItem(ApiModel):
+    """One item in the learner's revision queue."""
+
+    itemId: str
+    itemType: Literal["quiz", "flashcard"]
+    topicId: str | None = None
+    resourceId: str | None = None
+    topic: str
+    title: str
+    prompt: str
+    questionType: Literal["multiple_choice", "short_answer"] | None = None
+    options: list[dict[str, str]] | None = None
+    explanation: str | None = None
+    lastResult: Literal["remembered", "partially", "forgotten"]
+    lastAttemptedAt: str | None = None
+    dueAt: str
+    citations: list[CitationResponse] = Field(default_factory=list)
+    sourceType: Literal["quiz", "content_resource"]
+    sectionTitle: str | None = None
+    sectionType: Literal["heading", "body", "flashcard", "question", "summary"] | None = None
+    resourceTitle: str | None = None
+
+
+class RevisionQueueResponse(ApiModel):
+    items: list[RevisionQueueItem]
+    total: int
+    limit: int
+    offset: int

@@ -89,6 +89,7 @@ from app.schemas import (
     RebuildEmbeddingsResponse,
     RetrievalRequest,
     RetrievalResponse,
+    RevisionQueueResponse,
     StudyCoachActionRequest,
     StudyCoachExplanationResponse,
     StudyCoachPlanResponse,
@@ -127,6 +128,7 @@ from app.storage import (
     get_product_analytics_snapshot,
     get_quiz_question,
     get_quiz_set,
+    get_revision_queue,
     knowledge_graph_chunks,
     link_feedback_to_task,
     link_objective_activity,
@@ -140,8 +142,10 @@ from app.storage import (
     list_learning_objectives,
     list_learning_paths,
     prune_product_events,
+    record_flashcard_review,
     record_product_event,
     record_quiz_attempt,
+    record_quiz_review,
     replace_image_region_citations,
     search_content_sections,
     search_knowledge_concepts,
@@ -2014,6 +2018,87 @@ def submit_quiz_answer(
         "citations": reviewed["citations"],
         "attemptCount": reviewed["attemptCount"],
     }
+
+
+@router.get("/revision/queue", response_model=RevisionQueueResponse, tags=["learning"])
+def revision_queue(
+    request: Request,
+    limit: int = 20,
+    offset: int = 0,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Return the due/overdue revision queue for the authenticated user.
+
+    Combines quiz questions and flashcard sections that are due for review,
+    ordered by due date (most overdue first). Includes source citations and
+    provenance for each item.
+    """
+    settings = _settings(request)
+    items, total = get_revision_queue(
+        settings.database_path,
+        user_id=current_user.user_id,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post("/revision/review/{item_type}/{item_id}", tags=["learning"])
+async def submit_section_review(
+    request: Request,
+    item_type: str,
+    item_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Record a human review decision for a flashcard section or quiz question.
+
+    Records the result (remembered/partially/forgotten), optional confidence
+    rating, and schedules the next review using deterministic intervals.
+    Returns the updated review record with the new due date.
+    """
+    settings = _settings(request)
+    database_path = settings.database_path
+
+    try:
+        payload = await request.json()
+    except Exception:
+        raise ApiError(422, "INVALID_REQUEST", "Invalid request body.") from None
+
+    result = payload.get("result")
+    confidence_rating = payload.get("confidenceRating")
+
+    if result not in {"remembered", "partially", "forgotten"}:
+        raise ApiError(422, "INVALID_RESULT", "result must be 'remembered', 'partially', or 'forgotten'")
+    if confidence_rating is not None and not (1 <= confidence_rating <= 5):
+        raise ApiError(422, "INVALID_CONFIDENCE", "confidenceRating must be between 1 and 5")
+
+    if item_type == "flashcard":
+        updated = record_flashcard_review(
+            database_path,
+            section_id=item_id,
+            result=result,
+            confidence_rating=confidence_rating,
+            user_id=current_user.user_id,
+        )
+    elif item_type == "quiz":
+        updated = record_quiz_review(
+            database_path,
+            question_id=item_id,
+            result=result,
+            confidence_rating=confidence_rating,
+            user_id=current_user.user_id,
+        )
+    else:
+        raise ApiError(422, "INVALID_ITEM_TYPE", "itemType must be 'flashcard' or 'quiz'")
+
+    if updated is None:
+        raise ApiError(404, "ITEM_NOT_FOUND", "The requested item was not found or is not owned by you.")
+    return updated
 
 
 @router.get("/progress", response_model=LearningProgressResponse, tags=["learning"])

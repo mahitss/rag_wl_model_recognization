@@ -105,3 +105,47 @@ jobs:
 
       - name: Run offline evaluation suite
         run: uv run --locked --project services/api --extra dev --extra semantic python evaluations/run_suite.py
+
+  security:
+    name: AI security red-team evaluation
+    runs-on: ubuntu-latest
+    needs: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+
+      - name: Sync backend dependencies (dev)
+        run: uv sync --project services/api --extra dev
+
+      - name: Run AI security red-team evaluation
+        run: |
+          uv run --project services/api --extra dev python -m pytest \
+            services/api/tests/test_security_redteam.py \
+            services/api/tests/test_prompt_injection.py \
+            services/api/tests/test_tutor.py \
+            -v
+
+      - name: Fail on critical security failures
+        run: |
+          uv run --project services/api --extra dev python - <<'EOF'
+          import json, sys
+          sys.path.insert(0, "services/api")
+          from tests.test_security_redteam import _report
+          report = _report.to_dict()
+          print(json.dumps(report, indent=2))
+          if report["critical_failure_count"] > 0:
+            print(f"CRITICAL: {report['critical_failure_count']} critical security test(s) failed.")
+            sys.exit(1)
+          if report["total_failed"] > 0:
+            print(f"FAILURE: {report['total_failed']} security test(s) failed.")
+            sys.exit(1)
+          print("All AI security red-team tests passed.")
+          EOF

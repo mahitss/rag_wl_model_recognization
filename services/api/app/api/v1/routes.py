@@ -261,7 +261,7 @@ async def _grounded_tutor_response(
 
 
 @router.get("/health", response_model=HealthResponse, tags=["system"])
-def health(request: Request) -> dict[str, Any]:
+def health(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
     settings = _settings(request)
     return {
         "status": "ok",
@@ -1029,8 +1029,8 @@ def product_analytics(request: Request) -> dict[str, Any]:
 def record_product_analytics_event(
     request: Request,
     payload: ProductAnalyticsEventRequest,
+    current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, str]:
-    current_user = require_auth(request)
     settings = _settings(request)
     if not settings.analytics_enabled:
         return {"status": "disabled"}
@@ -1047,7 +1047,7 @@ def record_product_analytics_event(
 
 
 @router.get("/ready", response_model=ReadinessResponse, tags=["system"])
-def readiness(request: Request) -> JSONResponse:
+def readiness(request: Request, current_user: AuthUser = Depends(require_auth)) -> JSONResponse:
     from app.storage import check_storage
 
     checks = check_storage(_database_path(request))
@@ -1059,7 +1059,7 @@ def readiness(request: Request) -> JSONResponse:
 
 
 @router.get("/metrics", tags=["system"])
-def metrics(request: Request) -> dict[str, Any]:
+def metrics(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
     metrics_state: OperationalMetrics = request.app.state.metrics
     return metrics_state.snapshot()
 
@@ -1678,7 +1678,9 @@ def tutor_status(request: Request) -> dict[str, Any]:
 
 
 @router.get("/models/status", tags=["models"])
-def model_status(request: Request) -> dict[str, Any]:
+def model_status(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
     """Return the status of every model task configured for this instance.
 
     Includes provider, model id, timeout, privacy level, availability, and
@@ -2087,7 +2089,9 @@ async def submit_section_review(
     confidence_rating = payload.get("confidenceRating")
 
     if result not in {"remembered", "partially", "forgotten"}:
-        raise ApiError(422, "INVALID_RESULT", "result must be 'remembered', 'partially', or 'forgotten'")
+        raise ApiError(
+            422, "INVALID_RESULT", "result must be 'remembered', 'partially', or 'forgotten'"
+        )
     if confidence_rating is not None and not (1 <= confidence_rating <= 5):
         raise ApiError(422, "INVALID_CONFIDENCE", "confidenceRating must be between 1 and 5")
 
@@ -2111,7 +2115,9 @@ async def submit_section_review(
         raise ApiError(422, "INVALID_ITEM_TYPE", "itemType must be 'flashcard' or 'quiz'")
 
     if updated is None:
-        raise ApiError(404, "ITEM_NOT_FOUND", "The requested item was not found or is not owned by you.")
+        raise ApiError(
+            404, "ITEM_NOT_FOUND", "The requested item was not found or is not owned by you."
+        )
     return updated
 
 
@@ -2344,7 +2350,7 @@ async def explain_study_coach_recommendation(
 
 
 @router.get("/diagrams", response_model=DiagramsResponse, tags=["diagrams"])
-def diagrams() -> dict[str, Any]:
+def diagrams(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
     response = []
     for diagram in DIAGRAMS.values():
         concepts = {concept.concept_id: concept for concept in diagram.concepts}

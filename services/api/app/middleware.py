@@ -52,7 +52,7 @@ class RequestIdMiddleware(BaseHTTPMiddleware):
             return response
         except Exception:
             error_category = "unhandled_exception"
-            _LOGGER.exception(
+            _LOGGER.error(
                 "unhandled_exception",
                 extra={
                     "request_id": request_id,

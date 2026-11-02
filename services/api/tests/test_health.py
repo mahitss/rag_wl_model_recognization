@@ -60,7 +60,7 @@ def test_readiness_checks_real_sqlite_and_fts5_dependencies(tmp_path):
     assert response.status_code == 200
     assert response.json() == {
         "status": "ready",
-        "checks": {"sqlite": True, "sqlite_fts5": True},
+        "checks": {"sqlite": True, "sqlite_fts5": True, "sqlite_fk": True},
     }
 
 
@@ -68,7 +68,11 @@ def test_missing_database_fails_check_and_readiness_without_creating_file(tmp_pa
     make_app(tmp_path)
     database_path = tmp_path / "local" / "wonderlearn.sqlite3"
 
-    assert check_storage(database_path) == {"sqlite": False, "sqlite_fts5": False}
+    assert check_storage(database_path) == {
+        "sqlite": False,
+        "sqlite_fts5": False,
+        "sqlite_fk": False,
+    }
     assert not database_path.exists()
 
     # Verify the ready endpoint returns 503 when storage is not ready.

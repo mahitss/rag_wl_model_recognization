@@ -66,7 +66,7 @@ def create_user(
     """Create a new user and return the user_id."""
 
     user_id = f"user_{secrets.token_urlsafe(16)}"
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             connection.execute(
                 """INSERT INTO users(
@@ -954,7 +954,7 @@ def get_user_by_session(database_path: Path, session_token: str) -> dict[str, An
 
     Expired sessions are deleted lazily.
     """
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         row = connection.execute(
             """SELECT u.user_id, u.username, u.email, u.password_hash, u.is_admin, u.created_at
                FROM users u
@@ -985,14 +985,14 @@ def get_user_by_session(database_path: Path, session_token: str) -> dict[str, An
 
 def destroy_session(database_path: Path, session_token: str) -> None:
     """Remove a session from the store (no-op if absent)."""
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             connection.execute("DELETE FROM user_sessions WHERE session_id = ?", (session_token,))
 
 
 def cleanup_expired_sessions(database_path: Path) -> int:
     """Delete all expired sessions and return the number removed."""
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             cursor = connection.execute(
                 "DELETE FROM user_sessions WHERE expires_at <= ?",
@@ -1051,7 +1051,7 @@ def record_product_event(
     if category not in {"feature", "workflow", "error", "recovery"}:
         raise ValueError("Unsupported analytics category")
     payload = _sanitize_product_analytics_metadata(metadata)
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             connection.execute(
                 """
@@ -1077,7 +1077,7 @@ def prune_product_events(database_path: Path, *, retention_days: int) -> int:
     if retention_days <= 0:
         return 0
     cutoff = (datetime.now(UTC) - timedelta(days=retention_days)).isoformat()
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         with connection:
             cursor = connection.execute(
                 "DELETE FROM product_events WHERE created_at <= ?",
@@ -1092,7 +1092,7 @@ def get_product_analytics_snapshot(
     """Return per-user aggregated product analytics without exposing raw content."""
     window_days = max(1, window_days)
     cutoff = (datetime.now(UTC) - timedelta(days=window_days)).isoformat()
-    with closing(sqlite3.connect(database_path, timeout=5)) as connection:
+    with closing(connect_database(database_path)) as connection:
         connection.row_factory = sqlite3.Row
         rows = connection.execute(
             """
@@ -2408,11 +2408,12 @@ def initialize_storage(database_path: Path) -> None:
 
 def check_storage(database_path: Path) -> dict[str, bool]:
     """Check that the configured existing database passes integrity and supports FTS5."""
-    status = {"sqlite": False, "sqlite_fts5": False}
+    status = {"sqlite": False, "sqlite_fts5": False, "sqlite_fk": False}
     try:
         with closing(connect_database(database_path)) as connection:
             integrity = connection.execute("PRAGMA quick_check").fetchone()
             status["sqlite"] = integrity is not None and integrity[0] == "ok"
+            status["sqlite_fk"] = connection.execute("PRAGMA foreign_key_check").fetchone() is None
             connection.execute("CREATE VIRTUAL TABLE temp.readiness_fts USING fts5(content)")
             connection.execute("DROP TABLE temp.readiness_fts")
             status["sqlite_fts5"] = True

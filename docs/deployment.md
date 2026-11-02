@@ -218,6 +218,26 @@ Password hashes (not plaintext passwords), usernames, and account email values
 remain in the database because they are required to preserve account ownership
 and login.
 
+Deeper integrity and orphan audit
+
+Backup validation checks the archive itself. The storage layer also exposes a
+read-only integrity audit that scans for orphaned or drifted records the archive
+validation does not cover (for example FTS rows without chunks, content resources
+referencing deleted documents, or `chunk_count` drift):
+
+```powershell
+uv run --project services/api python -m app.integrity data\local\wonderlearn.sqlite3
+```
+
+It prints a JSON report with an overall `ok` flag and per-check severity findings
+(`quick_check`, `foreign_key_check`, `chunks_fts_orphans`, `chunk_embeddings_orphans`,
+`content_resources_dangling_refs`, `knowledge_concepts_orphans`, `chunk_count_drift`,
+`chunk_user_id_mismatch`). Any check reporting `ok: false` indicates data that
+should be investigated before a backup is treated as authoritative. The readiness
+endpoint (`/api/v1/ready`) also reports `sqlite_fk` alongside `sqlite` and
+`sqlite_fts5`.
+
+
 ### Restore and recovery
 
 Always restore to a **new, separate path** first. Restore refuses to overwrite

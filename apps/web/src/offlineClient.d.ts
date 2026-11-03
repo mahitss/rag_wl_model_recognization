@@ -26,7 +26,7 @@ declare module "./offlineClient" {
     headers?: Record<string, string>
   ): Promise<Response>;
 
-  export async function flushQueue(): Promise<{ synced: number; failed: number }>;
+  export async function flushQueue(): Promise<{ synced: number; failed: number; pending: number; authExpired: boolean }>;
 
   export function isOffline(): boolean;
 

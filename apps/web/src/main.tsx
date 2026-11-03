@@ -4,6 +4,7 @@ import { CameraPanel } from "./CameraPanel";
 import { normalizedRegionStyle } from "./geometry";
 import { fetchWithOffline, isOffline, onOnlineChange, flushQueue as flushOfflineQueue } from "./offlineClient";
 import { clearUserCache, clearQueue } from "./offlineStore.js";
+import KnowledgeExplorer from "./KnowledgeExplorer";
 import "./style.css";
 
 type DiagramRegion = {
@@ -826,18 +827,17 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     setSyncing(true);
     setSyncError(null);
     try {
-      const result = await flushOfflineQueue();
-      setSyncStatus(
-        result as unknown as {
-          synced: number;
-          failed: number;
-          pending: number;
-          authExpired: boolean;
-        },
-      );
+      const result = (await flushOfflineQueue()) as {
+        synced: number;
+        failed: number;
+        pending: number;
+        authExpired: boolean;
+      };
+      setSyncStatus(result);
       if (result.authExpired) {
         setSyncError("Your session expired while syncing. Please sign in again.");
       }
+      return result;
     } finally {
       setSyncing(false);
     }
@@ -3508,30 +3508,29 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
         {graphError && <p className="notice notice--error" role="alert">{graphError}</p>}
         {graphConcepts.length === 0 ? <p className="muted">No graph concepts yet. Index a PDF, configure the local tutor, then extract candidates.</p> : (
           <div className="graph-layout">
-            <nav className="graph-nodes" aria-label="Knowledge graph concepts">
-              {graphConcepts.map((concept) => <button type="button" key={concept.conceptId} aria-pressed={selectedGraphConcept?.conceptId === concept.conceptId} onClick={() => void loadGraphConcept(concept.conceptId)}>{concept.name}<small>{concept.relationshipCount} connected relations</small></button>)}
-            </nav>
-            {selectedGraphConcept && <article className="graph-detail" aria-live="polite">
-              <h3>{selectedGraphConcept.name}</h3>
-              {!!selectedGraphConcept.aliases.length && <p className="muted">Aliases: {selectedGraphConcept.aliases.join(", ")}</p>}
-              <button type="button" className="text-action" onClick={() => { setTutorQuestion(`Explain ${selectedGraphConcept.name} using my study materials.`); document.getElementById("tutor-question")?.focus(); }}>Ask tutor about this concept</button>
-              <h4>Connected concepts and evidence</h4>
-              {selectedGraphConcept.relationships.length === 0 && <p className="muted">No relationships have been extracted for this concept.</p>}
-              <ul className="graph-relations">{selectedGraphConcept.relationships.map((relation) => {
-                const otherId = relation.sourceConceptId === selectedGraphConcept.conceptId ? relation.targetConceptId : relation.sourceConceptId;
-                const otherName = relation.sourceConceptId === selectedGraphConcept.conceptId ? relation.targetName : relation.sourceName;
-                return <li key={relation.relationshipId}>
-                  <button type="button" className="text-action" onClick={() => void loadGraphConcept(otherId)}>{otherName}</button>
-                  <span> · {relation.relation} ({relation.sourceConceptId === selectedGraphConcept.conceptId ? "outgoing" : "incoming"})</span>
-                  <p><strong>{relation.status === "human_verified" ? "Human verified" : "Candidate — needs review"}</strong></p>
-                  {relation.status === "candidate" && <button type="button" className="text-action" disabled={graphLoading} onClick={() => void verifyGraphRelationship(relation.relationshipId)}>Mark as human-verified</button>}
-                  <blockquote>{relation.supportingText}</blockquote>
-                  <p className="citation-meta"><strong>{relation.displayFilename}</strong> · page {relation.pageNumber} · chunk <code>{relation.chunkId}</code> · document <code>{relation.documentId}</code></p>
-                </li>;
-              })}</ul>
-              <h4>Concept evidence</h4>
-              <ul className="graph-relations">{selectedGraphConcept.evidence.map((item) => <li key={`${item.chunkId}-${item.supportingText}`}><blockquote>{item.supportingText}</blockquote><p className="citation-meta"><strong>{item.displayFilename}</strong> · page {item.pageNumber} · chunk <code>{item.chunkId}</code> · document <code>{item.documentId}</code></p></li>)}</ul>
-            </article>}
+            <KnowledgeExplorer
+              concepts={graphConcepts}
+              onConceptSelect={(conceptId) => {
+                setSelectedConceptId(conceptId);
+                void loadGraphConcept(conceptId);
+              }}
+              onAskTutor={(conceptId, name) => {
+                setTutorQuestion(`Explain ${name} using my study materials.`);
+                document.getElementById("tutor-question")?.focus();
+              }}
+              onGenerateQuiz={(topic) => {
+                setQuizTopic(topic);
+              }}
+              onGenerateNotes={(topic) => {
+                setNewContentTopic(topic);
+              }}
+              onVerifyRelationship={(relationshipId) => {
+                void verifyGraphRelationship(relationshipId);
+              }}
+              onOpenDocument={(documentId) => {
+                setSelectedDocumentId(documentId);
+              }}
+            />
           </div>
         )}
       </section>

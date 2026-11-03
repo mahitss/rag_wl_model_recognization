@@ -61,7 +61,7 @@ def _settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
-def _resolve_source_refs(
+async def _resolve_source_refs(
     settings: Settings,
     embeddings,
     database_path: str,
@@ -116,7 +116,7 @@ def _resolve_source_refs(
     response_model=dict[str, Any],
     status_code=201,
 )
-def create_content_resource_route(
+async def create_content_resource_route(
     request: Request,
     payload: ContentResourceCreateRequest,
     current_user: AuthUser = Depends(require_auth),
@@ -136,7 +136,7 @@ def create_content_resource_route(
     # materials if a spaceId is given).  Ownership of each citation chunk is
     # re-verified in storage before persistence.
     try:
-        evidence, source_type, topic, source_refs = _resolve_source_refs(
+        evidence, source_type, topic, source_refs = await _resolve_source_refs(
             settings,
             embeddings,
             database_path,

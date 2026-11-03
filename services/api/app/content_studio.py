@@ -16,7 +16,7 @@ from typing import Any
 
 from app.config import Settings
 from app.errors import ApiError
-from app.tutor import InvalidTutorResponse, local_chat_completion
+from app.tutor import InvalidTutorResponse, TutorUnavailable, local_chat_completion
 
 
 class ContentGenerationError(ApiError):
@@ -120,7 +120,9 @@ def _parse_generation_output(
         not isinstance(gap, str) or not gap.strip() for gap in result["evidence_gaps"]
     ):
         raise InvalidTutorResponse
-    if not isinstance(result["sections"], list) or not result["sections"]:
+    if not isinstance(result["sections"], list):
+        raise InvalidTutorResponse
+    if not result["abstain"] and not result["sections"]:
         raise InvalidTutorResponse
 
     labels = _evidence_labels(evidence)
@@ -216,10 +218,10 @@ def generate_content(
                 "evidence": evidence_payload,
             },
         )
-    except InvalidTutorResponse as exc:
+        return _parse_generation_output(content, evidence)
+    except (InvalidTutorResponse, TutorUnavailable) as exc:
         raise ContentGenerationError(
             502,
             "CONTENT_INVALID_RESPONSE",
             "The local model returned malformed or unsupported content.",
         ) from exc
-    return _parse_generation_output(content, evidence)

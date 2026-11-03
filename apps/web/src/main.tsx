@@ -1,8 +1,9 @@
-import { StrictMode, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
+import { StrictMode, Suspense, useEffect, useRef, useState, type CSSProperties, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import { CameraPanel } from "./CameraPanel";
 import { normalizedRegionStyle } from "./geometry";
-import { fetchWithOffline, isOffline, onOnlineChange } from "./offlineClient";
+import { fetchWithOffline, isOffline, onOnlineChange, flushQueue as flushOfflineQueue } from "./offlineClient";
+import { clearUserCache, clearQueue } from "./offlineStore.js";
 import "./style.css";
 
 type DiagramRegion = {
@@ -569,6 +570,10 @@ async function recordProductAnalyticsEvent(
 
 type SessionUser = { userId: string; username: string; expiresAt: string; isAdmin: boolean };
 
+// CameraPanel is lazy-loaded so that the 15 MB opencv-js bundle is not
+// parsed unless the camera/diagram-tracking feature is actually used.
+const LazyCameraPanel = React.lazy(() => import("./CameraPanel"));
+
 let csrfToken: string | null = null;
 let currentUsername = "";
 
@@ -609,20 +614,32 @@ function AuthScreen() {
 
   useEffect(() => {
     let active = true;
-    const expired = () => {
+    const expired = async () => {
       csrfToken = null;
+      if (currentUsername) {
+        await clearUserCache(currentUsername);
+        await clearQueue();
+        currentUsername = "";
+      }
       setSession(null);
       setAuthMessage("Your session has expired. Please sign in again.");
     };
-    window.addEventListener("wonderlearn:session-expired", expired);
-    void fetch("/api/v1/auth/me")
-      .then(async (response) => {
-        if (response.status === 401) return null;
-        return readJson<SessionUser>(response);
-      })
-      .then((current) => {
-        if (active) setSession(current);
-      })
+      window.addEventListener("wonderlearn:session-expired", expired);
+      void fetch("/api/v1/auth/me")
+        .then(async (response) => {
+          if (response.status === 401) {
+            if (currentUsername) {
+              await clearUserCache(currentUsername);
+              await clearQueue();
+              currentUsername = "";
+            }
+            return null;
+          }
+          return readJson<SessionUser>(response);
+        })
+        .then((current) => {
+          if (active) setSession(current);
+        })
       .catch(() => {
         if (active) setAuthError("Could not check your session. Please try again.");
       })
@@ -685,6 +702,11 @@ function AuthScreen() {
       const response = await fetch("/api/v1/auth/logout", { method: "POST" });
       if (!response.ok) throw new Error("Sign out could not be completed.");
       csrfToken = null;
+      if (currentUsername) {
+        await clearUserCache(currentUsername);
+        await clearQueue();
+        currentUsername = "";
+      }
       setSession(null);
       setAuthMessage("You have signed out.");
     } catch (error) {
@@ -770,14 +792,30 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   // --- M35: Offline state ---
   const [offline, setOffline] = useState(isOffline());
   const [syncing, setSyncing] = useState(false);
-  const [syncStatus, setSyncStatus] = useState<{ synced: number; failed: number } | null>(null);
+  const [syncStatus, setSyncStatus] = useState<{
+    synced: number;
+    failed: number;
+    pending: number;
+    authExpired: boolean;
+  } | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = onOnlineChange((isOnline: boolean) => {
       setOffline(!isOnline);
       if (isOnline) {
         flushQueue().then((result) => {
-          setSyncStatus(result as unknown as { synced: number; failed: number });
+          setSyncStatus(
+            result as unknown as {
+              synced: number;
+              failed: number;
+              pending: number;
+              authExpired: boolean;
+            },
+          );
+          if (result.authExpired) {
+            setSyncError("Your session expired while syncing. Please sign in again.");
+          }
         });
       }
     });
@@ -786,9 +824,20 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
 
   const flushQueue = async () => {
     setSyncing(true);
+    setSyncError(null);
     try {
-      const result = await flushQueue();
-      setSyncStatus(result as unknown as { synced: number; failed: number });
+      const result = await flushOfflineQueue();
+      setSyncStatus(
+        result as unknown as {
+          synced: number;
+          failed: number;
+          pending: number;
+          authExpired: boolean;
+        },
+      );
+      if (result.authExpired) {
+        setSyncError("Your session expired while syncing. Please sign in again.");
+      }
     } finally {
       setSyncing(false);
     }
@@ -2722,8 +2771,10 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
             <p className="muted">
               Synced {syncStatus.synced} item{syncStatus.synced !== 1 ? "s" : ""}
               {syncStatus.failed > 0 ? `, ${syncStatus.failed} failed` : ""}
+              {syncStatus.pending > 0 ? `, ${syncStatus.pending} pending` : ""}
             </p>
           )}
+          {syncError && <p className="notice notice--error" role="alert">{syncError}</p>}
           <button type="button" className="camera-action camera-action--primary" onClick={flushQueue} disabled={syncing}>
             {syncing ? "Syncing…" : "Retry now"}
           </button>
@@ -2991,13 +3042,15 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
                 </button>
               ))}
             </nav>
-            <CameraPanel
-              diagram={diagram}
-              onSelectRegion={(regionId) => {
-                const region = diagram.regions.find((item) => item.regionId === regionId);
-                if (region) void selectRegion(region);
-              }}
-            />
+            <Suspense fallback={<div>Loading camera panel…</div>}>
+          <LazyCameraPanel
+            diagram={diagram}
+            onSelectRegion={(regionId) => {
+              const region = diagram.regions.find((item) => item.regionId === regionId);
+              if (region) void selectRegion(region);
+            }}
+          />
+        </Suspense>
           </div>
 
           <section className="evidence-card" aria-labelledby="evidence-title" aria-live="polite">

@@ -22,6 +22,7 @@ import {
   getQueue,
   dequeueItem,
   updateQueueItem,
+  updateQueueItemStatus,
   clearQueue,
   STORE_NAMES as CACHE_STORE_NAMES,
 } from "./offlineStore.js";
@@ -67,6 +68,39 @@ export function onOnlineChange(listener) {
   return () => {
     listeners.delete(listener);
   };
+}
+
+// ---------------------------------------------------------------------------
+// Sync retry / backoff configuration
+// ---------------------------------------------------------------------------
+
+const MAX_RETRIES = 3;
+const BASE_BACKOFF_MS = 1000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Backoff delay in milliseconds for the given (1-based) attempt number.
+ * Capped so bounded retries never block the UI for too long.
+ */
+function backoffDelayMs(attempt) {
+  return Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt - 1), 8000);
+}
+
+/**
+ * Report whether an identical state-changing request is already queued.
+ */
+export function isDuplicate(method, url, body) {
+  const normalizedBody = body == null ? null : JSON.stringify(body);
+  const queueSnapshot = getQueue(); // synchronous-ish wrapper handled by caller
+  return queueSnapshot.then((items) =>
+    items.some(
+      (item) =>
+        item.method === method &&
+        item.url === url &&
+        JSON.stringify(item.body) === normalizedBody,
+    ),
+  );
 }
 
 /**
@@ -235,59 +269,92 @@ export async function queueRequest(method, url, body, headers = {}) {
 }
 
 /**
- * Flush the sync queue: replay all queued state-changing requests.
- * Returns { synced: number, failed: number }.
+ * Flush the sync queue: replay all queued state-changing requests with bounded
+ * exponential backoff.  Each item is retried up to MAX_RETRIES times before it
+ * is marked failed.  A 409 conflict is treated as resolved (server has newer
+ * data) and is not retried.  A 401 (session expired) aborts the flush and is
+ * reported so the UI can prompt re-authentication.
+ *
+ * Returns { synced, failed, pending, authExpired }.
  */
 export async function flushQueue() {
   const queue = await getQueue();
-  if (queue.length === 0) return { synced: 0, failed: 0 };
+  if (queue.length === 0) {
+    return { synced: 0, failed: 0, pending: 0, authExpired: false };
+  }
 
   let synced = 0;
   let failed = 0;
-  const toRetry = [...queue];
+  let authExpired = false;
 
-  for (const item of toRetry) {
-    try {
-      const response = await fetch(item.url, {
-        method: item.method,
-        headers: {
-          "Content-Type": "application/json",
-          ...item.headers,
-        },
-        body: item.body,
-      });
+  for (const item of [...queue]) {
+    if (authExpired) break;
+
+    let succeeded = false;
+    let attempts = 0;
+    const maxAttempts = MAX_RETRIES;
+
+    while (attempts < maxAttempts && !succeeded && !authExpired) {
+      attempts++;
+      let response;
+      try {
+        response = await fetch(item.url, {
+          method: item.method,
+          headers: {
+            "Content-Type": "application/json",
+            ...item.headers,
+          },
+          body: item.body,
+        });
+      } catch {
+        // Network still down - back off, then retry within budget.
+        if (attempts < maxAttempts) {
+          await sleep(backoffDelayMs(attempts));
+          continue;
+        }
+        break;
+      }
 
       if (response.ok) {
         await dequeueItem(item.id);
+        await updateQueueItemStatus(item.id, "synced");
         synced++;
-      } else if (response.status === 409) {
-        // Conflict - server has newer data. Mark for user review.
-        item.retries = 3;
-        await updateQueueItem(item);
+        succeeded = true;
+      } else if (response.status === 401) {
+        // Session expired - stop flushing and surface auth failure.
+        authExpired = true;
+        await updateQueueItemStatus(item.id, "failed");
         failed++;
+        break;
+      } else if (response.status === 409) {
+        // Conflict - server has newer data.  Do not overwrite; surface for review.
+        await dequeueItem(item.id);
+        await updateQueueItemStatus(item.id, "failed");
+        failed++;
+        succeeded = true;
       } else {
-        item.retries = (item.retries || 0) + 1;
-        if (item.retries >= 3) {
-          await dequeueItem(item.id);
-          failed++;
-        } else {
-          await updateQueueItem(item);
-          failed++;
+        // Retryable server error - back off and retry within budget.
+        if (attempts < maxAttempts) {
+          await sleep(backoffDelayMs(attempts));
+          continue;
         }
+        break;
       }
-    } catch {
-      // Network still down - stop flushing
-      const remaining = queue.filter((i) => (i.retries || 0) < 3);
-      failed += remaining.length;
-      // Remove maxed-out items
-      for (const item of queue) {
-        if (item.retries >= 3) await dequeueItem(item.id);
-      }
-      break;
+    }
+
+    if (!succeeded && !authExpired) {
+      await updateQueueItemStatus(item.id, "failed");
+      failed++;
     }
   }
 
-  return { synced, failed };
+  const remaining = await getQueue();
+  return {
+    synced,
+    failed,
+    pending: remaining.filter((item) => item.status === "pending").length,
+    authExpired,
+  };
 }
 
 function queuedResponse(id, message, offline = false) {

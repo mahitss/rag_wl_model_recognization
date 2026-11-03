@@ -261,6 +261,7 @@ async function enqueueItem(method, url, body, headers = {}) {
     headers: headers || {},
     timestamp: Date.now(),
     retries: 0,
+    status: "pending",
   };
   await withStore([QUEUE_STORE], "readwrite", (tx) => {
     tx.objectStore(QUEUE_STORE).put(item);
@@ -300,6 +301,24 @@ async function updateQueueItem(item) {
 }
 
 /**
+ * Update only the sync status of a queued item (pending / synced / failed).
+ */
+async function updateQueueItemStatus(id, status) {
+  const item = await withStore([QUEUE_STORE], "readonly", (tx) => {
+    const request = tx.objectStore(QUEUE_STORE).get(id);
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  });
+  if (!item) return;
+  item.status = status;
+  await withStore([QUEUE_STORE], "readwrite", (tx) => {
+    tx.objectStore(QUEUE_STORE).put(item);
+  });
+}
+
+/**
  * Clear all queued items for all users (called on logout).
  */
 async function clearQueue() {
@@ -319,5 +338,6 @@ export {
   dequeueItem,
   clearQueue,
   updateQueueItem,
+  updateQueueItemStatus,
 };
 export const STORE_NAMES = Object.keys(CACHE_STORES);

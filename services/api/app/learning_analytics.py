@@ -31,7 +31,13 @@ def calculate_mastery(
     now: datetime,
     half_life_days: int = MASTERY_HALF_LIFE_DAYS,
 ) -> float | None:
-    """Weighted accuracy over each question's latest scored result; ambiguous is unscored."""
+    """Weighted accuracy over each question's latest scored result; ambiguous is unscored.
+
+    Each question's latest scored attempt is weighted by recency
+    (2^(-age_days / half_life_days)) and by time spent on the question
+    (capped at 2x for 30+ seconds of engagement).  Attempts with no recorded
+    duration use a neutral time weight of 1.0.
+    """
     if half_life_days <= 0:
         raise ValueError("half_life_days must be positive")
     current = _parse_datetime(now)
@@ -58,6 +64,14 @@ def calculate_mastery(
             0.0, (current - _parse_datetime(attempt["createdAt"])).total_seconds() / 86_400
         )
         weight = 2 ** (-age_days / half_life_days)
+        # Time spent on the question rewards sustained engagement; cap at 2x
+        # for 30 seconds or more.  Attempts without a duration use 1.0.
+        duration_ms = attempt.get("duration_ms")
+        if duration_ms is not None:
+            time_weight = min(duration_ms / 30_000.0, 2.0)
+        else:
+            time_weight = 1.0
+        weight *= time_weight
         weighted_scored += weight
         if outcome == "correct":
             weighted_correct += weight

@@ -1270,6 +1270,9 @@ def initialize_storage(database_path: Path) -> None:
                     answer_key TEXT NOT NULL,
                     accepted_answers_json TEXT NOT NULL,
                     explanation TEXT NOT NULL,
+                    difficulty_level TEXT CHECK (difficulty_level IN (
+                        'foundational', 'building', 'practice', 'advanced'
+                    )),
                     UNIQUE (quiz_id, position)
                 )
                 """
@@ -1295,7 +1298,8 @@ def initialize_storage(database_path: Path) -> None:
                         question_id
                     ) ON DELETE CASCADE,
                     outcome TEXT NOT NULL CHECK (outcome IN ('correct', 'incorrect', 'ambiguous')),
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    duration_ms INTEGER CHECK (duration_ms >= 0)
                 )
                 """
             )
@@ -1507,6 +1511,18 @@ def initialize_storage(database_path: Path) -> None:
                 "quiz_attempts",
                 "user_id",
                 "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
+            )
+            _ensure_column(
+                connection,
+                "quiz_questions",
+                "difficulty_level",
+                "difficulty_level TEXT CHECK (difficulty_level IN ('foundational', 'building', 'practice', 'advanced'))",
+            )
+            _ensure_column(
+                connection,
+                "quiz_attempts",
+                "duration_ms",
+                "duration_ms INTEGER CHECK (duration_ms >= 0)",
             )
             _ensure_column(
                 connection,
@@ -2406,6 +2422,29 @@ def initialize_storage(database_path: Path) -> None:
             raise RuntimeError("Database migration produced invalid foreign-key references")
 
 
+def reset_user_progress(database_path: Path, user_id: str) -> dict[str, int]:
+    """Delete all of a user's quiz attempts and topic review items, resetting
+    their learning progress (mastery, review schedule, etc.) to a blank state.
+
+    Only the calling user's own rows are removed. Returns the number of rows
+    deleted from each table so the caller can report progress back to the user.
+    """
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            attempts_deleted = connection.execute(
+                "DELETE FROM quiz_attempts WHERE user_id = ?",
+                (user_id,),
+            ).rowcount
+            reviews_deleted = connection.execute(
+                "DELETE FROM topic_review_items WHERE user_id = ?",
+                (user_id,),
+            ).rowcount
+    return {
+        "attempts_deleted": attempts_deleted,
+        "reviews_deleted": reviews_deleted,
+    }
+
+
 def check_storage(database_path: Path) -> dict[str, bool]:
     """Check that the configured existing database passes integrity and supports FTS5."""
     status = {"sqlite": False, "sqlite_fts5": False, "sqlite_fk": False}
@@ -3265,8 +3304,8 @@ def create_quiz_set(database_path: Path, quiz: dict[str, Any], user_id: str | No
                     INSERT INTO quiz_questions(
                         question_id, quiz_id, position, question_type, prompt,
                         options_json, answer_key, accepted_answers_json, explanation,
-                        user_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        difficulty_level, user_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         question["question_id"],
@@ -3278,6 +3317,7 @@ def create_quiz_set(database_path: Path, quiz: dict[str, Any], user_id: str | No
                         question["answer_key"],
                         json.dumps(question["accepted_answers"]),
                         question["explanation"],
+                        question.get("difficulty_level"),
                         user_id,
                     ),
                 )
@@ -3455,6 +3495,7 @@ def get_quiz_question(
         "answer_key": row["answer_key"],
         "accepted_answers": json.loads(row["accepted_answers_json"]),
         "explanation": row["explanation"],
+        "difficulty_level": row["difficulty_level"],
     }
 
 
@@ -3466,6 +3507,7 @@ def record_quiz_attempt(
     outcome: str,
     created_at: str,
     user_id: str | None = None,
+    duration_ms: int | None = None,
 ) -> None:
     with closing(connect_database(database_path)) as connection:
         with connection:
@@ -3479,10 +3521,10 @@ def record_quiz_attempt(
                 raise ValueError("Quiz question is not owned by the requested user")
             connection.execute(
                 """
-                INSERT INTO quiz_attempts(attempt_id, question_id, outcome, created_at, user_id)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO quiz_attempts(attempt_id, question_id, outcome, created_at, user_id, duration_ms)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (attempt_id, question_id, outcome, created_at, user_id),
+                (attempt_id, question_id, outcome, created_at, user_id, duration_ms),
             )
             from datetime import UTC, datetime, timedelta
 

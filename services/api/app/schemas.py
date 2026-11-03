@@ -627,6 +627,7 @@ class QuizGenerateRequest(ApiModel):
     mode: Literal["lexical", "semantic", "hybrid"] | None = None
     diagram_id: str | None = Field(default=None, min_length=1, max_length=80)
     concept_id: str | None = Field(default=None, min_length=1, max_length=80)
+    difficulty_level: Literal["foundational", "building", "practice", "advanced"] | None = None
 
     @model_validator(mode="after")
     def concept_requires_diagram(self):
@@ -649,6 +650,7 @@ class QuizQuestionResponse(ApiModel):
     citations: list[CitationResponse] = Field(default_factory=list)
     latest_outcome: Literal["correct", "incorrect", "ambiguous"] | None = None
     attempt_count: int = 0
+    difficulty_level: Literal["foundational", "building", "practice", "advanced"] | None = None
 
 
 class QuizSetResponse(ApiModel):
@@ -662,6 +664,7 @@ class QuizSetResponse(ApiModel):
 
 class QuizAttemptRequest(ApiModel):
     answer: str = Field(min_length=1, max_length=2_000)
+    duration_ms: int | None = Field(default=None, ge=0)
 
 
 class QuizAttemptResponse(ApiModel):

@@ -4,6 +4,7 @@
 import asyncio
 import hashlib
 import sqlite3
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -147,6 +148,7 @@ from app.storage import (
     record_quiz_attempt,
     record_quiz_review,
     replace_image_region_citations,
+    reset_user_progress,
     search_content_sections,
     search_knowledge_concepts,
     search_learning_objectives,
@@ -167,6 +169,49 @@ from app.study_coach import build_daily_recommendations
 from app.tutor import InvalidTutorResponse, TutorUnavailable, generate_grounded_answer
 
 router = APIRouter(prefix="/api/v1")
+
+
+# ---------------------------------------------------------------------------
+# Analytics cache (short TTL to avoid recomputing on every request).
+# Analytics data only changes when the user takes an action (quiz, session,
+# etc.), so a short cache is safe and significantly reduces per-request cost.
+# ---------------------------------------------------------------------------
+
+_ANALYTICS_CACHE_TTL_SECONDS = 30
+_analytics_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _get_cached_analytics(
+    database_path: Path,
+    user_id: str,
+    now: datetime,
+) -> dict[str, Any]:
+    """Return cached analytics, recomputing only when the TTL expires."""
+    cache_key = f"{database_path}:{user_id}"
+    now_ts = time.time()
+    cached = _analytics_cache.get(cache_key)
+    if cached is not None:
+        cached_ts, cached_result = cached
+        if now_ts - cached_ts < _ANALYTICS_CACHE_TTL_SECONDS:
+            return cached_result
+
+    data = _database_call(get_learning_analytics_data, database_path, user_id=user_id)
+    result = build_analytics(
+        attempts=data["attempts"],
+        sessions=data["sessions"],
+        reviews=data["reviews"],
+        topic_sources=data["topicSources"],
+        concepts=data["concepts"],
+        now=now,
+    )
+    _analytics_cache[cache_key] = (now_ts, result)
+
+    # Prune oldest entry if cache is too large.
+    if len(_analytics_cache) > 512:
+        oldest_key = min(_analytics_cache, key=lambda k: _analytics_cache[k][0])
+        del _analytics_cache[oldest_key]
+
+    return result
 
 
 def _settings(request: Request) -> Settings:
@@ -1336,7 +1381,7 @@ def _image_region_context(
     return image, region, concept
 
 
-def _image_region_search(
+async def _image_region_search(
     request: Request,
     region: dict[str, Any],
     *,
@@ -1382,7 +1427,7 @@ def _image_region_search(
     response_model=ImageEvidenceResponse,
     tags=["images"],
 )
-def image_region_evidence(
+async def image_region_evidence(
     request: Request,
     image_id: str,
     region_id: str,
@@ -1391,7 +1436,7 @@ def image_region_evidence(
 ) -> dict[str, Any]:
     payload = payload or DiagramEvidenceRequest()
     _, region, concept = _image_region_context(request, image_id, region_id, current_user)
-    search = _image_region_search(
+    search = await _image_region_search(
         request, region, question=None, limit=payload.limit, mode=None, current_user=current_user
     )
     _database_call(
@@ -1428,7 +1473,7 @@ async def image_region_tutor(
     current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     _, region, concept = _image_region_context(request, image_id, region_id, current_user)
-    search = _image_region_search(
+    search = await _image_region_search(
         request,
         region,
         question=payload.question,
@@ -1464,7 +1509,7 @@ async def image_region_tutor(
 
 
 @router.post("/retrieve", response_model=RetrievalResponse, tags=["retrieval"])
-def retrieve_evidence(
+async def retrieve_evidence(
     request: Request, payload: RetrievalRequest, current_user: AuthUser = Depends(require_auth)
 ) -> dict[str, Any]:
     settings = _settings(request)
@@ -1487,7 +1532,7 @@ def retrieve_evidence(
 
 
 @router.post("/search", response_model=UnifiedSearchResponse, tags=["search"])
-def unified_search(
+async def unified_search(
     request: Request, payload: UnifiedSearchRequest, current_user: AuthUser = Depends(require_auth)
 ) -> dict[str, Any]:
     """Unified search across documents, content resources, quizzes,
@@ -1642,7 +1687,7 @@ def unified_search(
 
 
 @router.post("/answers", response_model=AnswerResponse, tags=["retrieval"])
-def answer(
+async def answer(
     request: Request, payload: AnswerRequest, current_user: AuthUser = Depends(require_auth)
 ) -> dict[str, Any]:
     settings = _settings(request)
@@ -1707,7 +1752,6 @@ async def tutor_answer(
 
     concept = None
     concept_name = None
-    query = payload.question
     if payload.diagram_id is not None and payload.concept_id is not None:
         diagram = get_diagram(payload.diagram_id)
         if diagram is None:
@@ -1718,7 +1762,7 @@ async def tutor_answer(
         if concept is None:
             raise ApiError(404, "CONCEPT_NOT_FOUND", "The selected concept is not supported.")
         concept_name = concept.display_name
-        query = f"{payload.question} {concept.retrieval_query}"
+
     elif payload.graph_concept_id is not None:
         graph_concept = _database_call(
             get_knowledge_concept,
@@ -1729,12 +1773,10 @@ async def tutor_answer(
         if graph_concept is None:
             raise ApiError(404, "CONCEPT_NOT_FOUND", "The requested graph concept was not found.")
         concept_name = graph_concept["name"]
-        retrieval_query = " ".join([graph_concept["name"], *graph_concept["aliases"]])
-        query = f"{payload.question} {retrieval_query}"
 
     search = retrieve_with_mode(
         settings.database_path,
-        query=query,
+        query=payload.question,
         document_ids=payload.document_ids,
         limit=payload.limit,
         mode=payload.mode or settings.retrieval_mode,
@@ -1868,7 +1910,6 @@ async def create_quiz(
         )
     topic = " ".join(payload.topic.split())
     topic_id = hashlib.sha256(topic.casefold().encode("utf-8")).hexdigest()[:20]
-    query = topic
     if payload.diagram_id is not None and payload.concept_id is not None:
         diagram = get_diagram(payload.diagram_id)
         if diagram is None:
@@ -1878,11 +1919,10 @@ async def create_quiz(
         )
         if concept is None:
             raise ApiError(404, "CONCEPT_NOT_FOUND", "The selected concept is not supported.")
-        query = f"{topic} {concept.retrieval_query}"
 
     search = retrieve_with_mode(
         settings.database_path,
-        query=query,
+        query=payload.question,
         document_ids=payload.document_ids,
         limit=payload.limit,
         mode=payload.mode or settings.retrieval_mode,
@@ -1907,6 +1947,7 @@ async def create_quiz(
             topic=topic,
             count=payload.question_count,
             evidence=search["results"],
+            difficulty_level=payload.difficulty_level,
         )
     except TutorUnavailable as exc:
         raise ApiError(
@@ -2009,13 +2050,15 @@ def submit_quiz_answer(
         raise ApiError(422, "INVALID_ANSWER", str(exc)) from exc
     attempt_id = uuid.uuid4().hex
     _database_call(
-        record_quiz_attempt,
+    record_quiz_attempt,
+    reset_user_progress,
         database_path,
         attempt_id=attempt_id,
         question_id=question_id,
         outcome=outcome,
         created_at=datetime.now(UTC).isoformat(),
         user_id=current_user.user_id,
+        duration_ms=payload.duration_ms,
     )
     quiz = _database_call(get_quiz_set, database_path, quiz_id, user_id=current_user.user_id)
     reviewed = next(item for item in quiz["questions"] if item["questionId"] == question_id)
@@ -2130,6 +2173,28 @@ def learning_progress(
     )
 
 
+@router.delete("/progress/reset", tags=["learning"])
+def reset_learning_progress(
+    request: Request, current_user: AuthUser = Depends(require_auth)
+) -> dict[str, Any]:
+    """Reset the current user's learning progress.
+
+    Deletes all of the user's quiz attempts and topic review items, which
+    resets their mastery estimates to a blank state.  Only the caller's own
+    rows are removed; other users' data is untouched.
+    """
+    result = _database_call(
+        reset_user_progress,
+        _database_path(request),
+        user_id=current_user.user_id,
+    )
+    return {
+        "message": "Learning progress reset successfully",
+        "attempts_deleted": result["attempts_deleted"],
+        "reviews_deleted": result["reviews_deleted"],
+    }
+
+
 @router.get(
     "/learning-analytics",
     response_model=LearningAnalyticsResponse,
@@ -2139,19 +2204,7 @@ def learning_analytics(
     request: Request, current_user: AuthUser = Depends(require_auth)
 ) -> dict[str, Any]:
     now = datetime.now(UTC)
-    data = _database_call(
-        get_learning_analytics_data, _database_path(request), user_id=current_user.user_id
-    )
-    return build_analytics(
-        **{
-            "attempts": data["attempts"],
-            "sessions": data["sessions"],
-            "reviews": data["reviews"],
-            "topic_sources": data["topicSources"],
-            "concepts": data["concepts"],
-            "now": now,
-        }
-    )
+    return _get_cached_analytics(_database_path(request), current_user.user_id, now)
 
 
 @router.post(
@@ -2386,7 +2439,7 @@ def diagrams(request: Request, current_user: AuthUser = Depends(require_auth)) -
     response_model=DiagramEvidenceResponse,
     tags=["diagrams"],
 )
-def diagram_region_evidence(
+async def diagram_region_evidence(
     request: Request,
     diagram_id: str,
     region_id: str,
@@ -2412,7 +2465,7 @@ def diagram_region_evidence(
             "INVALID_REQUEST",
             f"The result limit cannot exceed {settings.max_retrieval_results}.",
         )
-    result = retrieve_with_mode(
+    result = await retrieve_with_mode(
         settings.database_path,
         query=concept.retrieval_query,
         document_ids=None,

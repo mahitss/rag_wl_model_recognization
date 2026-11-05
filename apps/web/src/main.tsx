@@ -5,6 +5,7 @@ import { normalizedRegionStyle } from "./geometry";
 import { fetchWithOffline, isOffline, onOnlineChange, flushQueue as flushOfflineQueue } from "./offlineClient";
 import { clearUserCache, clearQueue } from "./offlineStore.js";
 import KnowledgeExplorer from "./KnowledgeExplorer";
+import RevisionDashboard from "./RevisionDashboard";
 import "./style.css";
 
 type DiagramRegion = {
@@ -3533,6 +3534,22 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
             />
           </div>
         )}
+      </section>
+
+      <section className="revision-dashboard-panel" aria-labelledby="revision-dashboard-title">
+        <RevisionDashboard
+          onConceptSelect={(conceptId) => {
+            setSelectedConceptId(conceptId);
+            void loadGraphConcept(conceptId);
+          }}
+          onAskTutor={(conceptId, name) => {
+            setTutorQuestion(`Explain ${name} using my study materials.`);
+            document.getElementById("tutor-question")?.focus();
+          }}
+          onGenerateQuiz={(topic) => {
+            setQuizTopic(topic);
+          }}
+        />
       </section>
 
       <section className="feedback-panel" aria-labelledby="feedback-title">

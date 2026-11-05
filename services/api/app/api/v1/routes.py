@@ -130,6 +130,13 @@ from app.storage import (
     get_quiz_question,
     get_quiz_set,
     get_revision_queue,
+    get_revision_schedule,
+    get_weak_topics,
+    get_topic_mastery,
+    get_revision_stats,
+    get_upcoming_revisions,
+    get_overdue_topics,
+    get_topic_source_refs,
     knowledge_graph_chunks,
     link_feedback_to_task,
     link_objective_activity,
@@ -147,6 +154,7 @@ from app.storage import (
     record_product_event,
     record_quiz_attempt,
     record_quiz_review,
+    record_revision_review,
     replace_image_region_citations,
     reset_user_progress,
     search_content_sections,
@@ -2162,6 +2170,129 @@ async def submit_section_review(
             404, "ITEM_NOT_FOUND", "The requested item was not found or is not owned by you."
         )
     return updated
+
+
+@router.get("/revision/schedule", tags=["learning"])
+def revision_schedule(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Return the revision schedule for the authenticated user.
+
+    Returns items sorted by next_due_date, including both due and upcoming items.
+    """
+    items, total = get_revision_schedule(
+        settings.database_path,
+        user_id=current_user.user_id,
+        limit=limit,
+        offset=offset,
+    )
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.post("/revision/reschedule/{item_type}/{item_id}", tags=["learning"])
+async def reschedule_revision_item_route(
+    request: Request,
+    item_type: str,
+    item_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Manually reschedule a revision item to a new due date.
+
+    Expects a JSON body with ``new_due_date`` (ISO 8601 datetime string).
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise ApiError(422, "INVALID_REQUEST", "Invalid request body.") from None
+
+    new_due_date = payload.get("new_due_date")
+    if not new_due_date:
+        raise ApiError(422, "INVALID_REQUEST", "new_due_date is required.")
+
+    result = reschedule_revision_item(
+        settings.database_path,
+        item_type=item_type,
+        item_id=item_id,
+        user_id=current_user.user_id,
+        new_due_date=new_due_date,
+    )
+    if result is None:
+        raise ApiError(
+            404, "ITEM_NOT_FOUND", "The specified revision item was not found."
+        )
+    return result
+
+
+@router.get("/revision/upcoming", tags=["learning"])
+def revision_upcoming(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+    days_ahead: int = 7,
+) -> list[dict[str, Any]]:
+    """Return upcoming revision items within the given number of days."""
+    return get_upcoming_revisions(
+        settings.database_path,
+        user_id=current_user.user_id,
+        days_ahead=days_ahead,
+    )
+
+
+@router.get("/revision/overdue", tags=["learning"])
+def revision_overdue(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+) -> list[dict[str, Any]]:
+    """Return topics with overdue revision items."""
+    return get_overdue_topics(
+        settings.database_path,
+        user_id=current_user.user_id,
+    )
+
+
+@router.get("/revision/stats", tags=["learning"])
+def revision_stats(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Return revision statistics for the authenticated user."""
+    return get_revision_stats(
+        settings.database_path,
+        user_id=current_user.user_id,
+    )
+
+
+@router.get("/revision/mastery/{topic_id}", tags=["learning"])
+def revision_mastery(
+    request: Request,
+    topic_id: str,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any] | None:
+    """Return mastery details for a topic."""
+    return get_topic_mastery(
+        settings.database_path,
+        user_id=current_user.user_id,
+        topic_id=topic_id,
+    )
+
+
+@router.get("/revision/weak-topics", tags=["learning"])
+def revision_weak_topics(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+) -> list[dict[str, Any]]:
+    """Return weak topics for the authenticated user."""
+    return get_weak_topics(
+        settings.database_path,
+        user_id=current_user.user_id,
+    )
 
 
 @router.get("/progress", response_model=LearningProgressResponse, tags=["learning"])

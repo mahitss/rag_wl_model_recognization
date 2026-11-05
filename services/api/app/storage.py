@@ -14,7 +14,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 20
+SCHEMA_VERSION = 21
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -2415,6 +2415,136 @@ def initialize_storage(database_path: Path) -> None:
                     "ON conversation_messages(role)"
                 )
 
+            if version < 21:
+                # M55: Adaptive Learning Engine - mastery estimation and data integrity.
+                # Revision scheduling tables for spaced-repetition tracking.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS revision_schedule (
+                        item_id TEXT NOT NULL,
+                        item_type TEXT NOT NULL CHECK (item_type IN (
+                            'quiz_question', 'flashcard', 'knowledge_concept'
+                        )),
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        next_due_date TEXT NOT NULL,
+                        interval_days INTEGER NOT NULL CHECK (interval_days > 0),
+                        ease_factor REAL NOT NULL CHECK (ease_factor > 0 AND ease_factor <= 3.0),
+                        repetition_count INTEGER NOT NULL CHECK (repetition_count >= 0),
+                        last_result TEXT NOT NULL CHECK (last_result IN (
+                            'remembered', 'partially', 'forgotten'
+                        )),
+                        last_reviewed_at TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (item_id, item_type, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_revision_schedule_due "
+                    "ON revision_schedule(next_due_date, user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_revision_schedule_user "
+                    "ON revision_schedule(user_id)"
+                )
+
+                # Revision history - tracks every review attempt for retention analysis.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS revision_history (
+                        revision_id TEXT PRIMARY KEY,
+                        item_type TEXT NOT NULL CHECK (item_type IN (
+                            'quiz_question', 'flashcard', 'knowledge_concept'
+                        )),
+                        item_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        result TEXT NOT NULL CHECK (result IN (
+                            'remembered', 'partially', 'forgotten'
+                        )),
+                        confidence_rating INTEGER CHECK (confidence_rating BETWEEN 1 AND 5),
+                        time_spent_ms INTEGER CHECK (time_spent_ms >= 0),
+                        reviewed_at TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_revision_history_item "
+                    "ON revision_history(item_type, item_id, user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_revision_history_user_date "
+                    "ON revision_history(user_id, reviewed_at)"
+                )
+
+                # Topic-level mastery estimates.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS topic_mastery (
+                        topic_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        mastery_score REAL NOT NULL CHECK (mastery_score >= 0.0
+                            AND mastery_score <= 1.0),
+                        confidence REAL NOT NULL CHECK (confidence >= 0.0
+                            AND confidence <= 1.0),
+                        review_count INTEGER NOT NULL CHECK (review_count >= 0),
+                        correct_count INTEGER NOT NULL CHECK (correct_count >= 0),
+                        total_count INTEGER NOT NULL CHECK (total_count >= 0),
+                        last_updated TEXT NOT NULL,
+                        PRIMARY KEY (topic_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_topic_mastery_user "
+                    "ON topic_mastery(user_id)"
+                )
+
+                # Concept-level mastery from knowledge graph.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS concept_mastery (
+                        concept_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        mastery_score REAL NOT NULL CHECK (mastery_score >= 0.0
+                            AND mastery_score <= 1.0),
+                        confidence REAL NOT NULL CHECK (confidence >= 0.0
+                            AND confidence <= 1.0),
+                        review_count INTEGER NOT NULL CHECK (review_count >= 0),
+                        last_updated TEXT NOT NULL,
+                        PRIMARY KEY (concept_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_concept_mastery_user "
+                    "ON concept_mastery(user_id)"
+                )
+
+                # Weak topics - topics that have been forgotten repeatedly.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS weak_topics (
+                        topic_id TEXT NOT NULL,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        forget_count INTEGER NOT NULL CHECK (forget_count >= 0),
+                        last_forgotten_at TEXT NOT NULL,
+                        is_weak INTEGER NOT NULL CHECK (is_weak IN (0, 1)),
+                        PRIMARY KEY (topic_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_weak_topics_user "
+                    "ON weak_topics(user_id, is_weak)"
+                )
+
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.execute("PRAGMA foreign_keys = ON")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -2443,6 +2573,427 @@ def reset_user_progress(database_path: Path, user_id: str) -> dict[str, int]:
         "attempts_deleted": attempts_deleted,
         "reviews_deleted": reviews_deleted,
     }
+
+
+def get_revision_schedule(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0,
+    now: str | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """Return upcoming revision schedule for a user.
+
+    Returns items sorted by next_due_date, including both due and upcoming items.
+    """
+    current = now if now is not None else datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        total = connection.execute(
+            "SELECT COUNT(*) AS c FROM revision_schedule WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()["c"]
+
+        rows = connection.execute(
+            """
+            SELECT item_id, item_type, next_due_date, interval_days, ease_factor,
+                   repetition_count, last_result, last_reviewed_at, created_at, updated_at
+            FROM revision_schedule
+            WHERE user_id = ?
+            ORDER BY next_due_date ASC
+            LIMIT ? OFFSET ?
+            """,
+            (user_id, limit, offset),
+        ).fetchall()
+
+    items = [
+        {
+            "item_id": row["item_id"],
+            "item_type": row["item_type"],
+            "next_due_date": row["next_due_date"],
+            "interval_days": row["interval_days"],
+            "ease_factor": row["ease_factor"],
+            "repetition_count": row["repetition_count"],
+            "last_result": row["last_result"],
+            "last_reviewed_at": row["last_reviewed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+    return items, int(total)
+
+
+def get_upcoming_revisions(
+    database_path: Path,
+    *,
+    user_id: str,
+    days_ahead: int = 7,
+) -> list[dict[str, Any]]:
+    """Return upcoming revision items within the given number of days."""
+    current = datetime.now(UTC).isoformat()
+    future = (
+        datetime.now(UTC) + timedelta(days=days_ahead)
+    ).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT item_id, item_type, next_due_date, interval_days, ease_factor,
+                   repetition_count, last_result, last_reviewed_at
+            FROM revision_schedule
+            WHERE user_id = ? AND next_due_date > ? AND next_due_date <= ?
+            ORDER BY next_due_date ASC
+            """,
+            (user_id, current, future),
+        ).fetchall()
+
+    return [
+        {
+            "item_id": row["item_id"],
+            "item_type": row["item_type"],
+            "next_due_date": row["next_due_date"],
+            "interval_days": row["interval_days"],
+            "ease_factor": row["ease_factor"],
+            "repetition_count": row["repetition_count"],
+            "last_result": row["last_result"],
+            "last_reviewed_at": row["last_reviewed_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_overdue_topics(
+    database_path: Path,
+    *,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    """Return topics with overdue revision items."""
+    current = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT r.item_id as topic_id, MIN(r.next_due_date) as earliest_due,
+                   COUNT(*) as overdue_count
+            FROM revision_schedule r
+            WHERE r.user_id = ? AND r.next_due_date < ?
+            GROUP BY r.item_id
+            ORDER BY earliest_due ASC
+            """,
+            (user_id, current),
+        ).fetchall()
+
+    return [
+        {
+            "topic_id": row["topic_id"],
+            "earliest_due": row["earliest_due"],
+            "overdue_count": row["overdue_count"],
+        }
+        for row in rows
+    ]
+
+
+def record_revision_review(
+    database_path: Path,
+    *,
+    item_type: str,
+    item_id: str,
+    result: str,
+    confidence_rating: int | None,
+    time_spent_ms: int | None,
+    user_id: str,
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    """Record a revision review and update the schedule using SM-2 algorithm."""
+    if result not in {"remembered", "partially", "forgotten"}:
+        raise ValueError("result must be 'remembered', 'partially', or 'forgotten'")
+    if confidence_rating is not None and not (1 <= confidence_rating <= 5):
+        raise ValueError("confidence_rating must be between 1 and 5")
+
+    now = reviewed_at if reviewed_at is not None else datetime.now(UTC).isoformat()
+    now_dt = datetime.fromisoformat(now.replace("Z", "+00:00"))
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=UTC)
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            # Get current schedule
+            row = connection.execute(
+                """
+                SELECT interval_days, ease_factor, repetition_count, last_result
+                FROM revision_schedule
+                WHERE item_type = ? AND item_id = ? AND user_id = ?
+                """,
+                (item_type, item_id, user_id),
+            ).fetchone()
+
+            if row is None:
+                # New item - initialize with default values
+                interval_days = 1
+                ease_factor = 2.5
+                repetition_count = 0
+            else:
+                interval_days = row["interval_days"]
+                ease_factor = row["ease_factor"]
+                repetition_count = row["repetition_count"]
+
+                # SM-2 algorithm
+                if result == "remembered":
+                    repetition_count += 1
+                    if repetition_count == 1:
+                        interval_days = 1
+                    elif repetition_count == 2:
+                        interval_days = 6
+                    else:
+                        interval_days = int(interval_days * ease_factor)
+                    ease_factor = min(ease_factor + 0.1, 3.0)
+                elif result == "partially":
+                    # Keep repetition count but reduce interval
+                    repetition_count = max(0, repetition_count - 1)
+                    interval_days = max(1, int(interval_days * 0.75))
+                    ease_factor = max(1.3, ease_factor - 0.2)
+                else:  # forgotten
+                    repetition_count = 0
+                    interval_days = 1
+                    ease_factor = max(1.3, ease_factor - 0.5)
+
+                new_due_date = (
+                    now_dt + timedelta(days=interval_days)
+                ).astimezone(UTC).isoformat()
+
+                connection.execute(
+                    """
+                    UPDATE revision_schedule
+                    SET interval_days = ?, ease_factor = ?, repetition_count = ?,
+                        last_result = ?, last_reviewed_at = ?, next_due_date = ?,
+                        updated_at = ?
+                    WHERE item_type = ? AND item_id = ? AND user_id = ?
+                    """,
+                    (
+                        interval_days, ease_factor, repetition_count, result,
+                        now, new_due_date, now,
+                        item_type, item_id, user_id,
+                    ),
+                )
+
+            # Record the history entry
+            revision_id = f"rev_{uuid.uuid4().hex[:16]}"
+            connection.execute(
+                """
+                INSERT INTO revision_history(
+                    revision_id, item_type, item_id, user_id, result,
+                    confidence_rating, time_spent_ms, reviewed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    revision_id, item_type, item_id, user_id, result,
+                    confidence_rating, time_spent_ms, now, now,
+                ),
+            )
+
+    return {
+        "revision_id": revision_id,
+        "item_type": item_type,
+        "item_id": item_id,
+        "result": result,
+        "confidence_rating": confidence_rating,
+        "time_spent_ms": time_spent_ms,
+        "reviewed_at": now,
+    }
+
+
+def reschedule_revision_item(
+    database_path: Path,
+    *,
+    item_type: str,
+    item_id: str,
+    user_id: str,
+    new_due_date: str,
+) -> dict[str, Any] | None:
+    """Manually reschedule a review item to a new due date."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                """
+                SELECT item_id FROM revision_schedule
+                WHERE item_type = ? AND item_id = ? AND user_id = ?
+                """,
+                (item_type, item_id, user_id),
+            ).fetchone()
+            if row is None:
+                return None
+
+            connection.execute(
+                """
+                UPDATE revision_schedule
+                SET next_due_date = ?, updated_at = ?
+                WHERE item_type = ? AND item_id = ? AND user_id = ?
+                """,
+                (new_due_date, datetime.now(UTC).isoformat(), item_type, item_id, user_id),
+            )
+
+    return {
+        "item_type": item_type,
+        "item_id": item_id,
+        "next_due_date": new_due_date,
+    }
+
+
+def get_revision_stats(
+    database_path: Path,
+    *,
+    user_id: str,
+) -> dict[str, Any]:
+    """Return revision statistics for a user."""
+    current = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        total_items = connection.execute(
+            "SELECT COUNT(*) AS c FROM revision_schedule WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()["c"]
+
+        overdue_count = connection.execute(
+            "SELECT COUNT(*) AS c FROM revision_schedule WHERE user_id = ? AND next_due_date < ?",
+            (user_id, current),
+        ).fetchone()["c"]
+
+        due_count = connection.execute(
+            "SELECT COUNT(*) AS c FROM revision_schedule WHERE user_id = ? AND next_due_date <= ?",
+            (user_id, current),
+        ).fetchone()["c"]
+
+        total_reviews = connection.execute(
+            "SELECT COUNT(*) AS c FROM revision_history WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()["c"]
+
+        # Recent reviews (last 30 days)
+        thirty_days_ago = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+        recent_reviews = connection.execute(
+            """
+            SELECT result, COUNT(*) as cnt
+            FROM revision_history
+            WHERE user_id = ? AND reviewed_at >= ?
+            GROUP BY result
+            """,
+            (user_id, thirty_days_ago),
+        ).fetchall()
+
+        recent_stats = {row["result"]: row["cnt"] for row in recent_reviews}
+        total_recent = sum(recent_stats.values())
+        recent_correct = recent_stats.get("remembered", 0)
+        recent_accuracy = (recent_correct / total_recent * 100) if total_recent > 0 else 0.0
+
+    return {
+        "total_items": total_items,
+        "overdue_count": overdue_count,
+        "due_count": due_count,
+        "total_reviews": total_reviews,
+        "recent_reviews": total_recent,
+        "recent_accuracy_percent": round(recent_accuracy, 1),
+        "breakdown": recent_stats,
+    }
+
+
+def get_topic_mastery(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str,
+) -> dict[str, Any] | None:
+    """Get mastery details for a topic."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT mastery_score, confidence, review_count, correct_count,
+                   total_count, last_updated
+            FROM topic_mastery
+            WHERE topic_id = ? AND user_id = ?
+            """,
+            (topic_id, user_id),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "topic_id": row["topic_id"],
+        "user_id": user_id,
+        "mastery_score": row["mastery_score"],
+        "confidence": row["confidence"],
+        "review_count": row["review_count"],
+        "correct_count": row["correct_count"],
+        "total_count": row["total_count"],
+        "last_updated": row["last_updated"],
+    }
+
+
+def get_weak_topics(
+    database_path: Path,
+    *,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    """Return weak topics for a user (topics that have been forgotten repeatedly)."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT topic_id, forget_count, last_forgotten_at
+            FROM weak_topics
+            WHERE user_id = ? AND is_weak = 1
+            ORDER BY forget_count DESC, last_forgotten_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+
+    return [
+        {
+            "topic_id": row["topic_id"],
+            "forget_count": row["forget_count"],
+            "last_forgotten_at": row["last_forgotten_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_topic_source_refs(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str,
+) -> list[dict[str, Any]]:
+    """Get source citations for a topic."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT cr.resource_id, cr.title, cr.source_type,
+                   crs.section_id, crs.section_title, crs.section_type,
+                   crs.content, crs.source_refs_json
+            FROM content_resources cr
+            JOIN content_resource_sections crs ON crs.resource_id = cr.resource_id
+            WHERE cr.user_id = ? AND cr.source_type = 'document'
+            ORDER BY crs.section_title
+            """,
+            (user_id,),
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        try:
+            refs = json.loads(row["source_refs_json"] or "[]")
+        except (json.JSONDecodeError, TypeError):
+            refs = []
+        for ref in refs:
+            if ref.get("documentId"):
+                results.append({
+                    "documentId": ref["documentId"],
+                    "displayFilename": ref.get("displayFilename", "Unknown"),
+                    "pageNumber": ref.get("pageNumber", 0),
+                    "chunkIndex": ref.get("chunkIndex", 0),
+                })
+    return results
 
 
 def check_storage(database_path: Path) -> dict[str, bool]:

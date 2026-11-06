@@ -13,6 +13,7 @@ from app.api.v1.auth_routes import router as auth_router
 from app.api.v1.companion_routes import router as companion_router
 from app.api.v1.content import router as content_router
 from app.api.v1.content_validation import router as content_validation_router
+from app.api.v1.journey_routes import router as journey_router
 from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.verification_routes import router as verification_router
@@ -121,6 +122,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(model_routes_router)
     # Content verification routes (M59: AI Content Verification & Trust Engine)
     application.include_router(verification_router)
+    # Unified learning journey routes (M60: Unified Learning Journey & Experience Orchestration)
+    application.include_router(journey_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

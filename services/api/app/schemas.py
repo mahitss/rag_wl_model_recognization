@@ -1687,3 +1687,145 @@ class BatchVerificationResponse(ApiModel):
     total_verified: int
     total_rejected: int
     verified_at: str
+
+
+# ---------------------------------------------------------------------------
+# M60: Unified Learning Journey & Experience Orchestration.
+# Coherent journey stages, unified dashboard, next-action recommendations.
+# ---------------------------------------------------------------------------
+
+
+class JourneyStage(ApiModel):
+    stageId: str
+    label: str
+    description: str
+    completed: bool
+    evidence: dict[str, Any]
+    stageOrder: int
+
+
+class JourneyProgress(ApiModel):
+    completionPercent: int
+    completedStages: int
+    totalStages: int
+    currentStage: JourneyStage | None
+    stages: list[JourneyStage]
+
+
+class DashboardGoal(ApiModel):
+    goalId: str
+    title: str
+    description: str
+    type: str
+    priority: int
+    count: int | None = None
+    topicId: str | None = None
+    topic: str | None = None
+    mastery: float | None = None
+    estimatedMinutes: int | None = None
+
+
+class ContinueLearningItem(ApiModel):
+    itemId: str
+    title: str
+    type: str
+    topicId: str | None = None
+    topic: str | None = None
+    startedAt: str | None = None
+    lastOutcome: str | None = None
+    occurredAt: str | None = None
+
+
+class TodayTask(ApiModel):
+    taskId: str
+    title: str
+    type: str
+    topicId: str | None = None
+    topic: str | None = None
+    priority: int
+    estimatedMinutes: int
+    status: str
+    reasons: list[str] = []
+    dueToday: bool = False
+    dueAt: str | None = None
+    lastResult: str | None = None
+
+
+class DueRevisions(ApiModel):
+    totalDue: int
+    dueCount: int
+    needsAttentionCount: int
+    items: list[dict[str, Any]] = []
+
+
+class RecentActivityItem(ApiModel):
+    activityId: str
+    kind: str
+    topic: str
+    outcome: str | None = None
+    occurredAt: str | None = None
+    prompt: str | None = None
+
+
+class LearningPathProgressItem(ApiModel):
+    pathId: str
+    title: str
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class RecommendedNextAction(ApiModel):
+    action: str
+    title: str
+    description: str
+    stageId: str
+    priority: int
+    topicId: str | None = None
+    topic: str | None = None
+    requiresConfirmation: bool
+
+
+class JourneyDashboardResponse(ApiModel):
+    generatedAt: str
+    userId: str
+    journey: JourneyProgress
+    dashboard: dict[str, Any]
+    analytics: dict[str, Any]
+    studyCoachPlan: dict[str, Any]
+    revisionQueue: dict[str, Any]
+    learningPaths: list[dict[str, Any]]
+    documents: list[dict[str, Any]]
+    images: list[dict[str, Any]]
+    knowledgeConcepts: list[dict[str, Any]]
+    contentResources: list[dict[str, Any]]
+
+
+class JourneyOverviewResponse(ApiModel):
+    generatedAt: str
+    userId: str
+    totals: dict[str, Any]
+    weakTopicCount: int
+    activePathCount: int
+    documentCount: int
+    totalRevisionItems: int
+
+
+class StageProgressionResponse(ApiModel):
+    generatedAt: str
+    userId: str
+    completionPercent: int
+    completedStages: int
+    totalStages: int
+    stages: list[JourneyStage]
+
+
+class NextActionResponse(ApiModel):
+    action: str | None
+    title: str | None
+    description: str | None
+    stageId: str | None
+    priority: int | None
+    topicId: str | None = None
+    topic: str | None = None
+    requiresConfirmation: bool = False

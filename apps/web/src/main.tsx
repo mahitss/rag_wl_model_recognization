@@ -415,6 +415,142 @@ type CompanionMessagesResponse = {
 };
 
 
+// --- M60: Unified Learning Journey & Experience Orchestration ---
+type JourneyStage = {
+  stageId: string;
+  label: string;
+  description: string;
+  completed: boolean;
+  evidence: { [key: string]: any };
+  stageOrder: number;
+};
+type JourneyProgress = {
+  completionPercent: number;
+  completedStages: number;
+  totalStages: number;
+  currentStage: JourneyStage | null;
+  stages: JourneyStage[];
+};
+type DashboardGoal = {
+  goalId: string;
+  title: string;
+  description: string;
+  type: string;
+  priority: number;
+  count?: number;
+  topicId?: string;
+  topic?: string;
+  mastery?: number | null;
+  estimatedMinutes?: number;
+};
+type ContinueLearningItem = {
+  itemId: string;
+  title: string;
+  type: string;
+  topicId?: string;
+  topic?: string;
+  startedAt?: string;
+  lastOutcome?: string | null;
+  occurredAt?: string;
+};
+type TodayTask = {
+  taskId: string;
+  title: string;
+  type: string;
+  topicId?: string;
+  topic?: string;
+  priority: number;
+  estimatedMinutes: number;
+  status: string;
+  reasons: string[];
+  dueToday: boolean;
+  dueAt?: string | null;
+  lastResult?: string | null;
+};
+type DueRevisions = {
+  totalDue: number;
+  dueCount: number;
+  needsAttentionCount: number;
+  items: any[];
+};
+type RecentActivityItem = {
+  activityId: string;
+  kind: string;
+  topic: string;
+  outcome?: string | null;
+  occurredAt?: string | null;
+  prompt?: string | null;
+};
+type LearningPathProgressItem = {
+  pathId: string;
+  title: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+type RecommendedNextAction = {
+  action: string;
+  title: string;
+  description: string;
+  stageId: string;
+  priority: number;
+  topicId?: string;
+  topic?: string;
+  requiresConfirmation: boolean;
+};
+type JourneyDashboardResponse = {
+  generatedAt: string;
+  userId: string;
+  journey: JourneyProgress;
+  dashboard: {
+    currentGoals: DashboardGoal[];
+    continueLearning: ContinueLearningItem[];
+    todaysTasks: TodayTask[];
+    dueRevisions: DueRevisions;
+    weakTopics: any[];
+    recentActivity: RecentActivityItem[];
+    upcomingAssessments: any[];
+    learningPathProgress: LearningPathProgressItem[];
+    recommendedNextAction: RecommendedNextAction | null;
+  };
+  analytics: any;
+  studyCoachPlan: any;
+  revisionQueue: any;
+  learningPaths: any[];
+  documents: any[];
+  images: any[];
+  knowledgeConcepts: any[];
+  contentResources: any[];
+};
+type JourneyOverviewResponse = {
+  generatedAt: string;
+  userId: string;
+  totals: any;
+  weakTopicCount: number;
+  activePathCount: number;
+  documentCount: number;
+  totalRevisionItems: number;
+};
+type StageProgressionResponse = {
+  generatedAt: string;
+  userId: string;
+  completionPercent: number;
+  completedStages: number;
+  totalStages: number;
+  stages: JourneyStage[];
+};
+type NextActionResponse = {
+  action: string | null;
+  title: string | null;
+  description: string | null;
+  stageId: string | null;
+  priority: number | null;
+  topicId?: string;
+  topic?: string;
+  requiresConfirmation: boolean;
+};
+
+
 // --- M45: AI Observability & Model Evaluation Dashboard ---
 type ModelLatencySummary = {
   count: number;
@@ -960,6 +1096,14 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [evalDataset, setEvalDataset] = useState("retrieval_eval");
   const [evalMetric, setEvalMetric] = useState("retrieval_quality");
 
+  // --- M60: Unified Learning Journey state ---
+  const [journeyDashboard, setJourneyDashboard] = useState<JourneyDashboardResponse | null>(null);
+  const [journeyOverview, setJourneyOverview] = useState<JourneyOverviewResponse | null>(null);
+  const [journeyStageProgression, setJourneyStageProgression] = useState<StageProgressionResponse | null>(null);
+  const [journeyNextAction, setJourneyNextAction] = useState<NextActionResponse | null>(null);
+  const [journeyLoading, setJourneyLoading] = useState(false);
+  const [journeyError, setJourneyError] = useState<string | null>(null);
+
   // --- M41: Unified search ---
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
@@ -1170,6 +1314,10 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       void loadImprovementTasks();
       void refreshObservability();
     }
+    void loadJourneyDashboard();
+    void loadJourneyOverview();
+    void loadJourneyStageProgression();
+    void loadJourneyNextAction();
     // Load onboarding state for the current user from localStorage.
     if (username) {
       try {
@@ -2383,6 +2531,57 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     } catch (error) {
       setEvaluationError(error instanceof Error ? error.message : "Could not run model evaluation.");
     } finally { setEvaluationLoading(false); }
+  }
+
+  async function loadJourneyDashboard() {
+    setJourneyLoading(true);
+    setJourneyError(null);
+    try {
+      const result = await fetch("/api/v1/journey/dashboard", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      setJourneyDashboard(await readJson<JourneyDashboardResponse>(result));
+    } catch (error) {
+      setJourneyError(error instanceof Error ? error.message : "Could not load journey dashboard.");
+    } finally { setJourneyLoading(false); }
+  }
+
+  async function loadJourneyOverview() {
+    try {
+      const result = await fetch("/api/v1/journey/overview", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      setJourneyOverview(await readJson<JourneyOverviewResponse>(result));
+    } catch {
+      // Overview is non-blocking; silently ignore failures.
+    }
+  }
+
+  async function loadJourneyStageProgression() {
+    try {
+      const result = await fetch("/api/v1/journey/stage-progression", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      setJourneyStageProgression(await readJson<StageProgressionResponse>(result));
+    } catch {
+      // Stage progression is non-blocking; silently ignore failures.
+    }
+  }
+
+  async function loadJourneyNextAction() {
+    try {
+      const result = await fetch("/api/v1/journey/next-action", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      });
+      const body = await result.json();
+      setJourneyNextAction(body as NextActionResponse | null);
+    } catch {
+      // Next action is non-blocking; silently ignore failures.
+    }
   }
 
   async function createImprovementTask(event: React.FormEvent<HTMLFormElement>) {

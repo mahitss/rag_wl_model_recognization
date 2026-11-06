@@ -15,6 +15,7 @@ from app.api.v1.content import router as content_router
 from app.api.v1.content_validation import router as content_validation_router
 from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.routes import make_error_response, router
+from app.api.v1.verification_routes import router as verification_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
@@ -118,6 +119,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(companion_router)
     # Model observability & evaluation admin routes (admin only)
     application.include_router(model_routes_router)
+    # Content verification routes (M59: AI Content Verification & Trust Engine)
+    application.include_router(verification_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

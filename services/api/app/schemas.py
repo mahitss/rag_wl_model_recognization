@@ -1556,3 +1556,134 @@ class ModelHealthResponse(ApiModel):
     model_id: str
     available: bool
     error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# M59: AI Content Verification & Trust Engine.
+# Deterministic verification of AI-generated content against source evidence.
+# Outcomes: verified, partially_verified, unverified, rejected.
+# ---------------------------------------------------------------------------
+
+
+class VerificationOutcome(str):
+    pass
+
+
+class VerificationCheckDetail(ApiModel):
+    """Result of one individual verification check."""
+
+    check_name: str
+    passed: bool
+    detail: str | None = None
+
+
+class VerifyTutorAnswerRequest(ApiModel):
+    question: str = Field(min_length=1, max_length=2_000)
+    answer_text: str = Field(min_length=1, max_length=8_000)
+    citations: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    user_id: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class VerifyQuizQuestionRequest(ApiModel):
+    question: dict[str, Any]
+    citations: list[dict[str, Any]] = Field(default_factory=list, max_length=50)
+    chunks: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+
+
+class VerifyKnowledgeGraphRelationshipRequest(ApiModel):
+    relationship: dict[str, Any]
+    chunks: list[dict[str, Any]] = Field(default_factory=list, max_length=200)
+
+
+class VerifyMultimodalContentRequest(ApiModel):
+    extracted_text: str = Field(min_length=1, max_length=10_000)
+    source_type: Literal["image", "pdf", "document"]
+    source_metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class VerificationResultSchema(ApiModel):
+    outcome: Literal["verified", "partially_verified", "unverified", "rejected"]
+    confidence: float = Field(ge=0.0, le=1.0)
+    checks: dict[str, Any]
+    reason: str | None = None
+    citations_valid: bool
+    evidence_coverage: float = Field(ge=0.0, le=1.0)
+    unsupported_claim_count: int = Field(ge=0)
+    schema_valid: bool
+
+
+class VerifyTutorAnswerResponse(ApiModel):
+    verification_id: str
+    question: str
+    answer_text: str
+    outcome: Literal["verified", "partially_verified", "unverified", "rejected"]
+    confidence: float
+    checks: dict[str, Any]
+    reason: str | None
+    citations_valid: bool
+    evidence_coverage: float
+    unsupported_claim_count: int
+    schema_valid: bool
+    human_readable: str
+    verified_at: str
+
+
+class VerifyQuizQuestionResponse(ApiModel):
+    verification_id: str
+    question_type: str
+    outcome: Literal["verified", "partially_verified", "unverified", "rejected"]
+    confidence: float
+    checks: dict[str, Any]
+    reason: str | None
+    citations_valid: bool
+    evidence_coverage: float
+    unsupported_claim_count: int
+    schema_valid: bool
+    human_readable: str
+    verified_at: str
+
+
+class VerifyKnowledgeGraphRelationshipResponse(ApiModel):
+    verification_id: str
+    relationship_id: str
+    outcome: Literal["verified", "partially_verified", "unverified", "rejected"]
+    confidence: float
+    checks: dict[str, Any]
+    reason: str | None
+    citations_valid: bool
+    evidence_coverage: float
+    unsupported_claim_count: int
+    schema_valid: bool
+    human_readable: str
+    verified_at: str
+
+
+class VerifyMultimodalContentResponse(ApiModel):
+    verification_id: str
+    source_type: Literal["image", "pdf", "document"]
+    outcome: Literal["verified", "partially_verified", "unverified", "rejected"]
+    confidence: float
+    checks: dict[str, Any]
+    reason: str | None
+    citations_valid: bool
+    evidence_coverage: float
+    unsupported_claim_count: int
+    schema_valid: bool
+    human_readable: str
+    verified_at: str
+
+
+class BatchVerificationRequest(ApiModel):
+    verifications: list[dict[str, Any]] = Field(
+        default_factory=list, max_length=50
+    )
+
+
+class BatchVerificationResponse(ApiModel):
+    results: list[VerificationResultSchema]
+    overall_outcome: Literal[
+        "verified", "partially_verified", "unverified", "rejected"
+    ]
+    total_verified: int
+    total_rejected: int
+    verified_at: str

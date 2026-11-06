@@ -1,4 +1,4 @@
-"""M45 AI observability & model evaluation admin routes.
+"""M57 AI model routing & reliability endpoints.
 
 All endpoints require administrator authorization. Telemetry is privacy-safe:
 no user IDs, document IDs, prompts, secrets, or raw model outputs are stored
@@ -13,16 +13,24 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.auth import AuthUser, require_admin
+from app.config import Settings
 from app.errors import ApiError
 from app.model_eval import ModelEvaluationError, run_evaluation
 from app.model_observability import get_model_observability
 from app.schemas import (
+    ModelDiscoveryResponse,
     ModelEvaluationCreateRequest,
     ModelEvaluationResponse,
+    ModelHealthCheckRequest,
+    ModelHealthResponse,
     ModelMetricsSnapshotResponse,
 )
 
 router = APIRouter(prefix="/api/v1/admin/models", tags=["admin.models"])
+
+
+def _settings(request: Request) -> Settings:
+    return request.app.state.settings
 
 
 @router.get(
@@ -91,4 +99,76 @@ def run_model_evaluation(
         else None,
         "details": result,
         "evaluated_at": result.get("evaluated_at"),
+    }
+
+
+@router.get(
+    "/models",
+    response_model=ModelDiscoveryResponse,
+)
+def list_available_models(
+    request: Request,
+    current_user: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Return the list of models available from the local Ollama server.
+
+    Admin only. No user IDs, document IDs, prompts, secrets, or raw model
+    outputs are exposed.
+    """
+    settings = _settings(request)
+    router = settings.model_router
+    result = router.discover_models()
+    return {
+        "models": result.available_models,
+        "available": result.available,
+        "error": result.error,
+    }
+
+
+@router.get(
+    "/models/health",
+    response_model=ModelHealthResponse,
+)
+def model_health(
+    request: Request,
+    current_user: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Return health information for the configured model(s).
+
+    Admin only. No user IDs, document IDs, prompts, secrets, or raw model
+    outputs are exposed.
+    """
+    settings = _settings(request)
+    router = settings.model_router
+    model_id = request.query_params.get("model_id", settings.tutor_model_id)
+    result = router.discover_models()
+    return {
+        "model_id": model_id,
+        "available": result.available,
+        "error": result.error,
+    }
+
+
+@router.post(
+    "/models/health",
+    response_model=ModelHealthResponse,
+)
+def model_health_check(
+    request: Request,
+    payload: ModelHealthCheckRequest,
+    current_user: AuthUser = Depends(require_admin),
+) -> dict[str, Any]:
+    """Check the health of a specific model.
+
+    Admin only. No user IDs, document IDs, prompts, secrets, or raw model
+    outputs are exposed.
+    """
+    settings = _settings(request)
+    router = settings.model_router
+    model_id = payload.model_id or settings.tutor_model_id
+    result = router.discover_models()
+    return {
+        "model_id": model_id,
+        "available": result.available,
+        "error": result.error,
     }

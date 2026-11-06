@@ -7,6 +7,7 @@ import math
 import secrets
 import sqlite3
 import struct
+import uuid
 from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -2587,8 +2588,6 @@ def get_revision_schedule(
 
     Returns items sorted by next_due_date, including both due and upcoming items.
     """
-    current = now if now is not None else datetime.now(UTC).isoformat()
-
     with closing(connect_database(database_path)) as connection:
         total = connection.execute(
             "SELECT COUNT(*) AS c FROM revision_schedule WHERE user_id = ?",

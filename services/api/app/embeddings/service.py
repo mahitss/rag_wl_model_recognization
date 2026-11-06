@@ -85,13 +85,18 @@ def _load_fastembed(settings: Settings) -> EmbeddingModel:
 
 
 class EmbeddingService:
+    # Maximum number of concurrent embedding inference requests.  Bounded to
+    # prevent a single slow model from exhausting the API while still allowing
+    # modest parallelism for multi-user workloads.
+    MAX_CONCURRENT_INFERENCE = 2
+
     def __init__(self, settings: Settings, model_factory=None) -> None:
         self.settings = settings
         self._model_factory = model_factory or _load_fastembed
         self._model: EmbeddingModel | None = None
         self._model_error: ModelUnavailable | None = None
         self._lock = threading.Lock()
-        self._inference_lock = threading.Lock()
+        self._inference_semaphore = threading.Semaphore(self.MAX_CONCURRENT_INFERENCE)
 
     @property
     def model_state(self) -> str:
@@ -132,7 +137,7 @@ class EmbeddingService:
             batch = texts[start : start + self.settings.embedding_batch_size]
             inputs = [QUERY_INSTRUCTION_PREFIX + text for text in batch] if query else batch
             try:
-                with self._inference_lock:
+                with self._inference_semaphore:
                     raw_vectors = list(
                         model.embed(inputs, batch_size=self.settings.embedding_batch_size)
                     )

@@ -18,7 +18,10 @@ from app.embeddings.service import (
 )
 from app.errors import ApiError
 from app.main import create_app
-from app.retrieval.service import reciprocal_rank_fusion, retrieve_with_mode
+from app.retrieval.service import (
+    reciprocal_rank_fusion,
+    retrieve_with_mode_sync,
+)
 from app.storage import delete_document, initialize_storage, store_document
 
 
@@ -171,7 +174,7 @@ def test_rebuild_is_batched_persistent_and_idempotent(tmp_path):
 
     with sqlite3.connect(settings.database_path) as connection:
         assert connection.execute("SELECT count(*) FROM chunk_embeddings").fetchone()[0] == 4
-    semantic = retrieve_with_mode(
+    semantic = retrieve_with_mode_sync(
         settings.database_path,
         query="How do plants make sugar from light?",
         document_ids=None,
@@ -204,7 +207,7 @@ def test_rebuild_repairs_invalid_vector_with_matching_config_hash(tmp_path):
     assert invalid_status["index"]["stale_chunks"] == 1
     assert invalid_status["index"]["missing_chunks"] == 1
     with pytest.raises(ApiError) as error:
-        retrieve_with_mode(
+        retrieve_with_mode_sync(
             settings.database_path,
             query="photosynthesis",
             document_ids=None,
@@ -238,7 +241,7 @@ def test_model_revision_change_marks_index_stale_until_rebuild(tmp_path):
     assert status["index"]["stale_chunks"] == 4
     assert status["index"]["missing_chunks"] == 4
     with pytest.raises(ApiError) as error:
-        retrieve_with_mode(
+        retrieve_with_mode_sync(
             changed.database_path,
             query="photosynthesis",
             document_ids=None,
@@ -297,7 +300,7 @@ def test_hybrid_uses_lexical_fallback_if_model_unavailable(tmp_path):
         raise ModelUnavailable("offline")
 
     offline = EmbeddingService(settings, model_factory=unavailable)
-    result = retrieve_with_mode(
+    result = retrieve_with_mode_sync(
         settings.database_path,
         query="photosynthesis",
         document_ids=None,
@@ -310,7 +313,7 @@ def test_hybrid_uses_lexical_fallback_if_model_unavailable(tmp_path):
     assert result["fallbackReason"] == "embedding_model_unavailable"
     assert result["results"][0]["documentId"] == "doc-plant"
     with pytest.raises(ApiError) as error:
-        retrieve_with_mode(
+        retrieve_with_mode_sync(
             settings.database_path,
             query="photosynthesis",
             document_ids=None,
@@ -345,7 +348,7 @@ def test_partial_embedding_failure_keeps_fts_and_reports_incomplete_index(tmp_pa
     with sqlite3.connect(settings.database_path) as connection:
         assert connection.execute("SELECT count(*) FROM chunks").fetchone()[0] == 4
         assert connection.execute("SELECT count(*) FROM chunks_fts").fetchone()[0] == 4
-    lexical = retrieve_with_mode(
+    lexical = retrieve_with_mode_sync(
         settings.database_path,
         query="photosynthesis",
         document_ids=None,
@@ -362,7 +365,7 @@ def test_no_semantic_candidate_abstains_or_falls_back_lexically(tmp_path):
     seed_chunks(settings.database_path)
     service, _ = fake_service(settings)
     service.rebuild(settings.database_path)
-    result = retrieve_with_mode(
+    result = retrieve_with_mode_sync(
         settings.database_path,
         query="tectonic earthquakes",
         document_ids=None,
@@ -373,7 +376,7 @@ def test_no_semantic_candidate_abstains_or_falls_back_lexically(tmp_path):
     )
     assert result["results"] == []
     assert result["fallbackReason"] == "no_candidates_above_threshold"
-    hybrid = retrieve_with_mode(
+    hybrid = retrieve_with_mode_sync(
         settings.database_path,
         query="tectonic earthquakes",
         document_ids=None,

@@ -97,62 +97,35 @@ def reciprocal_rank_fusion(
     return results
 
 
-def retrieve_with_mode(
+def _semantic_retrieve(
     database_path: Path,
     *,
     query: str,
     document_ids: list[str] | None,
     limit: int,
-    mode: str,
     settings: Settings,
     embeddings: EmbeddingService,
     user_id: str | None = None,
-) -> dict[str, Any]:
-    if mode not in {"lexical", "semantic", "hybrid"}:
-        raise ApiError(
-            422,
-            "INVALID_RETRIEVAL_MODE",
-            "Choose lexical, semantic, or hybrid retrieval.",
-        )
+) -> tuple[str | None, list[dict[str, Any]] | None, str | None]:
+    """Run semantic retrieval synchronously (called from asyncio.to_thread).
 
-    lexical_limit = settings.lexical_candidate_limit
-    lexical = retrieve(
-        database_path,
-        query=query,
-        document_ids=document_ids,
-        limit=lexical_limit,
-        user_id=user_id,
-    )
-    if mode == "lexical":
-        return {"results": lexical[:limit], "retrievalMode": "lexical", "fallbackReason": None}
-
+    Returns (error_code, results, error). On success error_code and error
+    are None and results holds the list. On failure results is None and
+    error_code describes why:
+      * "index_incomplete" - index has missing chunks
+      * "model_unavailable" - model is unavailable
+      * "model_error" - model raised ValueError
+      * "storage_unavailable" - storage error
+    """
     try:
         status = embeddings.status(database_path, user_id=user_id)
-    except (OSError, sqlite3.Error) as exc:
-        if mode == "hybrid":
-            return {
-                "results": lexical[:limit],
-                "retrievalMode": "lexical_fallback",
-                "fallbackReason": "embedding_index_unavailable",
-            }
-        raise ApiError(
-            503, "STORAGE_UNAVAILABLE", "Local semantic storage is unavailable."
-        ) from exc
+    except (OSError, sqlite3.Error):
+        return None, None, "STORAGE_UNAVAILABLE"
+    except ModelUnavailable:
+        return "model_unavailable", None, None
     index = status["index"]
     if index["missing_chunks"] > 0:
-        reason = "embedding_index_incomplete"
-        if mode == "semantic":
-            raise ApiError(
-                409,
-                "EMBEDDING_INDEX_INCOMPLETE",
-                "The semantic index is missing or stale. Rebuild embeddings "
-                "before semantic retrieval.",
-            )
-        return {
-            "results": lexical[:limit],
-            "retrievalMode": "lexical_fallback",
-            "fallbackReason": reason,
-        }
+        return "index_incomplete", None, None
 
     try:
         query_vector = embeddings.query_vector(query)
@@ -165,34 +138,12 @@ def retrieve_with_mode(
             document_ids=document_ids,
             user_id=user_id,
         )
-    except ModelUnavailable as exc:
-        if mode == "hybrid":
-            return {
-                "results": lexical[:limit],
-                "retrievalMode": "lexical_fallback",
-                "fallbackReason": "embedding_model_unavailable",
-            }
-        raise ApiError(
-            503,
-            "EMBEDDING_MODEL_UNAVAILABLE",
-            "The local embedding model is unavailable. Install and cache the configured model.",
-        ) from exc
-    except ValueError as exc:
-        if mode == "hybrid":
-            return {
-                "results": lexical[:limit],
-                "retrievalMode": "lexical_fallback",
-                "fallbackReason": "embedding_model_error",
-            }
-        raise ApiError(
-            503,
-            "EMBEDDING_FAILED",
-            "The local embedding model failed to embed the query.",
-        ) from exc
-    except (OSError, sqlite3.Error) as exc:
-        raise ApiError(
-            503, "STORAGE_UNAVAILABLE", "Local semantic storage is unavailable."
-        ) from exc
+    except ModelUnavailable:
+        return "model_unavailable", None, None
+    except ValueError:
+        return "model_error", None, None
+    except (OSError, sqlite3.Error):
+        return None, None, "STORAGE_UNAVAILABLE"
 
     semantic = []
     for rank, row in enumerate(candidates, start=1):
@@ -215,21 +166,147 @@ def retrieve_with_mode(
                 },
             }
         )
+    return None, semantic, None
+
+
+def retrieve_with_mode(
+    database_path: Path,
+    *,
+    query: str,
+    document_ids: list[str] | None,
+    limit: int,
+    mode: str,
+    settings: Settings,
+    embeddings: EmbeddingService,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    if mode not in {"lexical", "semantic", "hybrid"}:
+        raise ApiError(
+            422,
+            "INVALID_RETRIEVAL_MODE",
+            "Choose lexical, semantic, or hybrid retrieval.",
+        )
+
+    lexical_limit = settings.lexical_candidate_limit
+
+    if mode == "lexical":
+        lexical = retrieve(
+            database_path,
+            query=query,
+            document_ids=document_ids,
+            limit=lexical_limit,
+            user_id=user_id,
+        )
+        return {"results": lexical[:limit], "retrievalMode": "lexical", "fallbackReason": None}
 
     if mode == "semantic":
+        error_code, semantic, error = _semantic_retrieve(
+            database_path,
+            query=query,
+            document_ids=document_ids,
+            limit=settings.semantic_candidate_limit,
+            settings=settings,
+            embeddings=embeddings,
+            user_id=user_id,
+        )
+        if error:
+            raise ApiError(503, "STORAGE_UNAVAILABLE", "Local semantic storage is unavailable.")
+        if error_code == "index_incomplete":
+            raise ApiError(
+                409,
+                "EMBEDDING_INDEX_INCOMPLETE",
+                "The semantic index is missing or stale. Rebuild embeddings "
+                "before semantic retrieval.",
+            )
+        if error_code == "model_unavailable":
+            raise ApiError(
+                503,
+                "EMBEDDING_MODEL_UNAVAILABLE",
+                "The local embedding model is unavailable. Install and cache the configured model.",
+            )
+        if error_code == "model_error":
+            raise ApiError(
+                503,
+                "EMBEDDING_FAILED",
+                "The local embedding model failed to embed the query.",
+            )
         return {
             "results": semantic[:limit],
             "retrievalMode": "semantic",
             "fallbackReason": None if semantic else "no_candidates_above_threshold",
         }
-    if not semantic:
+
+    # mode == "hybrid": run lexical and semantic retrieval.
+    lexical = retrieve(
+        database_path,
+        query=query,
+        document_ids=document_ids,
+        limit=lexical_limit,
+        user_id=user_id,
+    )
+    error_code, semantic_result, error = _semantic_retrieve(
+        database_path,
+        query=query,
+        document_ids=document_ids,
+        limit=settings.semantic_candidate_limit,
+        settings=settings,
+        embeddings=embeddings,
+        user_id=user_id,
+    )
+
+    if error:
+        raise ApiError(503, "STORAGE_UNAVAILABLE", "Local semantic storage is unavailable.")
+
+    # Semantic failures in hybrid mode fall back to lexical results.
+    if error_code == "index_incomplete":
+        return {
+            "results": lexical[:limit],
+            "retrievalMode": "lexical_fallback",
+            "fallbackReason": "embedding_index_incomplete",
+        }
+    if error_code == "model_unavailable":
+        return {
+            "results": lexical[:limit],
+            "retrievalMode": "lexical_fallback",
+            "fallbackReason": "embedding_model_unavailable",
+        }
+    if error_code == "model_error":
+        return {
+            "results": lexical[:limit],
+            "retrievalMode": "lexical_fallback",
+            "fallbackReason": "embedding_model_error",
+        }
+    if not semantic_result:
         return {
             "results": lexical[:limit],
             "retrievalMode": "lexical_fallback",
             "fallbackReason": "no_semantic_candidates",
         }
-    fused = reciprocal_rank_fusion(lexical, semantic, k=settings.rrf_k)
+
+    fused = reciprocal_rank_fusion(lexical, semantic_result, k=settings.rrf_k)
     return {"results": fused[:limit], "retrievalMode": "hybrid", "fallbackReason": None}
+def retrieve_with_mode_sync(
+    database_path: Path,
+    *,
+    query: str,
+    document_ids: list[str] | None,
+    limit: int,
+    mode: str,
+    settings: Settings,
+    embeddings: EmbeddingService,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Synchronous wrapper around retrieve_with_mode for sync callers (tests)."""
+    return retrieve_with_mode(
+        database_path=database_path,
+        query=query,
+        document_ids=document_ids,
+        limit=limit,
+        mode=mode,
+        settings=settings,
+        embeddings=embeddings,
+        user_id=user_id,
+    )
 
 
 def answer_from_evidence(question: str, evidence: list[dict[str, Any]]) -> dict[str, Any]:

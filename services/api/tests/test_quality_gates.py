@@ -26,7 +26,7 @@ from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 sys.path.insert(0, "services/api")
 
 from app.config import Settings  # noqa: E402
-from app.retrieval.service import answer_from_evidence, retrieve_with_mode  # noqa: E402
+from app.retrieval.service import answer_from_evidence, retrieve_with_mode_sync  # noqa: E402
 from app.storage import initialize_storage, store_document  # noqa: E402
 
 pytestmark = pytest.mark.quality_gates
@@ -114,7 +114,7 @@ def _retrieve(settings, database_path, query: str, mode: str = "lexical"):
     from app.embeddings.service import EmbeddingService
 
     service = EmbeddingService(settings)
-    return retrieve_with_mode(
+    return retrieve_with_mode_sync(
         database_path,
         query=query,
         document_ids=None,

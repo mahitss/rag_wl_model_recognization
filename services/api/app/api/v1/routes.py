@@ -126,17 +126,16 @@ from app.storage import (
     get_learning_path,
     get_learning_progress,
     get_or_create_study_coach_plan,
+    get_overdue_topics,
     get_product_analytics_snapshot,
     get_quiz_question,
     get_quiz_set,
     get_revision_queue,
     get_revision_schedule,
-    get_weak_topics,
-    get_topic_mastery,
     get_revision_stats,
+    get_topic_mastery,
     get_upcoming_revisions,
-    get_overdue_topics,
-    get_topic_source_refs,
+    get_weak_topics,
     knowledge_graph_chunks,
     link_feedback_to_task,
     link_objective_activity,
@@ -154,7 +153,6 @@ from app.storage import (
     record_product_event,
     record_quiz_attempt,
     record_quiz_review,
-    record_revision_review,
     replace_image_region_citations,
     reset_user_progress,
     search_content_sections,
@@ -1930,7 +1928,7 @@ async def create_quiz(
 
     search = retrieve_with_mode(
         settings.database_path,
-        query=payload.question,
+        query=topic,
         document_ids=payload.document_ids,
         limit=payload.limit,
         mode=payload.mode or settings.retrieval_mode,
@@ -2058,8 +2056,7 @@ def submit_quiz_answer(
         raise ApiError(422, "INVALID_ANSWER", str(exc)) from exc
     attempt_id = uuid.uuid4().hex
     _database_call(
-    record_quiz_attempt,
-    reset_user_progress,
+        record_quiz_attempt,
         database_path,
         attempt_id=attempt_id,
         question_id=question_id,
@@ -2596,7 +2593,7 @@ async def diagram_region_evidence(
             "INVALID_REQUEST",
             f"The result limit cannot exceed {settings.max_retrieval_results}.",
         )
-    result = await retrieve_with_mode(
+    result = retrieve_with_mode(
         settings.database_path,
         query=concept.retrieval_query,
         document_ids=None,

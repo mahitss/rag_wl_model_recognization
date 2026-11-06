@@ -1530,3 +1530,28 @@ class ModelEvaluationResponse(ApiModel):
     value: float | dict[str, Any] | None = None
     details: dict[str, Any] | None = None
     evaluated_at: str
+
+
+# ---------------------------------------------------------------------------
+# M57: Model discovery & health checks.
+# ---------------------------------------------------------------------------
+
+
+class ModelDiscoveryRequest(ApiModel):
+    model_id: str | None = None
+
+
+class ModelDiscoveryResponse(ApiModel):
+    models: list[str]
+    available: bool
+    error: str | None = None
+
+
+class ModelHealthCheckRequest(ApiModel):
+    model_id: str | None = None
+
+
+class ModelHealthResponse(ApiModel):
+    model_id: str
+    available: bool
+    error: str | None = None

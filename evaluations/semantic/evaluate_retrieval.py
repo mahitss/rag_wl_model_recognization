@@ -1,6 +1,7 @@
 """Run the small synthetic lexical/semantic/hybrid retrieval comparison."""
 
 import argparse
+import asyncio
 import hashlib
 import importlib.metadata
 import json
@@ -188,7 +189,7 @@ def validate_dataset(dataset: dict) -> list[str]:
     return issues
 
 
-def main() -> int:
+async def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--lexical-only",
@@ -263,7 +264,7 @@ def main() -> int:
             query_results = {}
             relevant = set(query_case["relevant"])
             for mode, totals in aggregate.items():
-                response = retrieve_with_mode(
+                response = await retrieve_with_mode(
                     database_path,
                     query=query_case["query"],
                     document_ids=None,
@@ -375,4 +376,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(asyncio.run(main()))

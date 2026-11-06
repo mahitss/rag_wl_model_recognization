@@ -23,7 +23,7 @@ Task -> provider mapping (all local-only):
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.config import Settings
@@ -263,7 +263,11 @@ class ModelRouter:
                 "last_failure": self._failures.get(task, [None])[-1],
                 "avg_latency_ms": self._avg_latency_for_status(task),
                 "avg_quality_score": self._avg_quality_for_status(task),
-                "fallback_chain_length": len(self._fallback_chains.get(task, ModelFallbackChain(primary=route))),
+                "fallback_chain_length": len(
+                    self._fallback_chains.get(
+                        task, ModelFallbackChain(primary=route)
+                    )
+                ),
             }
         return status
 
@@ -466,7 +470,7 @@ class ModelRouter:
                 continue
 
             try:
-                selected = self.route_for_task(
+                self.route_for_task(
                     task,
                     require_structured_output=require_structured_output,
                     min_context_window=min_context_window,

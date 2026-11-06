@@ -1501,6 +1501,16 @@ def initialize_storage(database_path: Path) -> None:
                 "user_id",
                 "user_id TEXT REFERENCES users(user_id) ON DELETE CASCADE",
             )
+            # --- M58: Document format tracking ---
+            # Record the source format of each document so the retrieval and
+            # presentation layers can render format-appropriate UI.  Existing
+            # rows default to 'pdf' (the only format supported before M58).
+            _ensure_column(
+                connection,
+                "documents",
+                "format",
+                "format TEXT NOT NULL DEFAULT 'pdf'",
+            )
             _ensure_column(
                 connection,
                 "quiz_sets",
@@ -3020,6 +3030,13 @@ def store_document(
     """Insert a document and all text/FTS rows atomically; return a duplicate's ID if present."""
     with closing(connect_database(database_path)) as connection:
         with connection:
+            # Ensure the M58 format column exists on pre-M58 databases.
+            _ensure_column(
+                connection,
+                "documents",
+                "format",
+                "format TEXT NOT NULL DEFAULT 'pdf'",
+            )
             connection.execute("BEGIN IMMEDIATE")
             if user_id is None:
                 existing = connection.execute(
@@ -3038,8 +3055,8 @@ def store_document(
                 """
                 INSERT INTO documents (
                     document_id, display_name, sha256, byte_size, page_count,
-                    chunk_count, created_at, parser_version, user_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    chunk_count, created_at, parser_version, format, user_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     metadata["document_id"],
@@ -3050,6 +3067,7 @@ def store_document(
                     metadata["chunk_count"],
                     metadata["created_at"],
                     metadata["parser_version"],
+                    metadata.get("format", "pdf"),
                     user_id,
                 ),
             )
@@ -3082,13 +3100,29 @@ def store_document(
     return None
 
 
+def _document_columns(connection) -> str:
+    """Return the column list for documents queries, including ``format`` only
+    when the column exists (resilient to pre-M58 databases)."""
+    columns = (
+        "document_id, display_name, sha256, byte_size, page_count, "
+        "chunk_count, created_at, parser_version"
+    )
+    try:
+        rows = connection.execute("PRAGMA table_info(documents)").fetchall()
+        if any(row[1] == "format" for row in rows):
+            columns += ", format"
+    except sqlite3.Error:
+        pass
+    return columns
+
+
 def list_documents(database_path: Path, user_id: str | None = None) -> list[dict[str, Any]]:
     with closing(connect_database(database_path)) as connection:
+        columns = _document_columns(connection)
         if user_id is not None:
             rows = connection.execute(
-                """
-                SELECT document_id, display_name, sha256, byte_size, page_count,
-                       chunk_count, created_at, parser_version
+                f"""
+                SELECT {columns}
                 FROM documents WHERE user_id = ?
                 ORDER BY created_at DESC, document_id ASC
                 """,
@@ -3096,9 +3130,8 @@ def list_documents(database_path: Path, user_id: str | None = None) -> list[dict
             ).fetchall()
         else:
             rows = connection.execute(
-                """
-                SELECT document_id, display_name, sha256, byte_size, page_count,
-                       chunk_count, created_at, parser_version
+                f"""
+                SELECT {columns}
                 FROM documents WHERE user_id IS NULL
                 ORDER BY created_at DESC, document_id ASC
                 """
@@ -3110,20 +3143,19 @@ def get_document(
     database_path: Path, document_id: str, user_id: str | None = None
 ) -> dict[str, Any] | None:
     with closing(connect_database(database_path)) as connection:
+        columns = _document_columns(connection)
         if user_id is not None:
             row = connection.execute(
-                """
-                SELECT document_id, display_name, sha256, byte_size, page_count,
-                       chunk_count, created_at, parser_version
+                f"""
+                SELECT {columns}
                 FROM documents WHERE document_id = ? AND user_id = ?
                 """,
                 (document_id, user_id),
             ).fetchone()
         else:
             row = connection.execute(
-                """
-                SELECT document_id, display_name, sha256, byte_size, page_count,
-                       chunk_count, created_at, parser_version
+                f"""
+                SELECT {columns}
                 FROM documents WHERE document_id = ? AND user_id IS NULL
                 """,
                 (document_id,),

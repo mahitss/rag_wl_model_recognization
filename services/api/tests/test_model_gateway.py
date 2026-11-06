@@ -15,16 +15,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import pytest
 
 from app.config import Settings
 from app.model_gateway import (
-    ModelGateway,
     ModelGatewayRequest,
     model_gateway_factory,
 )
-from app.model_router import ModelUnavailable
-from app.tutor import TutorUnavailable
 
 
 def make_settings(tmp_path, **overrides):
@@ -269,7 +265,7 @@ def test_gateway_factory_matches_settings(tmp_path):
 def test_gateway_routes_all_task_types(tmp_path):
     """Gateway accepts all ModelTask types without raising on construction."""
     settings = make_settings(tmp_path, tutor_base_url="http://127.0.0.1:8080/v1")
-    gateway = model_gateway_factory(settings)
+    model_gateway_factory(settings)
     for task in ("tutor", "quiz_generation", "knowledge_graph_extraction", "embeddings", "ocr"):
         req = ModelGatewayRequest(task=task, prompt="Q")
         assert req.task == task

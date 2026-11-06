@@ -127,7 +127,7 @@ def test_invalid_content_and_textless_pdf_are_rejected(tmp_path):
     malformed, _, _, _ = post_pdf(tmp_path, b"%PDF-1.7\nnot really a PDF", "malformed.pdf")
     textless, _, _, _ = post_pdf(tmp_path, make_pdf(""), "scan.pdf")
     assert invalid.status_code == 415
-    assert invalid.json()["error"]["code"] == "UNSUPPORTED_FORMAT"
+    assert invalid.json()["error"]["code"] == "INVALID_FILE"
     assert malformed.status_code == 422
     assert malformed.json()["error"]["code"] == "INVALID_PDF"
     assert textless.status_code == 422

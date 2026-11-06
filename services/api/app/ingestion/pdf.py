@@ -150,6 +150,7 @@ def ingest_pdf(
         "chunk_count": len(chunks),
         "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "parser_version": f"pypdf/{pypdf_version}",
+        "format": "pdf",
     }
     try:
         duplicate_id = store_document(database_path, metadata, chunks, user_id=user_id)

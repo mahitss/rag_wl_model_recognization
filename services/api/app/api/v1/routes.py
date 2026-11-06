@@ -3,6 +3,7 @@
 
 import asyncio
 import hashlib
+import os
 import sqlite3
 import time
 import uuid
@@ -24,7 +25,7 @@ from app.ingestion.image import (
     recognize_text,
     safe_image_filename,
 )
-from app.ingestion.pdf import ingest_pdf
+from app.ingestion.pipeline import ingest_document
 from app.knowledge_graph import extract_chunk
 from app.learning_analytics import build_analytics
 from app.observability import OperationalMetrics
@@ -252,6 +253,7 @@ def _safe_document(document: dict[str, Any]) -> dict[str, Any]:
         "chunkCount": document["chunk_count"],
         "createdAt": document["created_at"],
         "parserVersion": document["parser_version"],
+        "format": document.get("format", "pdf"),
         "status": "indexed",
     }
 
@@ -1149,14 +1151,27 @@ def upload_document(
     current_user: AuthUser = Depends(require_auth),
 ) -> dict[str, Any]:
     settings = _settings(request)
-    metadata = ingest_pdf(
+    file.file.seek(0)
+    file.file.read(settings.max_upload_bytes + 1)
+    file.file.seek(0)
+
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in {".pdf", ".txt", ".md", ".markdown"}:
+        raise ApiError(
+            415,
+            "UNSUPPORTED_FORMAT",
+            f"The file extension '{ext}' is not supported for document upload. "
+            "Use /api/v1/images for image uploads.",
+        )
+
+    metadata = ingest_document(
         file.file,
         filename=file.filename,
         database_path=settings.database_path,
         settings=settings,
         user_id=current_user.user_id,
     )
-    response = _safe_document(metadata)  # type: ignore[arg-type]
+    response = _safe_document(metadata)
     response["embeddingStatus"] = "not_requested"
     if settings.retrieval_mode != "lexical":
         try:

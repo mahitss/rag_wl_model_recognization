@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.config import Settings
@@ -28,7 +28,7 @@ from app.model_observability import (
     ModelObservability,
     get_model_observability,
 )
-from app.model_router import ModelFallbackChain, ModelRouter, ModelTask, ModelUnavailable
+from app.model_router import ModelRouter, ModelTask, ModelUnavailable
 from app.prompt_injection import bound_evidence_in_payload
 from app.tutor import (
     InvalidTutorResponse,
@@ -254,7 +254,7 @@ class ModelGateway:
                         ),
                         timeout=route.timeout_seconds,
                     )
-                except asyncio.TimeoutError as exc:
+                except TimeoutError:
                     last_error = (
                         f"Model {model_id} timed out after {route.timeout_seconds}s"
                     )

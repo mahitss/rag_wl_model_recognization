@@ -20,8 +20,8 @@ from typing import Any
 import pytest
 
 from app.config import Settings
-from app.model_gateway import ModelGateway, ModelGatewayRequest, model_gateway_factory
-from app.model_router import ModelRouter, ModelTask, ModelUnavailable
+from app.model_gateway import ModelGatewayRequest, model_gateway_factory
+from app.model_router import ModelRouter, ModelUnavailable
 
 
 def make_settings(tmp_path, **overrides):
@@ -168,7 +168,7 @@ def test_gateway_does_not_forward_user_id_to_model(tmp_path):
 
 def test_observability_records_no_prompt_text(tmp_path):
     """ModelObservability snapshot never contains prompt or document text."""
-    from app.model_observability import get_model_observability, ModelObservability
+    from app.model_observability import ModelObservability
 
     obs = ModelObservability()
     obs.record(

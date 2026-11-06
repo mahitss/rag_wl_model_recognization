@@ -320,6 +320,7 @@ class DocumentResponse(ApiModel):
     chunk_count: int
     created_at: str
     parser_version: str
+    format: Literal["pdf", "text", "image"] = "pdf"
     status: Literal["indexed"]
     embedding_status: Literal["not_requested", "indexed", "incomplete", "unavailable"] | None = None
 

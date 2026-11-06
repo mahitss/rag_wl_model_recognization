@@ -13,12 +13,9 @@ import asyncio
 import json
 from typing import Any
 
-import pytest
-
 from app.config import Settings
 from app.embeddings.service import EmbeddingService
-from app.model_gateway import ModelGateway, ModelGatewayRequest, model_gateway_factory
-from app.model_router import ModelUnavailable
+from app.model_gateway import ModelGatewayRequest, model_gateway_factory
 
 
 def make_settings(tmp_path, **overrides):

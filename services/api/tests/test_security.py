@@ -140,11 +140,11 @@ def test_malicious_filename_is_sanitized(tmp_path):
 
 
 def test_non_pdf_upload_is_rejected(tmp_path):
-    """Files without a PDF signature are rejected with 415."""
+    """Files with unsupported extensions are rejected with 415."""
     client = _client(tmp_path)
     response = client.post(
         "/api/v1/documents",
-        files={"file": ("not-a-pdf.txt", b"this is not a pdf", "application/pdf")},
+        files={"file": ("not-a-document.exe", b"this is not a document", "application/octet-stream")},
     )
     assert response.status_code == 415
     assert response.json()["error"]["code"] == "UNSUPPORTED_FORMAT"

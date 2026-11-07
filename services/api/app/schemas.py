@@ -1829,3 +1829,335 @@ class NextActionResponse(ApiModel):
     topicId: str | None = None
     topic: str | None = None
     requiresConfirmation: bool = False
+
+
+# ---------------------------------------------------------------------------
+# M61: Collaborative Learning & Study Groups.
+# Study groups, sessions, notes, goals, and revision items.
+# ---------------------------------------------------------------------------
+
+
+class StudyGroupCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+
+
+class StudyGroupResponse(ApiModel):
+    groupId: str
+    ownerId: str
+    title: str
+    description: str
+    status: str
+    memberCount: int
+    createdAt: str
+    updatedAt: str
+    userRole: str
+
+
+class StudyGroupListResponse(ApiModel):
+    groups: list[StudyGroupResponse]
+
+
+class StudyGroupJoinCodeRequest(ApiModel):
+    joinCode: str = Field(min_length=1, max_length=128)
+
+
+class StudyGroupInvitationCreateRequest(ApiModel):
+    targetUsername: str = Field(min_length=3, max_length=64)
+    expiresInDays: int = Field(default=7, ge=1, le=90)
+
+
+class StudyGroupInvitationResponse(ApiModel):
+    invitationId: str
+    spaceId: str
+    inviterUserId: str
+    targetUsername: str
+    expiresAt: str
+    status: str
+
+
+class StudyGroupInvitationListResponse(ApiModel):
+    invitations: list[StudyGroupInvitationResponse]
+
+
+class StudyGroupMember(ApiModel):
+    userId: str
+    username: str | None
+    role: str
+    joinedAt: str
+
+
+class StudyGroupMemberListResponse(ApiModel):
+    members: list[StudyGroupMember]
+
+
+class StudyGroupMemberRoleRequest(ApiModel):
+    role: str
+
+
+# Study session schemas.
+class StudySessionCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    topic: str = Field(min_length=1, max_length=160)
+    status: str = Field(default="scheduled")
+
+
+class StudySessionResponse(ApiModel):
+    sessionId: str
+    spaceId: str
+    title: str
+    topic: str
+    status: str
+    createdBy: str
+    createdAt: str
+    startedAt: str | None
+    completedAt: str | None
+    outcomeNote: str | None
+
+
+class StudySessionListResponse(ApiModel):
+    sessions: list[StudySessionResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class StudySessionStatusUpdateRequest(ApiModel):
+    status: str
+    outcomeNote: str | None = Field(default=None, max_length=1000)
+
+
+class StudySessionParticipant(ApiModel):
+    userId: str
+    username: str | None
+    role: str
+    joinedAt: str
+    leftAt: str | None
+
+
+class StudySessionParticipantListResponse(ApiModel):
+    participants: list[StudySessionParticipant]
+
+
+# Shared note schemas.
+class SharedNoteCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+
+
+class SharedNoteResponse(ApiModel):
+    noteId: str
+    spaceId: str
+    title: str
+    content: str
+    createdBy: str
+    updatedBy: str
+    createdAt: str
+    updatedAt: str
+
+
+class SharedNoteListResponse(ApiModel):
+    notes: list[SharedNoteResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class SharedNoteUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, min_length=1)
+
+
+# Group goal schemas.
+class GroupStudyGoalCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    targetTopic: str | None = Field(default=None, max_length=160)
+
+
+class GroupStudyGoalResponse(ApiModel):
+    goalId: str
+    spaceId: str
+    title: str
+    targetTopic: str | None
+    status: str
+    createdBy: str
+    createdAt: str
+    completedAt: str | None
+
+
+class GroupStudyGoalListResponse(ApiModel):
+    goals: list[GroupStudyGoalResponse]
+
+
+class GroupStudyGoalStatusUpdateRequest(ApiModel):
+    status: str
+
+
+# Group revision item schemas.
+class GroupRevisionItemCreateRequest(ApiModel):
+    itemType: str
+    itemId: str
+    topic: str | None = Field(default=None, max_length=160)
+    nextDueDate: str | None = None
+    assignedTo: str | None = Field(default=None, max_length=80)
+
+
+class GroupRevisionItemResponse(ApiModel):
+    itemId: str
+    spaceId: str
+    itemType: str
+    itemId: str
+    topic: str | None
+    nextDueDate: str
+    status: str
+    assignedTo: str | None
+    createdAt: str
+    updatedAt: str
+
+
+class GroupRevisionItemListResponse(ApiModel):
+    items: list[GroupRevisionItemResponse]
+
+
+# ---------------------------------------------------------------------------
+# M62: Collaborative AI Study Rooms.
+# AI-powered group study rooms with sessions, activities, and summaries.
+# ---------------------------------------------------------------------------
+
+
+class StudyRoomCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    topic: str = Field(min_length=1, max_length=160)
+    objective: str | None = Field(default=None, max_length=2000)
+    status: str = Field(default="scheduled")
+
+
+class StudyRoomResponse(ApiModel):
+    roomId: str
+    spaceId: str
+    title: str
+    topic: str
+    objective: str | None
+    status: str
+    createdBy: str
+    createdAt: str
+    startedAt: str | None
+    completedAt: str | None
+    summary: str | None
+    summaryGeneratedAt: str | None
+
+
+class StudyRoomListResponse(ApiModel):
+    rooms: list[StudyRoomResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class StudyRoomUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    topic: str | None = Field(default=None, min_length=1, max_length=160)
+    objective: str | None = Field(default=None, max_length=2000)
+    status: str | None = None
+
+
+class StudyRoomParticipantResponse(ApiModel):
+    userId: str
+    username: str | None
+    role: str
+    joinedAt: str
+    leftAt: str | None
+
+
+class StudyRoomParticipantListResponse(ApiModel):
+    participants: list[StudyRoomParticipantResponse]
+
+
+class StudyRoomActivityCreateRequest(ApiModel):
+    activityType: str
+    topic: str | None = Field(default=None, max_length=160)
+    question: str | None = Field(default=None)
+    answer: str | None = None
+    result: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudyRoomActivityResponse(ApiModel):
+    activityId: str
+    roomId: str
+    userId: str
+    activityType: str
+    topic: str | None
+    question: str | None
+    answer: str | None
+    result: str | None
+    metadata: dict[str, Any]
+    createdAt: str
+
+
+class StudyRoomActivityListResponse(ApiModel):
+    activities: list[StudyRoomActivityResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+class StudyRoomSummaryCreateRequest(ApiModel):
+    topicsCovered: list[str]
+    questionsAttempted: int
+    commonMistakes: list[str]
+    conceptsNeedingRevision: list[str]
+    unresolvedQuestions: list[str]
+    followUpRecommendations: list[str]
+    aiGenerated: bool
+
+
+class StudyRoomSummaryResponse(ApiModel):
+    summaryId: str
+    roomId: str
+    topicsCovered: list[str]
+    questionsAttempted: int
+    commonMistakes: list[str]
+    conceptsNeedingRevision: list[str]
+    unresolvedQuestions: list[str]
+    followUpRecommendations: list[str]
+    aiGenerated: bool
+    createdAt: str
+
+
+# AI-powered room actions.
+class RoomAIExplainRequest(ApiModel):
+    concept: str = Field(min_length=1, max_length=500)
+
+
+class RoomAIQuizRequest(ApiModel):
+    topic: str = Field(min_length=1, max_length=200)
+    questionCount: int = Field(default=5, ge=1, le=10)
+
+
+class RoomAIHintRequest(ApiModel):
+    question: str = Field(min_length=1, max_length=1000)
+    answer: str | None = Field(default=None, max_length=2000)
+
+
+class RoomAIExplainAnswerRequest(ApiModel):
+    question: str = Field(min_length=1, max_length=1000)
+    submittedAnswer: str = Field(min_length=1, max_length=2000)
+
+
+class RoomAISummarizeRequest(ApiModel):
+    pass
+
+
+class RoomAIResponse(ApiModel):
+    content: str
+    citations: list[dict[str, Any]] = []
+    status: str
+    metadata: dict[str, Any] = {}
+
+
+class RoomAIQuizResponse(ApiModel):
+    quizId: str | None
+    topic: str
+    questions: list[dict[str, Any]]
+    status: str

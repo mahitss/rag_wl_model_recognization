@@ -18,6 +18,7 @@ from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.verification_routes import router as verification_router
 from app.api.v1.groups_routes import router as groups_router
+from app.api.v1.groups_ai_routes import router as groups_ai_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
@@ -127,6 +128,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(journey_router)
     # Collaborative learning routes (M61: Collaborative Learning & Study Groups)
     application.include_router(groups_router)
+    # Collaborative AI study rooms routes (M62: Collaborative AI Study Sessions)
+    application.include_router(groups_ai_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 22
+SCHEMA_VERSION = 23
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -2752,6 +2752,109 @@ def initialize_storage(database_path: Path) -> None:
                     "ON group_revision_items(space_id, next_due_date)"
                 )
 
+                # M62: Collaborative AI Study Rooms.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_rooms (
+                        room_id TEXT PRIMARY KEY,
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 160),
+                        objective TEXT,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'scheduled', 'active', 'completed', 'cancelled'
+                        )),
+                        created_by TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        summary TEXT,
+                        summary_generated_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_rooms_space "
+                    "ON study_rooms(space_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_rooms_created_by "
+                    "ON study_rooms(created_by)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_room_participants (
+                        room_id TEXT NOT NULL REFERENCES study_rooms(room_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN ('host', 'participant')),
+                        joined_at TEXT NOT NULL,
+                        left_at TEXT,
+                        PRIMARY KEY (room_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_room_participants_room "
+                    "ON study_room_participants(room_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_room_participants_user "
+                    "ON study_room_participants(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_room_activities (
+                        activity_id TEXT PRIMARY KEY,
+                        room_id TEXT NOT NULL REFERENCES study_rooms(room_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        activity_type TEXT NOT NULL CHECK (activity_type IN (
+                            'quiz_challenge', 'qa_round', 'concept_explanation',
+                            'peer_teaching', 'flashcard_session', 'revision_competition'
+                        )),
+                        topic TEXT,
+                        question TEXT,
+                        answer TEXT,
+                        result TEXT,
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_room_activities_room "
+                    "ON study_room_activities(room_id, created_at DESC)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_room_summaries (
+                        summary_id TEXT PRIMARY KEY,
+                        room_id TEXT NOT NULL REFERENCES study_rooms(room_id)
+                            ON DELETE CASCADE,
+                        topics_covered_json TEXT NOT NULL DEFAULT '[]',
+                        questions_attempted INTEGER NOT NULL DEFAULT 0,
+                        common_mistakes_json TEXT NOT NULL DEFAULT '[]',
+                        concepts_needing_revision_json TEXT NOT NULL DEFAULT '[]',
+                        unresolved_questions_json TEXT NOT NULL DEFAULT '[]',
+                        follow_up_recommendations_json TEXT NOT NULL DEFAULT '[]',
+                        ai_generated INTEGER NOT NULL CHECK (ai_generated IN (0, 1)),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_room_summaries_room "
+                    "ON study_room_summaries(room_id)"
+                )
+
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         connection.execute("PRAGMA foreign_keys = ON")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
@@ -4645,10 +4748,15 @@ def start_study_session(
             )
     return {
         "sessionId": session_id,
-        "topicId": topic_id,
+        "spaceId": topic_id,
+        "title": topic,
         "topic": topic,
+        "status": "scheduled",
+        "createdBy": user_id or "",
+        "createdAt": started_at,
         "startedAt": started_at,
         "completedAt": None,
+        "outcomeNote": None,
     }
 
 
@@ -4682,10 +4790,15 @@ def complete_study_session(
         return None
     return {
         "sessionId": row["session_id"],
-        "topicId": row["topic_id"],
+        "spaceId": row["topic_id"],
+        "title": row["topic"],
         "topic": row["topic"],
+        "status": "completed",
+        "createdBy": user_id or "",
+        "createdAt": row["started_at"],
         "startedAt": row["started_at"],
         "completedAt": row["completed_at"],
+        "outcomeNote": None,
     }
 
 
@@ -9158,3 +9271,618 @@ def update_group_revision_item(
                 tuple(values),
             )
     return True
+
+
+# ---------------------------------------------------------------------------
+# M62: Collaborative AI Study Rooms functions.
+# Study rooms, participants, activities, and summaries.
+# ---------------------------------------------------------------------------
+
+def create_study_room(
+    database_path: Path,
+    *,
+    space_id: str,
+    created_by: str,
+    title: str,
+    topic: str,
+    objective: str | None = None,
+    status: str = "scheduled",
+) -> dict[str, Any] | None:
+    """Create an AI-powered collaborative study room for a group.
+    Caller must be a space member."""
+    if not _is_workspace_member(database_path, space_id, created_by):
+        return None
+    if status not in {"scheduled", "active", "completed", "cancelled"}:
+        raise ValueError("status must be 'scheduled', 'active', 'completed', or 'cancelled'")
+    room_id = f"room_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    topic = topic.strip()
+    objective = (objective or "").strip() or None
+    if not title or not topic:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO study_rooms(
+                    room_id, space_id, title, topic, objective, status,
+                    created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (room_id, space_id, title, topic, objective, status, created_by, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO study_room_participants(room_id, user_id, role, joined_at)
+                VALUES (?, ?, 'host', ?)
+                """,
+                (room_id, created_by, now),
+            )
+    return {
+        "roomId": room_id,
+        "spaceId": space_id,
+        "title": title,
+        "topic": topic,
+        "objective": objective,
+        "status": status,
+        "createdBy": created_by,
+        "createdAt": now,
+        "startedAt": None,
+        "completedAt": None,
+        "summary": None,
+        "summaryGeneratedAt": None,
+    }
+
+
+def get_study_room(
+    database_path: Path,
+    *,
+    room_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a study room if the user is a participant or space member."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT r.room_id, r.space_id, r.title, r.topic, r.objective, r.status,
+                   r.created_by, r.created_at, r.started_at, r.completed_at,
+                   r.summary, r.summary_generated_at
+            FROM study_rooms AS r
+            WHERE r.room_id = ?
+            """,
+            (room_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not _is_workspace_member(database_path, row["space_id"], user_id):
+            return None
+    return {
+        "roomId": row["room_id"],
+        "spaceId": row["space_id"],
+        "title": row["title"],
+        "topic": row["topic"],
+        "objective": row["objective"],
+        "status": row["status"],
+        "createdBy": row["created_by"],
+        "createdAt": row["created_at"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
+        "summary": row["summary"],
+        "summaryGeneratedAt": row["summary_generated_at"],
+    }
+
+
+def list_study_rooms(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int] | None:
+    """List study rooms for a space. Caller must be a member."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    query = """
+        SELECT room_id, title, topic, objective, status, created_by, created_at,
+               started_at, completed_at, summary, summary_generated_at
+        FROM study_rooms
+        WHERE space_id = ?
+    """
+    params: list[Any] = [space_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    count_query = "SELECT COUNT(*) AS c FROM study_rooms WHERE space_id = ?"
+    count_params: list[Any] = [space_id]
+    if status is not None:
+        count_query += " AND status = ?"
+        count_params.append(status)
+    with closing(connect_database(database_path)) as connection:
+        total = connection.execute(count_query, count_params).fetchone()["c"]
+        rows = connection.execute(query, params).fetchall()
+    return (
+        [
+            {
+                "roomId": row["room_id"],
+                "title": row["title"],
+                "topic": row["topic"],
+                "objective": row["objective"],
+                "status": row["status"],
+                "createdBy": row["created_by"],
+                "createdAt": row["created_at"],
+                "startedAt": row["started_at"],
+                "completedAt": row["completed_at"],
+                "summary": row["summary"],
+                "summaryGeneratedAt": row["summary_generated_at"],
+            }
+            for row in rows
+        ],
+        total,
+    )
+
+
+def update_study_room(
+    database_path: Path,
+    *,
+    room_id: str,
+    actor_user_id: str,
+    title: str | None = None,
+    topic: str | None = None,
+    objective: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a study room. Host or space owner/moderator only."""
+    if status is not None and status not in {"scheduled", "active", "completed", "cancelled"}:
+        return None
+    row = None
+    space_id = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT r.room_id, r.space_id, r.status, r.created_by
+            FROM study_rooms AS r
+            WHERE r.room_id = ?
+            """,
+            (room_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        space_id = row["space_id"]
+        is_host = connection.execute(
+            "SELECT 1 FROM study_room_participants WHERE room_id = ? AND user_id = ? AND role = 'host'",
+            (room_id, actor_user_id),
+        ).fetchone() is not None
+        is_space_mod = _workspace_member_row(database_path, space_id, actor_user_id)
+        if not is_host and (
+            is_space_mod is None or is_space_mod["role"] not in {"owner", "moderator"}
+        ):
+            return None
+        updates = []
+        values = []
+        now = datetime.now(UTC).isoformat()
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if topic is not None:
+            topic = topic.strip()
+            if not topic:
+                return None
+            updates.append("topic = ?")
+            values.append(topic)
+        if objective is not None:
+            objective = objective.strip() or None
+            updates.append("objective = ?")
+            values.append(objective)
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+            if status == "active":
+                updates.append("started_at = ?")
+                values.append(now)
+            elif status == "completed":
+                updates.append("completed_at = ?")
+                values.append(now)
+        if not updates:
+            return None
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(room_id)
+        with connection:
+            connection.execute(
+                f"UPDATE study_rooms SET {', '.join(updates)} WHERE room_id = ?",
+                tuple(values),
+            )
+    return get_study_room(database_path, room_id=room_id, user_id=actor_user_id)
+
+
+def delete_study_room(
+    database_path: Path,
+    *,
+    room_id: str,
+    actor_user_id: str,
+) -> bool:
+    """Delete a study room. Host or space owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT space_id, created_by FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        space_id = row["space_id"]
+        if not _is_workspace_member(database_path, space_id, actor_user_id):
+            return False
+        member = _workspace_member_row(database_path, space_id, actor_user_id)
+        is_host = connection.execute(
+            "SELECT 1 FROM study_room_participants WHERE room_id = ? AND user_id = ? AND role = 'host'",
+            (room_id, actor_user_id),
+        ).fetchone() is not None
+        if row["created_by"] != actor_user_id and not is_host and (
+            member is None or member["role"] != "owner"
+        ):
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM study_rooms WHERE room_id = ?",
+                (room_id,),
+            )
+    return True
+
+
+def join_study_room(
+    database_path: Path,
+    *,
+    room_id: str,
+    user_id: str,
+) -> bool:
+    """Join an active study room as a participant."""
+    with closing(connect_database(database_path)) as connection:
+        room = connection.execute(
+            "SELECT room_id, space_id, status FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if room is None or room["status"] != "active":
+            return False
+        if not _is_workspace_member(database_path, room["space_id"], user_id):
+            return False
+        existing = connection.execute(
+            "SELECT 1 FROM study_room_participants WHERE room_id = ? AND user_id = ?",
+            (room_id, user_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO study_room_participants(room_id, user_id, role, joined_at)
+                VALUES (?, ?, 'participant', ?)
+                """,
+                (room_id, user_id, now),
+            )
+    return True
+
+
+def leave_study_room(
+    database_path: Path,
+    *,
+    room_id: str,
+    user_id: str,
+) -> bool:
+    """Leave a study room. Host cannot leave their own room."""
+    with closing(connect_database(database_path)) as connection:
+        room = connection.execute(
+            "SELECT room_id FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if room is None:
+            return False
+        is_host = connection.execute(
+            "SELECT 1 FROM study_room_participants WHERE room_id = ? AND user_id = ? AND role = 'host'",
+            (room_id, user_id),
+        ).fetchone() is not None
+        if is_host:
+            return False
+        member = connection.execute(
+            "SELECT 1 FROM study_room_participants WHERE room_id = ? AND user_id = ?",
+            (room_id, user_id),
+        ).fetchone()
+        if member is None:
+            return False
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                "UPDATE study_room_participants SET left_at = ? WHERE room_id = ? AND user_id = ?",
+                (now, room_id, user_id),
+            )
+    return True
+
+
+def list_study_room_participants(
+    database_path: Path,
+    *,
+    room_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List participants of a study room. Caller must be a space member."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT space_id FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not _is_workspace_member(database_path, row["space_id"], user_id):
+            return None
+        rows = connection.execute(
+            """
+            SELECT p.user_id, p.role, p.joined_at, p.left_at, u.username
+            FROM study_room_participants AS p
+            JOIN users AS u ON u.user_id = p.user_id
+            WHERE p.room_id = ?
+            ORDER BY p.role DESC, p.joined_at ASC
+            """,
+            (room_id,),
+        ).fetchall()
+    return [
+        {
+            "userId": row["user_id"],
+            "username": row["username"],
+            "role": row["role"],
+            "joinedAt": row["joined_at"],
+            "leftAt": row["left_at"],
+        }
+        for row in rows
+    ]
+
+
+def record_study_room_activity(
+    database_path: Path,
+    *,
+    room_id: str,
+    user_id: str,
+    activity_type: str,
+    topic: str | None = None,
+    question: str | None = None,
+    answer: str | None = None,
+    result: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Record an activity in a study room. Caller must be a participant."""
+    if activity_type not in {
+        "quiz_challenge", "qa_round", "concept_explanation",
+        "peer_teaching", "flashcard_session", "revision_competition",
+    }:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        room = connection.execute(
+            "SELECT space_id FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if room is None:
+            return None
+        if not _is_workspace_member(database_path, room["space_id"], user_id):
+            return None
+        participant = connection.execute(
+            "SELECT 1 FROM study_room_participants WHERE room_id = ? AND user_id = ? AND left_at IS NULL",
+            (room_id, user_id),
+        ).fetchone()
+        if participant is None:
+            return None
+        activity_id = f"act_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        import json as _json
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO study_room_activities(
+                    activity_id, room_id, user_id, activity_type, topic,
+                    question, answer, result, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    activity_id,
+                    room_id,
+                    user_id,
+                    activity_type,
+                    topic,
+                    question,
+                    answer,
+                    result,
+                    _json.dumps(metadata or {}),
+                    now,
+                ),
+            )
+    return {
+        "activityId": activity_id,
+        "roomId": room_id,
+        "userId": user_id,
+        "activityType": activity_type,
+        "topic": topic,
+        "question": question,
+        "answer": answer,
+        "result": result,
+        "metadata": metadata or {},
+        "createdAt": now,
+    }
+
+
+def list_study_room_activities(
+    database_path: Path,
+    *,
+    room_id: str,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int] | None:
+    """List activities for a study room. Caller must be a space member."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT space_id FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not _is_workspace_member(database_path, row["space_id"], user_id):
+            return None
+        total = connection.execute(
+            "SELECT COUNT(*) AS c FROM study_room_activities WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()["c"]
+        rows = connection.execute(
+            """
+            SELECT activity_id, user_id, activity_type, topic, question,
+                   answer, result, metadata_json, created_at
+            FROM study_room_activities
+            WHERE room_id = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (room_id, limit, offset),
+        ).fetchall()
+    import json as _json
+    return (
+        [
+            {
+                "activityId": row["activity_id"],
+                "userId": row["user_id"],
+                "activityType": row["activity_type"],
+                "topic": row["topic"],
+                "question": row["question"],
+                "answer": row["answer"],
+                "result": row["result"],
+                "metadata": _json.loads(row["metadata_json"] or "{}"),
+                "createdAt": row["created_at"],
+            }
+            for row in rows
+        ],
+        total,
+    )
+
+
+def create_study_room_summary(
+    database_path: Path,
+    *,
+    room_id: str,
+    topics_covered: list[str],
+    questions_attempted: int,
+    common_mistakes: list[str],
+    concepts_needing_revision: list[str],
+    unresolved_questions: list[str],
+    follow_up_recommendations: list[str],
+    ai_generated: bool,
+) -> dict[str, Any] | None:
+    """Create or replace a session summary for a study room."""
+    import json as _json
+    with closing(connect_database(database_path)) as connection:
+        room = connection.execute(
+            "SELECT room_id, space_id FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if room is None:
+            return None
+        summary_id = f"sum_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            # Replace any existing summary for this room.
+            connection.execute(
+                "DELETE FROM study_room_summaries WHERE room_id = ?",
+                (room_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO study_room_summaries(
+                    summary_id, room_id, topics_covered_json,
+                    questions_attempted, common_mistakes_json,
+                    concepts_needing_revision_json, unresolved_questions_json,
+                    follow_up_recommendations_json, ai_generated, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    summary_id,
+                    room_id,
+                    _json.dumps(topics_covered),
+                    questions_attempted,
+                    _json.dumps(common_mistakes),
+                    _json.dumps(concepts_needing_revision),
+                    _json.dumps(unresolved_questions),
+                    _json.dumps(follow_up_recommendations),
+                    1 if ai_generated else 0,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE study_rooms SET summary = ?, summary_generated_at = ? WHERE room_id = ?",
+                (now, now, room_id),
+            )
+    return {
+        "summaryId": summary_id,
+        "roomId": room_id,
+        "topicsCovered": topics_covered,
+        "questionsAttempted": questions_attempted,
+        "commonMistakes": common_mistakes,
+        "conceptsNeedingRevision": concepts_needing_revision,
+        "unresolvedQuestions": unresolved_questions,
+        "followUpRecommendations": follow_up_recommendations,
+        "aiGenerated": ai_generated,
+        "createdAt": now,
+    }
+
+
+def get_study_room_summary(
+    database_path: Path,
+    *,
+    room_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return the session summary for a study room. Caller must be a space member."""
+    import json as _json
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT space_id FROM study_rooms WHERE room_id = ?",
+            (room_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not _is_workspace_member(database_path, row["space_id"], user_id):
+            return None
+        summary = connection.execute(
+            """
+            SELECT summary_id, topics_covered_json, questions_attempted,
+                   common_mistakes_json, concepts_needing_revision_json,
+                   unresolved_questions_json, follow_up_recommendations_json,
+                   ai_generated, created_at
+            FROM study_room_summaries
+            WHERE room_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (room_id,),
+        ).fetchone()
+        if summary is None:
+            return None
+    return {
+        "summaryId": summary["summary_id"],
+        "roomId": room_id,
+        "topicsCovered": _json.loads(summary["topics_covered_json"]),
+        "questionsAttempted": summary["questions_attempted"],
+        "commonMistakes": _json.loads(summary["common_mistakes_json"]),
+        "conceptsNeedingRevision": _json.loads(summary["concepts_needing_revision_json"]),
+        "unresolvedQuestions": _json.loads(summary["unresolved_questions_json"]),
+        "followUpRecommendations": _json.loads(summary["follow_up_recommendations_json"]),
+        "aiGenerated": bool(summary["ai_generated"]),
+        "createdAt": summary["created_at"],
+    }
+

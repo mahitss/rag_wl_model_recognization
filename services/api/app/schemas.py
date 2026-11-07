@@ -2575,3 +2575,129 @@ class CompetencyMasteryResponse(ApiModel):
 class CompetencyMasteryUpdateRequest(ApiModel):
     masteryScore: float = Field(ge=0.0, le=1.0)
 
+
+# ---------------------------------------------------------------------------
+# M65: Learning Gap Intelligence & Remediation Engine schemas.
+# Gap detection, root-cause analysis, remediation, reassessment.
+# ---------------------------------------------------------------------------
+
+
+class LearningGapResponse(ApiModel):
+    gapId: str
+    userId: str
+    topicId: str | None
+    topic: str | None
+    competencyId: str | None
+    gapType: str
+    severity: str
+    evidenceStrength: str
+    status: str
+    recurrence: int
+    detectedAt: str
+    acknowledgedAt: str | None
+    resolvedAt: str | None
+    dismissedAt: str | None
+    rootCauseHypothesis: str | None
+    rootCauseEvidence: str | None
+    baselineMastery: float | None
+    reassessedMastery: float | None
+
+
+class LearningGapListResponse(ApiModel):
+    gaps: list[LearningGapResponse]
+
+
+class GapEvidenceResponse(ApiModel):
+    evidenceId: str
+    gapId: str
+    evidenceType: str
+    referenceId: str
+    description: str | None
+    recordedAt: str
+
+
+class GapEvidenceListResponse(ApiModel):
+    evidence: list[GapEvidenceResponse]
+
+
+class GapRemediationResponse(ApiModel):
+    remediationId: str
+    gapId: str
+    activityType: str
+    title: str
+    description: str | None
+    priorityScore: float
+    rationale: str | None
+    status: str
+    createdAt: str
+    acceptedAt: str | None
+    completedAt: str | None
+
+
+class GapRemediationListResponse(ApiModel):
+    remediations: list[GapRemediationResponse]
+
+
+class RemediationAcceptRequest(ApiModel):
+    pass
+
+
+class RemediationDismissRequest(ApiModel):
+    pass
+
+
+class RemediationCompleteRequest(ApiModel):
+    pass
+
+
+class RemediationReassessmentResponse(ApiModel):
+    reassessmentId: str
+    gapId: str
+    activityId: str | None
+    beforeMastery: float
+    afterMastery: float
+    improvement: float
+    resolved: bool
+    reassessedAt: str
+
+
+class RemediationReassessmentListResponse(ApiModel):
+    reassessments: list[RemediationReassessmentResponse]
+
+
+class RemediationReassessmentCreateRequest(ApiModel):
+    activityId: str | None
+    beforeMastery: float = Field(ge=0.0, le=1.0)
+    afterMastery: float = Field(ge=0.0, le=1.0)
+    resolved: bool = False
+
+
+class GapDetectionRequest(ApiModel):
+    pass
+
+
+class GapDetectionResponse(ApiModel):
+    gapsDetected: int
+    gaps: list[LearningGapResponse]
+
+
+class GapRootCauseRequest(ApiModel):
+    hypothesis: str | None = None
+    evidence: str | None = None
+
+
+class GapDismissRequest(ApiModel):
+    reason: str | None = None
+
+
+class LearningGapDashboardResponse(ApiModel):
+    totalGaps: int
+    criticalGaps: int
+    moderateGaps: int
+    minorGaps: int
+    detectedGaps: int
+    remediatingGaps: int
+    resolvedGaps: int
+    dismissedGaps: int
+    gaps: list[LearningGapResponse]
+

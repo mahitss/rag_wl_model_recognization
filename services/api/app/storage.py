@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 25
+SCHEMA_VERSION = 26
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -3233,6 +3233,126 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_user_competency_mastery_user_id "
                     "ON user_competency_mastery(user_id)"
+                )
+
+                # M65: Learning Gap Intelligence & Remediation Engine.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_gaps (
+                        gap_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        topic_id TEXT,
+                        topic TEXT,
+                        competency_id TEXT REFERENCES competencies(competency_id)
+                            ON DELETE SET NULL,
+                        gap_type TEXT NOT NULL CHECK (gap_type IN (
+                            'incorrect_response', 'repeated_misconception',
+                            'weak_competency', 'missing_prerequisite',
+                            'repeated_forgetting', 'unanswered_objective',
+                            'proficiency_gap'
+                        )),
+                        severity TEXT NOT NULL CHECK (severity IN (
+                            'critical', 'moderate', 'minor'
+                        )),
+                        evidence_strength TEXT NOT NULL CHECK (evidence_strength IN (
+                            'strong', 'moderate', 'weak'
+                        )),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'detected', 'acknowledged', 'remediating',
+                            'resolved', 'dismissed', 'challenged'
+                        )),
+                        recurrence INTEGER NOT NULL CHECK (recurrence >= 0),
+                        detected_at TEXT NOT NULL,
+                        acknowledged_at TEXT,
+                        resolved_at TEXT,
+                        dismissed_at TEXT,
+                        root_cause_hypothesis TEXT,
+                        root_cause_evidence TEXT,
+                        baseline_mastery REAL CHECK (baseline_mastery >= 0.0 AND baseline_mastery <= 1.0),
+                        reassessed_mastery REAL CHECK (reassessed_mastery >= 0.0 AND reassessed_mastery <= 1.0)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_gaps_user_id "
+                    "ON learning_gaps(user_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_gaps_competency_id "
+                    "ON learning_gaps(competency_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gap_evidence (
+                        evidence_id TEXT PRIMARY KEY,
+                        gap_id TEXT NOT NULL REFERENCES learning_gaps(gap_id)
+                            ON DELETE CASCADE,
+                        evidence_type TEXT NOT NULL CHECK (evidence_type IN (
+                            'assessment_attempt', 'question_answer', 'competency_mastery',
+                            'review_item', 'objective', 'prerequisite'
+                        )),
+                        reference_id TEXT NOT NULL,
+                        description TEXT,
+                        recorded_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_gap_evidence_gap_id "
+                    "ON gap_evidence(gap_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS gap_remediations (
+                        remediation_id TEXT PRIMARY KEY,
+                        gap_id TEXT NOT NULL REFERENCES learning_gaps(gap_id)
+                            ON DELETE CASCADE,
+                        activity_type TEXT NOT NULL CHECK (activity_type IN (
+                            'prerequisite_revision', 'targeted_explanation',
+                            'source_material', 'practice_questions',
+                            'flashcards', 'concept_diagram', 'focused_quiz',
+                            'scheduled_revision', 'competency_assessment'
+                        )),
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT,
+                        priority_score REAL NOT NULL,
+                        rationale TEXT,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'recommended', 'accepted', 'dismissed',
+                            'in_progress', 'completed'
+                        )),
+                        created_at TEXT NOT NULL,
+                        accepted_at TEXT,
+                        completed_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_gap_remediations_gap_id "
+                    "ON gap_remediations(gap_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS remediation_reassessments (
+                        reassessment_id TEXT PRIMARY KEY,
+                        gap_id TEXT NOT NULL REFERENCES learning_gaps(gap_id)
+                            ON DELETE CASCADE,
+                        activity_id TEXT,
+                        before_mastery REAL CHECK (before_mastery >= 0.0 AND before_mastery <= 1.0),
+                        after_mastery REAL CHECK (after_mastery >= 0.0 AND after_mastery <= 1.0),
+                        improvement REAL,
+                        resolved BOOLEAN NOT NULL DEFAULT 0,
+                        reassessed_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_remediation_reassessments_gap_id "
+                    "ON remediation_reassessments(gap_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -12084,6 +12204,883 @@ def update_competency_mastery(
         "evidenceCount": mastery_row["evidence_count"],
         "lastAssessedAt": mastery_row["last_assessed_at"],
     }
+
+
+# ---------------------------------------------------------------------------
+# M65: Learning Gap Intelligence & Remediation Engine functions.
+# Gap detection, evidence tracking, remediation, reassessment.
+# ---------------------------------------------------------------------------
+
+def detect_learning_gaps(
+    database_path: Path,
+    *,
+    user_id: str,
+    now: datetime,
+) -> list[dict[str, Any]]:
+    """Detect learning gaps for a user from persisted assessment and competency data.
+
+    Only classifies gaps where actual evidence exists. Missing data is never
+    treated as poor performance.
+    """
+    detected: list[dict[str, Any]] = []
+    now_iso = now.isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        # --- Load persisted data ------------------------------------------------
+        attempts = [
+            dict(row)
+            for row in connection.execute(
+                """SELECT a.rowid AS sequence, a.attempt_id AS attemptId,
+                          a.question_id AS questionId,
+                          a.outcome, a.created_at AS createdAt, q.prompt,
+                          s.topic_id AS topicId, s.topic
+                   FROM quiz_attempts a
+                   JOIN quiz_questions q ON q.question_id = a.question_id
+                   JOIN quiz_sets s ON s.quiz_id = q.quiz_id
+                   WHERE a.user_id = ? AND q.user_id = ? AND s.user_id = ?
+                   ORDER BY a.created_at DESC, a.rowid DESC""",
+                (user_id, user_id, user_id),
+            )
+        ]
+
+        reviews = [
+            {
+                "questionId": row["question_id"],
+                "topicId": row["topic_id"],
+                "topic": row["topic"],
+                "outcome": row["last_outcome"],
+                "attemptedAt": row["attempted_at"],
+                "dueAt": row["due_at"],
+            }
+            for row in connection.execute(
+                "SELECT * FROM topic_review_items WHERE user_id=? ORDER BY due_at, question_id",
+                (user_id,),
+            )
+        ]
+
+        # --- 1. Incorrect response gaps ---------------------------------------
+        incorrect_by_topic: dict[str, list[dict[str, Any]]] = {}
+        for attempt in attempts:
+            if attempt["outcome"] == "incorrect":
+                incorrect_by_topic.setdefault(attempt["topicId"], []).append(attempt)
+
+        for topic_id, items in incorrect_by_topic.items():
+            topic = items[0]["topic"]
+            recurrence = len(items)
+            latest = items[0]["createdAt"]
+            severity = "critical" if recurrence >= 3 else ("moderate" if recurrence >= 2 else "minor")
+            evidence_strength = "strong" if recurrence >= 2 else "weak"
+
+            gap_id = f"gap_{secrets.token_urlsafe(12)}"
+            connection.execute(
+                """
+                INSERT INTO learning_gaps(
+                    gap_id, user_id, topic_id, topic, gap_type, severity,
+                    evidence_strength, status, recurrence, detected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    gap_id, user_id, topic_id, topic, "incorrect_response",
+                    severity, evidence_strength, "detected", recurrence, now_iso,
+                ),
+            )
+            for item in items[:5]:
+                connection.execute(
+                    """
+                    INSERT INTO gap_evidence(
+                        evidence_id, gap_id, evidence_type, reference_id,
+                        description, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"ev_{secrets.token_urlsafe(12)}", gap_id,
+                        "question_answer", item["questionId"],
+                        f"Incorrect answer on question: {item['prompt'][:120]}",
+                        item["createdAt"],
+                    ),
+                )
+
+        # --- 2. Repeated misconception gaps (same topic incorrect across attempts)
+        # Already captured by incorrect_response with recurrence >= 2.
+        # We also flag topics where reviews show repeated forgetting.
+        weak_topics_rows = connection.execute(
+            """
+            SELECT topic_id, forget_count, last_forgotten_at
+            FROM weak_topics
+            WHERE user_id = ? AND is_weak = 1
+            ORDER BY forget_count DESC
+            """,
+            (user_id,),
+        ).fetchall()
+
+        for row in weak_topics_rows:
+            topic_id = row["topic_id"]
+            forget_count = row["forget_count"]
+            # Skip if already covered by incorrect_response gap for this topic
+            existing = connection.execute(
+                "SELECT 1 FROM learning_gaps WHERE user_id = ? AND topic_id = ? AND gap_type = 'incorrect_response'",
+                (user_id, topic_id),
+            ).fetchone()
+            if existing:
+                continue
+
+            severity = "critical" if forget_count >= 3 else ("moderate" if forget_count >= 2 else "minor")
+            gap_id = f"gap_{secrets.token_urlsafe(12)}"
+            connection.execute(
+                """
+                INSERT INTO learning_gaps(
+                    gap_id, user_id, topic_id, topic, gap_type, severity,
+                    evidence_strength, status, recurrence, detected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    gap_id, user_id, topic_id, row["topic_id"], "repeated_forgetting",
+                    severity, "strong" if forget_count >= 2 else "weak",
+                    "detected", forget_count, row["last_forgotten_at"] or now_iso,
+                ),
+            )
+
+        # --- 3. Weak competency gaps ------------------------------------------
+        competencies = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT competency_id, title, level FROM competencies WHERE user_id = ?",
+                (user_id,),
+            )
+        ]
+        for comp in competencies:
+            mastery = get_competency_mastery(database_path, competency_id=comp["competency_id"], user_id=user_id)
+            if mastery is None:
+                continue  # No evidence -> not a gap (missing data is not poor performance)
+            if mastery["masteryScore"] < 0.60:
+                existing = connection.execute(
+                    "SELECT 1 FROM learning_gaps WHERE user_id = ? AND competency_id = ? AND gap_type = 'weak_competency'",
+                    (user_id, comp["competency_id"]),
+                ).fetchone()
+                if existing:
+                    continue
+                severity = "critical" if mastery["masteryScore"] < 0.40 else "moderate"
+                gap_id = f"gap_{secrets.token_urlsafe(12)}"
+                connection.execute(
+                    """
+                    INSERT INTO learning_gaps(
+                        gap_id, user_id, competency_id, gap_type, severity,
+                        evidence_strength, status, recurrence, detected_at,
+                        baseline_mastery
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        gap_id, user_id, comp["competency_id"], "weak_competency",
+                        severity, "strong", "detected", 1, now_iso,
+                        mastery["masteryScore"],
+                    ),
+                )
+                connection.execute(
+                    """
+                    INSERT INTO gap_evidence(
+                        evidence_id, gap_id, evidence_type, reference_id,
+                        description, recorded_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"ev_{secrets.token_urlsafe(12)}", gap_id,
+                        "competency_mastery", comp["competency_id"],
+                        f"Competency '{comp['title']}' mastery at {mastery['masteryScore']:.0%} (below 60% threshold).",
+                        mastery["lastAssessedAt"] or now_iso,
+                    ),
+                )
+
+        # --- 4. Missing prerequisite gaps -------------------------------------
+        for comp in competencies:
+            prereqs = connection.execute(
+                """
+                SELECT cp.prerequisite_competency_id, c.title, c.level
+                FROM competency_prerequisites cp
+                JOIN competencies c ON c.competency_id = cp.prerequisite_competency_id
+                WHERE cp.competency_id = ?
+                """,
+                (comp["competency_id"],),
+            ).fetchall()
+            for prereq in prereqs:
+                prereq_mastery = get_competency_mastery(
+                    database_path, competency_id=prereq["prerequisite_competency_id"], user_id=user_id
+                )
+                if prereq_mastery is None:
+                    continue  # No evidence -> can't determine
+                if prereq_mastery["masteryScore"] < 0.60:
+                    existing = connection.execute(
+                        """
+                        SELECT 1 FROM learning_gaps
+                        WHERE user_id = ? AND competency_id = ? AND gap_type = 'missing_prerequisite'
+                        """,
+                        (user_id, comp["competency_id"]),
+                    ).fetchone()
+                    if existing:
+                        continue
+                    gap_id = f"gap_{secrets.token_urlsafe(12)}"
+                    connection.execute(
+                        """
+                        INSERT INTO learning_gaps(
+                            gap_id, user_id, competency_id, gap_type, severity,
+                            evidence_strength, status, recurrence, detected_at,
+                            baseline_mastery
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            gap_id, user_id, comp["competency_id"], "missing_prerequisite",
+                            "moderate", "strong", "detected", 1, now_iso,
+                            prereq_mastery["masteryScore"],
+                        ),
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO gap_evidence(
+                            evidence_id, gap_id, evidence_type, reference_id,
+                            description, recorded_at
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            f"ev_{secrets.token_urlsafe(12)}", gap_id,
+                            "prerequisite", prereq["prerequisite_competency_id"],
+                            f"Prerequisite '{prereq['title']}' mastery at {prereq_mastery['masteryScore']:.0%} (below 60% threshold).",
+                            prereq_mastery["lastAssessedAt"] or now_iso,
+                        ),
+                    )
+
+        connection.commit()
+
+    # Return the newly detected (and existing) gaps for this user
+    return list_learning_gaps(database_path, user_id=user_id)
+
+
+def create_learning_gap(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None,
+    topic: str | None,
+    competency_id: str | None,
+    gap_type: str,
+    severity: str,
+    evidence_strength: str,
+    recurrence: int = 1,
+    baseline_mastery: float | None = None,
+) -> dict[str, Any] | None:
+    """Manually create a learning gap record. Owner only."""
+    if gap_type not in {
+        "incorrect_response", "repeated_misconception", "weak_competency",
+        "missing_prerequisite", "repeated_forgetting", "unanswered_objective",
+        "proficiency_gap",
+    }:
+        return None
+    if severity not in {"critical", "moderate", "minor"}:
+        return None
+    if evidence_strength not in {"strong", "moderate", "weak"}:
+        return None
+    if baseline_mastery is not None and not (0.0 <= baseline_mastery <= 1.0):
+        return None
+
+    gap_id = f"gap_{secrets.token_urlsafe(12)}"
+    now_iso = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        if competency_id is not None:
+            row = connection.execute(
+                "SELECT user_id FROM competencies WHERE competency_id = ?",
+                (competency_id,),
+            ).fetchone()
+            if row is None or row["user_id"] != user_id:
+                return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO learning_gaps(
+                    gap_id, user_id, topic_id, topic, competency_id, gap_type,
+                    severity, evidence_strength, status, recurrence,
+                    detected_at, baseline_mastery
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    gap_id, user_id, topic_id, topic, competency_id, gap_type,
+                    severity, evidence_strength, "detected", recurrence,
+                    now_iso, baseline_mastery,
+                ),
+            )
+    return {
+        "gapId": gap_id,
+        "userId": user_id,
+        "topicId": topic_id,
+        "topic": topic,
+        "competencyId": competency_id,
+        "gapType": gap_type,
+        "severity": severity,
+        "evidenceStrength": evidence_strength,
+        "status": "detected",
+        "recurrence": recurrence,
+        "detectedAt": now_iso,
+        "baselineMastery": baseline_mastery,
+    }
+
+
+def get_learning_gap(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a learning gap if owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT gap_id, user_id, topic_id, topic, competency_id, gap_type,
+                   severity, evidence_strength, status, recurrence,
+                   detected_at, acknowledged_at, resolved_at, dismissed_at,
+                   root_cause_hypothesis, root_cause_evidence,
+                   baseline_mastery, reassessed_mastery
+            FROM learning_gaps
+            WHERE gap_id = ?
+            """,
+            (gap_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "gapId": row["gap_id"],
+        "userId": row["user_id"],
+        "topicId": row["topic_id"],
+        "topic": row["topic"],
+        "competencyId": row["competency_id"],
+        "gapType": row["gap_type"],
+        "severity": row["severity"],
+        "evidenceStrength": row["evidence_strength"],
+        "status": row["status"],
+        "recurrence": row["recurrence"],
+        "detectedAt": row["detected_at"],
+        "acknowledgedAt": row["acknowledged_at"],
+        "resolvedAt": row["resolved_at"],
+        "dismissedAt": row["dismissed_at"],
+        "rootCauseHypothesis": row["root_cause_hypothesis"],
+        "rootCauseEvidence": row["root_cause_evidence"],
+        "baselineMastery": row["baseline_mastery"],
+        "reassessedMastery": row["reassessed_mastery"],
+    }
+
+
+def list_learning_gaps(
+    database_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+    gap_type: str | None = None,
+    severity: str | None = None,
+) -> list[dict[str, Any]]:
+    """List learning gaps for a user, optionally filtered."""
+    query = """
+        SELECT gap_id, user_id, topic_id, topic, competency_id, gap_type,
+               severity, evidence_strength, status, recurrence,
+               detected_at, acknowledged_at, resolved_at, dismissed_at,
+               root_cause_hypothesis, root_cause_evidence,
+               baseline_mastery, reassessed_mastery
+        FROM learning_gaps
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    if gap_type is not None:
+        query += " AND gap_type = ?"
+        params.append(gap_type)
+    if severity is not None:
+        query += " AND severity = ?"
+        params.append(severity)
+    query += " ORDER BY detected_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "gapId": row["gap_id"],
+            "userId": row["user_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "competencyId": row["competency_id"],
+            "gapType": row["gap_type"],
+            "severity": row["severity"],
+            "evidenceStrength": row["evidence_strength"],
+            "status": row["status"],
+            "recurrence": row["recurrence"],
+            "detectedAt": row["detected_at"],
+            "acknowledgedAt": row["acknowledged_at"],
+            "resolvedAt": row["resolved_at"],
+            "dismissedAt": row["dismissed_at"],
+            "rootCauseHypothesis": row["root_cause_hypothesis"],
+            "rootCauseEvidence": row["root_cause_evidence"],
+            "baselineMastery": row["baseline_mastery"],
+            "reassessedMastery": row["reassessed_mastery"],
+        }
+        for row in rows
+    ]
+
+
+def update_learning_gap(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+    status: str | None = None,
+    root_cause_hypothesis: str | None = None,
+    root_cause_evidence: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a learning gap. Owner only."""
+    if status is not None and status not in {
+        "detected", "acknowledged", "remediating", "resolved", "dismissed", "challenged"
+    }:
+        return None
+    now_iso = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_gaps WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+            if status == "acknowledged" and row["acknowledged_at"] is None:
+                updates.append("acknowledged_at = ?")
+                values.append(now_iso)
+            if status == "resolved":
+                updates.append("resolved_at = ?")
+                values.append(now_iso)
+            if status == "dismissed":
+                updates.append("dismissed_at = ?")
+                values.append(now_iso)
+        if root_cause_hypothesis is not None:
+            updates.append("root_cause_hypothesis = ?")
+            values.append(root_cause_hypothesis)
+        if root_cause_evidence is not None:
+            updates.append("root_cause_evidence = ?")
+            values.append(root_cause_evidence)
+        if not updates:
+            return get_learning_gap(database_path, gap_id=gap_id, user_id=user_id)
+        values.append(gap_id)
+        with connection:
+            connection.execute(
+                f"UPDATE learning_gaps SET {', '.join(updates)} WHERE gap_id = ?",
+                tuple(values),
+        )
+    return get_learning_gap(database_path, gap_id=gap_id, user_id=user_id)
+
+
+def dismiss_learning_gap(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+    reason: str | None = None,
+) -> bool:
+    """Dismiss a learning gap. Owner only."""
+    updated = update_learning_gap(
+        database_path,
+        gap_id=gap_id,
+        user_id=user_id,
+        status="dismissed",
+        root_cause_evidence=reason,
+    )
+    return updated is not None
+
+
+def add_gap_evidence(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+    evidence_type: str,
+    reference_id: str,
+    description: str | None = None,
+    recorded_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Add supporting evidence to a learning gap. Owner only."""
+    if evidence_type not in {
+        "assessment_attempt", "question_answer", "competency_mastery",
+        "review_item", "objective", "prerequisite",
+    }:
+        return None
+    now_iso = (recorded_at or datetime.now(UTC).isoformat())
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_gaps WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        evidence_id = f"ev_{secrets.token_urlsafe(12)}"
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO gap_evidence(
+                    evidence_id, gap_id, evidence_type, reference_id,
+                    description, recorded_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence_id, gap_id, evidence_type, reference_id,
+                    description, now_iso,
+                ),
+            )
+    return {
+        "evidenceId": evidence_id,
+        "gapId": gap_id,
+        "evidenceType": evidence_type,
+        "referenceId": reference_id,
+        "description": description,
+        "recordedAt": now_iso,
+    }
+
+
+def list_gap_evidence(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List evidence for a learning gap. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_gaps WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT evidence_id, gap_id, evidence_type, reference_id,
+                   description, recorded_at
+            FROM gap_evidence
+            WHERE gap_id = ?
+            ORDER BY recorded_at DESC
+            """,
+            (gap_id,),
+        ).fetchall()
+    return [
+        {
+            "evidenceId": row["evidence_id"],
+            "gapId": row["gap_id"],
+            "evidenceType": row["evidence_type"],
+            "referenceId": row["reference_id"],
+            "description": row["description"],
+            "recordedAt": row["recorded_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_gap_remediation(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+    activity_type: str,
+    title: str,
+    description: str | None = None,
+    priority_score: float = 50.0,
+    rationale: str | None = None,
+) -> dict[str, Any] | None:
+    """Create a recommended remediation activity for a gap. Owner only."""
+    if activity_type not in {
+        "prerequisite_revision", "targeted_explanation", "source_material",
+        "practice_questions", "flashcards", "concept_diagram", "focused_quiz",
+        "scheduled_revision", "competency_assessment",
+    }:
+        return None
+    title = title.strip()
+    if not title:
+        return None
+    now_iso = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_gaps WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        remediation_id = f"rem_{secrets.token_urlsafe(12)}"
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO gap_remediations(
+                    remediation_id, gap_id, activity_type, title, description,
+                    priority_score, rationale, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    remediation_id, gap_id, activity_type, title, description,
+                    priority_score, rationale, "recommended", now_iso,
+                ),
+            )
+    return {
+        "remediationId": remediation_id,
+        "gapId": gap_id,
+        "activityType": activity_type,
+        "title": title,
+        "description": description,
+        "priorityScore": priority_score,
+        "rationale": rationale,
+        "status": "recommended",
+        "createdAt": now_iso,
+    }
+
+
+def list_gap_remediations(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List remediation activities for a gap. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_gaps WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT remediation_id, gap_id, activity_type, title, description,
+                   priority_score, rationale, status, created_at,
+                   accepted_at, completed_at
+            FROM gap_remediations
+            WHERE gap_id = ?
+            ORDER BY priority_score DESC, created_at ASC
+            """,
+            (gap_id,),
+        ).fetchall()
+    return [
+        {
+            "remediationId": row["remediation_id"],
+            "gapId": row["gap_id"],
+            "activityType": row["activity_type"],
+            "title": row["title"],
+            "description": row["description"],
+            "priorityScore": row["priority_score"],
+            "rationale": row["rationale"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "acceptedAt": row["accepted_at"],
+            "completedAt": row["completed_at"],
+        }
+        for row in rows
+    ]
+
+
+def accept_remediation(
+    database_path: Path,
+    *,
+    remediation_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Mark a remediation as accepted by the learner. Owner only."""
+    now_iso = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT r.remediation_id, r.gap_id, r.status, l.user_id
+            FROM gap_remediations r
+            JOIN learning_gaps l ON l.gap_id = r.gap_id
+            WHERE r.remediation_id = ?
+            """,
+            (remediation_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        if row["status"] != "recommended":
+            return None
+        with connection:
+            connection.execute(
+                "UPDATE gap_remediations SET status = 'accepted', accepted_at = ? WHERE remediation_id = ?",
+                (now_iso, remediation_id),
+            )
+            connection.execute(
+                "UPDATE learning_gaps SET status = 'remediating' WHERE gap_id = ?",
+                (row["gap_id"],),
+            )
+    return {
+        "remediationId": remediation_id,
+        "gapId": row["gap_id"],
+        "status": "accepted",
+        "acceptedAt": now_iso,
+    }
+
+
+def dismiss_remediation(
+    database_path: Path,
+    *,
+    remediation_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Dismiss a remediation recommendation. Owner only."""
+    now_iso = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT r.remediation_id, r.gap_id, r.status, l.user_id
+            FROM gap_remediations r
+            JOIN learning_gaps l ON l.gap_id = r.gap_id
+            WHERE r.remediation_id = ?
+            """,
+            (remediation_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        if row["status"] != "recommended":
+            return None
+        with connection:
+            connection.execute(
+                "UPDATE gap_remediations SET status = 'dismissed' WHERE remediation_id = ?",
+                (remediation_id,),
+            )
+    return {
+        "remediationId": remediation_id,
+        "gapId": row["gap_id"],
+        "status": "dismissed",
+    }
+
+
+def complete_remediation(
+    database_path: Path,
+    *,
+    remediation_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Mark a remediation as completed. Owner only."""
+    now_iso = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT r.remediation_id, r.gap_id, r.status, l.user_id
+            FROM gap_remediations r
+            JOIN learning_gaps l ON l.gap_id = r.gap_id
+            WHERE r.remediation_id = ?
+            """,
+            (remediation_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        if row["status"] not in {"accepted", "in_progress"}:
+            return None
+        with connection:
+            connection.execute(
+                "UPDATE gap_remediations SET status = 'completed', completed_at = ? WHERE remediation_id = ?",
+                (now_iso, remediation_id),
+            )
+    return {
+        "remediationId": remediation_id,
+        "gapId": row["gap_id"],
+        "status": "completed",
+        "completedAt": now_iso,
+    }
+
+
+def create_remediation_reassessment(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+    activity_id: str | None,
+    before_mastery: float,
+    after_mastery: float,
+    resolved: bool = False,
+) -> dict[str, Any] | None:
+    """Record a reassessment comparing before/after mastery. Owner only."""
+    if not (0.0 <= before_mastery <= 1.0) or not (0.0 <= after_mastery <= 1.0):
+        return None
+    now_iso = datetime.now(UTC).isoformat()
+    improvement = after_mastery - before_mastery
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_gaps WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        reassessment_id = f"reassess_{secrets.token_urlsafe(12)}"
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO remediation_reassessments(
+                    reassessment_id, gap_id, activity_id, before_mastery,
+                    after_mastery, improvement, resolved, reassessed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    reassessment_id, gap_id, activity_id, before_mastery,
+                    after_mastery, improvement, 1 if resolved else 0, now_iso,
+                ),
+            )
+            if resolved:
+                connection.execute(
+                    "UPDATE learning_gaps SET status = 'resolved', resolved_at = ?, reassessed_mastery = ? WHERE gap_id = ?",
+                    (now_iso, after_mastery, gap_id),
+                )
+            else:
+                connection.execute(
+                    "UPDATE learning_gaps SET reassessed_mastery = ? WHERE gap_id = ?",
+                    (after_mastery, gap_id),
+                )
+    return {
+        "reassessmentId": reassessment_id,
+        "gapId": gap_id,
+        "activityId": activity_id,
+        "beforeMastery": before_mastery,
+        "afterMastery": after_mastery,
+        "improvement": improvement,
+        "resolved": resolved,
+        "reassessedAt": now_iso,
+    }
+
+
+def list_remediation_reassessments(
+    database_path: Path,
+    *,
+    gap_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List reassessments for a gap. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_gaps WHERE gap_id = ?",
+            (gap_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT reassessment_id, gap_id, activity_id, before_mastery,
+                   after_mastery, improvement, resolved, reassessed_at
+            FROM remediation_reassessments
+            WHERE gap_id = ?
+            ORDER BY reassessed_at DESC
+            """,
+            (gap_id,),
+        ).fetchall()
+    return [
+        {
+            "reassessmentId": row["reassessment_id"],
+            "gapId": row["gap_id"],
+            "activityId": row["activity_id"],
+            "beforeMastery": row["before_mastery"],
+            "afterMastery": row["after_mastery"],
+            "improvement": row["improvement"],
+            "resolved": bool(row["resolved"]),
+            "reassessedAt": row["reassessed_at"],
+        }
+        for row in rows
+    ]
 
 
 # Course module functions.

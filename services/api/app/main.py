@@ -21,6 +21,7 @@ from app.api.v1.groups_routes import router as groups_router
 from app.api.v1.groups_ai_routes import router as groups_ai_router
 from app.api.v1.courses_routes import router as courses_router
 from app.api.v1.assessment_routes import router as assessment_router
+from app.api.v1.gap_routes import router as gap_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
@@ -136,6 +137,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(courses_router)
     # Collaborative AI assessment & competency routes (M64: Assessment & Competency Management)
     application.include_router(assessment_router)
+    # Learning gap intelligence & remediation routes (M65: Learning Gap Intelligence & Remediation)
+    application.include_router(gap_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

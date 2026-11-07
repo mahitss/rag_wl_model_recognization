@@ -1,4 +1,4 @@
-"""SQLite schema, readiness checks, and transactional document persistence."""
+﻿"""SQLite schema, readiness checks, and transactional document persistence."""
 # ruff: noqa: E501
 
 import hashlib
@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -308,7 +308,7 @@ def _compute_priority_score(
     The score blends measured data with administrator estimates.  The only
     measured value is ``report_count`` (the number of distinct feedback items
     linked to the task).  All other factors are administrator estimates on a
-    1–5 scale and are never treated as observed facts.
+    1â€“5 scale and are never treated as observed facts.
 
     Weights:
         severity x20, impact x15, report_count x10 (measured),
@@ -2554,6 +2554,202 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_weak_topics_user "
                     "ON weak_topics(user_id, is_weak)"
+                )
+
+            if version < 22:
+                # M61: Collaborative Learning & Study Groups.
+                # Join codes for study spaces (secure group joining without invitation).
+                _ensure_column(
+                    connection,
+                    "study_spaces",
+                    "join_code",
+                    "join_code TEXT",
+                )
+
+                # Recreate workspace_members with moderator role support.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS workspace_members_v22 (
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN ('owner', 'moderator', 'member')),
+                        joined_at TEXT NOT NULL,
+                        PRIMARY KEY (space_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    """
+                    INSERT INTO workspace_members_v22 (space_id, user_id, role, joined_at)
+                    SELECT space_id, user_id, role, joined_at FROM workspace_members
+                    """
+                )
+                connection.execute("DROP TABLE workspace_members")
+                connection.execute(
+                    "ALTER TABLE workspace_members_v22 RENAME TO workspace_members"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workspace_members_user_id "
+                    "ON workspace_members(user_id)"
+                )
+
+                # Study group invitations (with expiration and revocation).
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_group_invitations (
+                        invitation_id TEXT PRIMARY KEY,
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id)
+                            ON DELETE CASCADE,
+                        inviter_user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        target_username TEXT NOT NULL
+                            CHECK (length(target_username) BETWEEN 3 AND 64),
+                        join_code TEXT,
+                        expires_at TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'pending', 'accepted', 'revoked', 'expired'
+                        )),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_group_invitations_space "
+                    "ON study_group_invitations(space_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_group_invitations_expires "
+                    "ON study_group_invitations(expires_at)"
+                )
+
+                # Collaborative study sessions.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS group_study_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 160),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'scheduled', 'active', 'completed', 'cancelled'
+                        )),
+                        created_by TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        outcome_note TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_group_study_sessions_space "
+                    "ON group_study_sessions(space_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_group_study_sessions_created_by "
+                    "ON group_study_sessions(created_by)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS group_study_session_participants (
+                        session_id TEXT NOT NULL REFERENCES group_study_sessions(session_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN ('host', 'participant')),
+                        joined_at TEXT NOT NULL,
+                        left_at TEXT,
+                        PRIMARY KEY (session_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_group_study_session_participants_session "
+                    "ON group_study_session_participants(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_group_study_session_participants_user "
+                    "ON group_study_session_participants(user_id)"
+                )
+
+                # Shared notes.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS shared_notes (
+                        note_id TEXT PRIMARY KEY,
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        content TEXT NOT NULL,
+                        created_by TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        updated_by TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_shared_notes_space "
+                    "ON shared_notes(space_id, updated_at DESC)"
+                )
+
+                # Group study goals.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS group_study_goals (
+                        goal_id TEXT PRIMARY KEY,
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        target_topic TEXT,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'completed', 'abandoned'
+                        )),
+                        created_by TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        created_at TEXT NOT NULL,
+                        completed_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_group_study_goals_space "
+                    "ON group_study_goals(space_id, status)"
+                )
+
+                # Group revision schedule.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS group_revision_items (
+                        item_id TEXT PRIMARY KEY,
+                        space_id TEXT NOT NULL REFERENCES study_spaces(space_id)
+                            ON DELETE CASCADE,
+                        item_type TEXT NOT NULL CHECK (item_type IN (
+                            'quiz', 'flashcard', 'topic'
+                        )),
+                        target_item_id TEXT NOT NULL,
+                        topic TEXT,
+                        next_due_date TEXT NOT NULL,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'pending', 'completed', 'skipped'
+                        )),
+                        assigned_to TEXT REFERENCES users(user_id)
+                            ON DELETE SET NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_group_revision_items_space "
+                    "ON group_revision_items(space_id, next_due_date)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -5495,9 +5691,9 @@ def _snippet(text: str, query_terms: list[str], window: int = 120) -> str:
     end = min(len(text), best_pos + len(best_term) + window // 2)
     snippet = text[start:end]
     if start > 0:
-        snippet = "…" + snippet
+        snippet = "â€¦" + snippet
     if end < len(text):
-        snippet = snippet + "…"
+        snippet = snippet + "â€¦"
     return snippet
 
 
@@ -6124,7 +6320,7 @@ def compute_adaptive_recommendations(
         topic_id = topic["topicId"]
         topic_name = topic["topic"]
         citations = topic_sources.get(topic_id, [])
-        # Skip topics without any source passages — cannot ground activities.
+        # Skip topics without any source passages â€” cannot ground activities.
         if not citations:
             continue
 
@@ -6141,13 +6337,13 @@ def compute_adaptive_recommendations(
         measured: list[str] = []
         estimated: list[str] = []
 
-        # Overdue reviews — strongest signal, fully measured.
+        # Overdue reviews â€” strongest signal, fully measured.
         if overdue:
             score += overdue * 100
             reasons.append(f"{overdue} review question(s) for this topic are due or overdue.")
             measured.append("overdueReviewCount")
 
-        # Weak topic — measured via mastery calculation.
+        # Weak topic â€” measured via mastery calculation.
         if weak and mastery is not None:
             score += 60
             reasons.append(
@@ -6156,7 +6352,7 @@ def compute_adaptive_recommendations(
             )
             measured.append("mastery")
 
-        # Recent incorrect/ambiguous outcomes — measured.
+        # Recent incorrect/ambiguous outcomes â€” measured.
         if incorrect:
             score += min(incorrect, 3) * 15
             reasons.append(f"Your latest results include {incorrect} incorrect question(s).")
@@ -6166,25 +6362,25 @@ def compute_adaptive_recommendations(
             reasons.append(f"Your latest results include {ambiguous} uncertain question(s).")
             measured.append("ambiguousQuestions")
 
-        # Recency — measured heuristic.
+        # Recency â€” measured heuristic.
         if recent_count == 0:
             score += 20
             reasons.append("No recent activity on this topic (30 days).")
             measured.append("recentActivityCount")
 
-        # High mastery — de-prioritize, suggest advanced practice.
+        # High mastery â€” de-prioritize, suggest advanced practice.
         if mastery is not None and mastery >= 0.80:
             score -= 20
             reasons.append(f"Strong mastery ({mastery:.0%}); consider advanced practice.")
             measured.append("mastery")
 
-        # Today's completed sessions — de-prioritize.
+        # Today's completed sessions â€” de-prioritize.
         if today_sessions:
             score -= min(today_sessions, 2) * 10
             reasons.append(f"You completed {today_sessions} study session(s) on this topic today.")
             measured.append("sessionsToday")
 
-        # Difficulty level from mastery — derived heuristic.
+        # Difficulty level from mastery â€” derived heuristic.
         difficulty = _difficulty_level_from_mastery(mastery)
         estimated.append("difficultyLevel")
 
@@ -7871,3 +8067,1094 @@ def get_messages(
         ],
         total,
     )
+# ---------------------------------------------------------------------------
+# M61: Collaborative Learning & Study Groups.
+# Join codes, moderator roles, invitations, study sessions, shared notes,
+# group goals, and group revision items.
+# ---------------------------------------------------------------------------
+
+def regenerate_study_space_join_code(
+    database_path: Path,
+    *,
+    space_id: str,
+    actor_user_id: str,
+) -> str | None:
+    """Generate a new single-use join code for a study space. Owner/moderator only."""
+    if not _is_workspace_member(database_path, space_id, actor_user_id):
+        return None
+    member = _workspace_member_row(database_path, space_id, actor_user_id)
+    if member is None or member["role"] not in {"owner", "moderator"}:
+        return None
+    join_code = secrets.token_urlsafe(8)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                "UPDATE study_spaces SET join_code = ?, updated_at = ? WHERE space_id = ?",
+                (join_code, datetime.now(UTC).isoformat(), space_id),
+            )
+            if row.rowcount == 0:
+                return None
+    return join_code
+
+
+def get_study_space_join_code(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+) -> str | None:
+    """Return the join code for a space the user is a member of."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT join_code FROM study_spaces WHERE space_id = ?",
+            (space_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return row["join_code"]
+
+
+def join_study_space_by_code(
+    database_path: Path,
+    *,
+    space_id: str,
+    join_code: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Join a study space using a join code. Returns member record or None."""
+    with closing(connect_database(database_path)) as connection:
+        space = connection.execute(
+            "SELECT join_code FROM study_spaces WHERE space_id = ?",
+            (space_id,),
+        ).fetchone()
+        if space is None:
+            return None
+        if space["join_code"] != join_code:
+            return None
+        if _is_workspace_member(database_path, space_id, user_id):
+            return None
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO workspace_members(space_id, user_id, role, joined_at)
+                VALUES (?, ?, 'member', ?)
+                """,
+                (space_id, user_id, now),
+            )
+    return {
+        "userId": user_id,
+        "role": "member",
+        "joinedAt": now,
+    }
+
+
+def set_workspace_member_role(
+    database_path: Path,
+    *,
+    space_id: str,
+    actor_user_id: str,
+    target_user_id: str,
+    role: str,
+) -> bool:
+    """Set a member's role. Owner only; moderator/cannot set owner."""
+    if role not in {"owner", "moderator", "member"}:
+        return False
+    if not _is_workspace_owner(database_path, space_id, actor_user_id):
+        return False
+    if actor_user_id == target_user_id and role != "owner":
+        return False
+    row = _workspace_member_row(database_path, space_id, target_user_id)
+    if row is None:
+        return False
+    if row["role"] == "owner":
+        return False
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "UPDATE workspace_members SET role = ? WHERE space_id = ? AND user_id = ?",
+                (role, space_id, target_user_id),
+            )
+    return True
+
+
+# Invitation functions.
+
+def create_study_group_invitation(
+    database_path: Path,
+    *,
+    space_id: str,
+    inviter_user_id: str,
+    target_username: str,
+    expires_in_days: int,
+) -> dict[str, Any] | None:
+    """Create an invitation to join a study space. Owner/moderator only."""
+    if not _is_workspace_member(database_path, space_id, inviter_user_id):
+        return None
+    member = _workspace_member_row(database_path, space_id, inviter_user_id)
+    if member is None or member["role"] not in {"owner", "moderator"}:
+        return None
+    target = connection = None
+    with closing(connect_database(database_path)) as connection:
+        target = connection.execute(
+            "SELECT user_id, username FROM users WHERE username = ?",
+            (target_username.strip(),),
+        ).fetchone()
+        if target is None:
+            return None
+        if _is_workspace_member(database_path, space_id, target["user_id"]):
+            return None
+        now = datetime.now(UTC)
+        expires_at = now + timedelta(days=expires_in_days)
+        invitation_id = f"inv_{secrets.token_urlsafe(12)}"
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO study_group_invitations(
+                    invitation_id, space_id, inviter_user_id, target_username,
+                    join_code, expires_at, status, created_at
+                ) VALUES (?, ?, ?, ?, NULL, ?, 'pending', ?)
+                """,
+                (
+                    invitation_id,
+                    space_id,
+                    inviter_user_id,
+                    target["username"].strip(),
+                    expires_at.isoformat(),
+                    now.isoformat(),
+                ),
+            )
+    return {
+        "invitationId": invitation_id,
+        "spaceId": space_id,
+        "inviterUserId": inviter_user_id,
+        "targetUsername": target["username"],
+        "expiresAt": expires_at.isoformat(),
+        "status": "pending",
+    }
+
+
+def revoke_study_group_invitation(
+    database_path: Path,
+    *,
+    invitation_id: str,
+    actor_user_id: str,
+) -> bool:
+    """Revoke a pending invitation. Owner/moderator only."""
+    with closing(connect_database(database_path)) as connection:
+        invitation = connection.execute(
+            "SELECT space_id, inviter_user_id, status FROM study_group_invitations WHERE invitation_id = ?",
+            (invitation_id,),
+        ).fetchone()
+        if invitation is None:
+            return False
+        if not _is_workspace_member(database_path, invitation["space_id"], actor_user_id):
+            return False
+        member = _workspace_member_row(database_path, invitation["space_id"], actor_user_id)
+        if member is None or member["role"] not in {"owner", "moderator"}:
+            return False
+        if invitation["status"] != "pending":
+            return False
+        with connection:
+            connection.execute(
+                "UPDATE study_group_invitations SET status = 'revoked' WHERE invitation_id = ?",
+                (invitation_id,),
+            )
+    return True
+
+
+def accept_study_group_invitation(
+    database_path: Path,
+    *,
+    invitation_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Accept a pending invitation. Returns the space record or None."""
+    with closing(connect_database(database_path)) as connection:
+        invitation = connection.execute(
+            "SELECT space_id, inviter_user_id, target_username, join_code, expires_at, status FROM study_group_invitations WHERE invitation_id = ?",
+            (invitation_id,),
+        ).fetchone()
+        if invitation is None:
+            return None
+        now = datetime.now(UTC)
+        if invitation["status"] != "pending":
+            return None
+        expires_at = datetime.fromisoformat(invitation["expires_at"])
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        if expires_at <= now:
+            with connection:
+                connection.execute(
+                    "UPDATE study_group_invitations SET status = 'expired' WHERE invitation_id = ?",
+                    (invitation_id,),
+                )
+            return None
+        target_user = connection.execute(
+            "SELECT user_id FROM users WHERE username = ?", (invitation["target_username"],)
+        ).fetchone()
+        if target_user is None or target_user["user_id"] != user_id:
+            return None
+        if _is_workspace_member(database_path, invitation["space_id"], user_id):
+            return None
+        with connection:
+            connection.execute(
+                "UPDATE study_group_invitations SET status = 'accepted' WHERE invitation_id = ?",
+                (invitation_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO workspace_members(space_id, user_id, role, joined_at)
+                VALUES (?, ?, 'member', ?)
+                """,
+                (invitation["space_id"], user_id, now.isoformat()),
+            )
+    return {
+        "spaceId": invitation["space_id"],
+        "userId": user_id,
+        "role": "member",
+        "joinedAt": now.isoformat(),
+    }
+
+
+def list_study_group_invitations(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List invitations for a space. Caller must be a member."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT invitation_id, target_username, expires_at, status, created_at
+            FROM study_group_invitations
+            WHERE space_id = ?
+            ORDER BY created_at DESC
+            """,
+            (space_id,),
+        ).fetchall()
+    return [
+        {
+            "invitationId": row["invitation_id"],
+            "targetUsername": row["target_username"],
+            "expiresAt": row["expires_at"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+# Study session functions.
+
+def create_study_session(
+    database_path: Path,
+    *,
+    space_id: str,
+    created_by: str,
+    title: str,
+    topic: str,
+    status: str = "scheduled",
+) -> dict[str, Any] | None:
+    """Create a collaborative study session. Caller must be a space member."""
+    if not _is_workspace_member(database_path, space_id, created_by):
+        return None
+    if status not in {"scheduled", "active", "completed", "cancelled"}:
+        raise ValueError("status must be 'scheduled', 'active', 'completed', or 'cancelled'")
+    session_id = f"sess_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    topic = topic.strip()
+    if not title or not topic:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO group_study_sessions(
+                    session_id, space_id, title, topic, status, created_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (session_id, space_id, title, topic, status, created_by, now),
+            )
+            connection.execute(
+                """
+                INSERT INTO group_study_session_participants(session_id, user_id, role, joined_at)
+                VALUES (?, ?, 'host', ?)
+                """,
+                (session_id, created_by, now),
+            )
+    return {
+        "sessionId": session_id,
+        "spaceId": space_id,
+        "title": title,
+        "topic": topic,
+        "status": status,
+        "createdBy": created_by,
+        "createdAt": now,
+        "startedAt": None,
+        "completedAt": None,
+        "outcomeNote": None,
+    }
+
+
+def get_study_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a study session if the user is a participant or space member."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT s.session_id, s.space_id, s.title, s.topic, s.status,
+                   s.created_by, s.created_at, s.started_at, s.completed_at, s.outcome_note
+            FROM group_study_sessions AS s
+            WHERE s.session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not _is_workspace_member(database_path, row["space_id"], user_id):
+            return None
+    return {
+        "sessionId": row["session_id"],
+        "spaceId": row["space_id"],
+        "title": row["title"],
+        "topic": row["topic"],
+        "status": row["status"],
+        "createdBy": row["created_by"],
+        "createdAt": row["created_at"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
+        "outcomeNote": row["outcome_note"],
+    }
+
+
+def list_study_sessions(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int] | None:
+    """List study sessions for a space. Caller must be a member."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    query = """
+        SELECT session_id, title, topic, status, created_by, created_at,
+               started_at, completed_at, outcome_note
+        FROM group_study_sessions
+        WHERE space_id = ?
+    """
+    params: list[Any] = [space_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+    count_query = "SELECT COUNT(*) AS c FROM group_study_sessions WHERE space_id = ?"
+    count_params: list[Any] = [space_id]
+    if status is not None:
+        count_query += " AND status = ?"
+        count_params.append(status)
+    with closing(connect_database(database_path)) as connection:
+        total = connection.execute(count_query, count_params).fetchone()["c"]
+        rows = connection.execute(query, params).fetchall()
+    return (
+        [
+            {
+                "sessionId": row["session_id"],
+                "title": row["title"],
+                "topic": row["topic"],
+                "status": row["status"],
+                "createdBy": row["created_by"],
+                "createdAt": row["created_at"],
+                "startedAt": row["started_at"],
+                "completedAt": row["completed_at"],
+                "outcomeNote": row["outcome_note"],
+            }
+            for row in rows
+        ],
+        total,
+    )
+
+
+def update_study_session_status(
+    database_path: Path,
+    *,
+    session_id: str,
+    actor_user_id: str,
+    status: str,
+    outcome_note: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a study session's status. Host or space owner/moderator only."""
+    if status not in {"scheduled", "active", "completed", "cancelled"}:
+        return None
+    row = None
+    space_id = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT s.session_id, s.space_id, s.status, s.created_by
+            FROM group_study_sessions AS s
+            WHERE s.session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        space_id = row["space_id"]
+        is_host = connection.execute(
+            "SELECT 1 FROM group_study_session_participants WHERE session_id = ? AND user_id = ? AND role = 'host'",
+            (session_id, actor_user_id),
+        ).fetchone() is not None
+        is_space_mod = _workspace_member_row(database_path, space_id, actor_user_id)
+        if not is_host and (
+            is_space_mod is None or is_space_mod["role"] not in {"owner", "moderator"}
+        ):
+            return None
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                "UPDATE group_study_sessions SET status = ?, updated_at = ? WHERE session_id = ?",
+                (status, now, session_id),
+            )
+            if status == "active":
+                connection.execute(
+                    "UPDATE group_study_sessions SET started_at = ? WHERE session_id = ? AND started_at IS NULL",
+                    (now, session_id),
+                )
+            elif status == "completed":
+                connection.execute(
+                    "UPDATE group_study_sessions SET completed_at = ? WHERE session_id = ? AND completed_at IS NULL",
+                    (now, session_id),
+                )
+            if outcome_note is not None:
+                connection.execute(
+                    "UPDATE group_study_sessions SET outcome_note = ? WHERE session_id = ?",
+                    (outcome_note.strip(), session_id),
+                )
+    return {
+        "sessionId": session_id,
+        "spaceId": space_id,
+        "status": status,
+        "outcomeNote": outcome_note,
+    }
+
+
+def join_study_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> bool:
+    """Join an active study session as a participant."""
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT session_id, space_id, status FROM group_study_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["status"] != "active":
+            return False
+        if not _is_workspace_member(database_path, session["space_id"], user_id):
+            return False
+        existing = connection.execute(
+            "SELECT 1 FROM group_study_session_participants WHERE session_id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if existing is not None:
+            return True
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO group_study_session_participants(session_id, user_id, role, joined_at)
+                VALUES (?, ?, 'participant', ?)
+                """,
+                (session_id, user_id, now),
+            )
+    return True
+
+
+def leave_study_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> bool:
+    """Leave a study session. Host cannot leave their own session."""
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT session_id FROM group_study_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return False
+        is_host = connection.execute(
+            "SELECT 1 FROM group_study_session_participants WHERE session_id = ? AND user_id = ? AND role = 'host'",
+            (session_id, user_id),
+        ).fetchone() is not None
+        if is_host:
+            return False
+        member = connection.execute(
+            "SELECT 1 FROM group_study_session_participants WHERE session_id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if member is None:
+            return False
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                "UPDATE group_study_session_participants SET left_at = ? WHERE session_id = ? AND user_id = ?",
+                (now, session_id, user_id),
+            )
+    return True
+
+
+def list_study_session_participants(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List participants of a study session. Caller must be a space member."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT space_id FROM group_study_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not _is_workspace_member(database_path, row["space_id"], user_id):
+            return None
+        rows = connection.execute(
+            """
+            SELECT p.user_id, p.role, p.joined_at, p.left_at, u.username
+            FROM group_study_session_participants AS p
+            JOIN users AS u ON u.user_id = p.user_id
+            WHERE p.session_id = ?
+            ORDER BY p.role DESC, p.joined_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "userId": row["user_id"],
+            "username": row["username"],
+            "role": row["role"],
+            "joinedAt": row["joined_at"],
+            "leftAt": row["left_at"],
+        }
+        for row in rows
+    ]
+
+# Shared notes functions.
+# Shared notes functions.
+
+def create_shared_note(
+    database_path: Path,
+    *,
+    space_id: str,
+    created_by: str,
+    title: str,
+    content: str,
+) -> dict[str, Any] | None:
+    """Create a shared note in a study space. Caller must be a member."""
+    if not _is_workspace_member(database_path, space_id, created_by):
+        return None
+    note_id = f"note_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    content = content.strip()
+    if not title or not content:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO shared_notes(
+                    note_id, space_id, title, content, created_by, updated_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (note_id, space_id, title, content, created_by, created_by, now, now),
+            )
+    return {
+        "noteId": note_id,
+        "spaceId": space_id,
+        "title": title,
+        "content": content,
+        "createdBy": created_by,
+        "updatedBy": created_by,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_shared_note(
+    database_path: Path,
+    *,
+    note_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a shared note if the user is a space member."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT n.note_id, n.space_id, n.title, n.content,
+                   n.created_by, n.updated_by, n.created_at, n.updated_at
+            FROM shared_notes AS n
+            WHERE n.note_id = ?
+            """,
+            (note_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not _is_workspace_member(database_path, row["space_id"], user_id):
+            return None
+    return {
+        "noteId": row["note_id"],
+        "spaceId": row["space_id"],
+        "title": row["title"],
+        "content": row["content"],
+        "createdBy": row["created_by"],
+        "updatedBy": row["updated_by"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_shared_notes(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int] | None:
+    """List shared notes for a space. Caller must be a member."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    query = """
+        SELECT note_id, title, content, created_by, updated_by, created_at, updated_at
+        FROM shared_notes
+        WHERE space_id = ?
+        ORDER BY updated_at DESC
+        LIMIT ? OFFSET ?
+    """
+    count_query = "SELECT COUNT(*) AS c FROM shared_notes WHERE space_id = ?"
+    with closing(connect_database(database_path)) as connection:
+        total = connection.execute(count_query, (space_id,)).fetchone()["c"]
+        rows = connection.execute(query, (space_id, limit, offset)).fetchall()
+    return (
+        [
+            {
+                "noteId": row["note_id"],
+                "title": row["title"],
+                "content": row["content"],
+                "createdBy": row["created_by"],
+                "updatedBy": row["updated_by"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+            for row in rows
+        ],
+        total,
+    )
+
+
+def update_shared_note(
+    database_path: Path,
+    *,
+    note_id: str,
+    actor_user_id: str,
+    title: str | None = None,
+    content: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a shared note. Creator or space moderator/owner only."""
+    row = None
+    space_id = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT n.note_id, n.space_id, n.title, n.content,
+                   n.created_by, n.updated_by
+            FROM shared_notes AS n
+            WHERE n.note_id = ?
+            """,
+            (note_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        space_id = row["space_id"]
+        if not _is_workspace_member(database_path, space_id, actor_user_id):
+            return None
+        member = _workspace_member_row(database_path, space_id, actor_user_id)
+        is_creator = row["created_by"] == actor_user_id
+        if not is_creator and (
+            member is None or member["role"] not in {"owner", "moderator"}
+        ):
+            return None
+        updates = []
+        values = []
+        now = datetime.now(UTC).isoformat()
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if content is not None:
+            content = content.strip()
+            if not content:
+                return None
+            updates.append("content = ?")
+            values.append(content)
+        if not updates:
+            return {
+                "noteId": note_id,
+                "spaceId": space_id,
+                "title": row["title"],
+                "content": row["content"],
+                "createdBy": row["created_by"],
+                "updatedBy": row["updated_by"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+            }
+        updates.append("updated_by = ?")
+        updates.append("updated_at = ?")
+        values.extend([actor_user_id, now])
+        values.append(note_id)
+        with connection:
+            connection.execute(
+                f"UPDATE shared_notes SET {', '.join(updates)} WHERE note_id = ?",
+                tuple(values),
+            )
+    return {
+        "noteId": note_id,
+        "spaceId": space_id,
+        "title": title if title is not None else row["title"],
+        "content": content if content is not None else row["content"],
+        "createdBy": row["created_by"],
+        "updatedBy": actor_user_id,
+        "createdAt": row["created_at"],
+        "updatedAt": now,
+    }
+
+
+def delete_shared_note(
+    database_path: Path,
+    *,
+    note_id: str,
+    actor_user_id: str,
+) -> bool:
+    """Delete a shared note. Creator or space owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT n.note_id, n.space_id, n.created_by
+            FROM shared_notes AS n
+            WHERE n.note_id = ?
+            """,
+            (note_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        space_id = row["space_id"]
+        if not _is_workspace_member(database_path, space_id, actor_user_id):
+            return False
+        if row["created_by"] != actor_user_id:
+            member = _workspace_member_row(database_path, space_id, actor_user_id)
+            if member is None or member["role"] != "owner":
+                return False
+        with connection:
+            connection.execute(
+                "DELETE FROM shared_notes WHERE note_id = ?",
+                (note_id,),
+            )
+    return True
+
+# Group study goals functions.
+# Group study goals functions.
+
+def create_group_study_goal(
+    database_path: Path,
+    *,
+    space_id: str,
+    created_by: str,
+    title: str,
+    target_topic: str | None = None,
+) -> dict[str, Any] | None:
+    """Create a group study goal. Caller must be a space member."""
+    if not _is_workspace_member(database_path, space_id, created_by):
+        return None
+    goal_id = f"goal_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    target_topic = (target_topic or "").strip() or None
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO group_study_goals(
+                    goal_id, space_id, title, target_topic, status,
+                    created_by, created_at
+                ) VALUES (?, ?, ?, ?, 'active', ?, ?)
+                """,
+                (goal_id, space_id, title, target_topic, created_by, now),
+            )
+    return {
+        "goalId": goal_id,
+        "spaceId": space_id,
+        "title": title,
+        "targetTopic": target_topic,
+        "status": "active",
+        "createdBy": created_by,
+        "createdAt": now,
+        "completedAt": None,
+    }
+
+
+def list_group_study_goals(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+    status: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """List group study goals for a space. Caller must be a member."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    query = """
+        SELECT goal_id, title, target_topic, status, created_by, created_at, completed_at
+        FROM group_study_goals
+        WHERE space_id = ?
+    """
+    params: list[Any] = [space_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "goalId": row["goal_id"],
+            "title": row["title"],
+            "targetTopic": row["target_topic"],
+            "status": row["status"],
+            "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "completedAt": row["completed_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_group_study_goal_status(
+    database_path: Path,
+    *,
+    goal_id: str,
+    actor_user_id: str,
+    status: str,
+) -> bool:
+    """Update a group study goal status. Creator or space owner/moderator only."""
+    if status not in {"active", "completed", "abandoned"}:
+        return False
+    row = None
+    space_id = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT g.goal_id, g.space_id, g.status, g.created_by
+            FROM group_study_goals AS g
+            WHERE g.goal_id = ?
+            """,
+            (goal_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        space_id = row["space_id"]
+        if not _is_workspace_member(database_path, space_id, actor_user_id):
+            return False
+        member = _workspace_member_row(database_path, space_id, actor_user_id)
+        is_creator = row["created_by"] == actor_user_id
+        if not is_creator and (
+            member is None or member["role"] not in {"owner", "moderator"}
+        ):
+            return False
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                "UPDATE group_study_goals SET status = ? WHERE goal_id = ?",
+                (status, goal_id),
+            )
+            if status == "completed":
+                connection.execute(
+                    "UPDATE group_study_goals SET completed_at = ? WHERE goal_id = ? AND completed_at IS NULL",
+                    (now, goal_id),
+                )
+    return True
+
+# Group revision items functions.
+
+def create_group_revision_item(
+    database_path: Path,
+    *,
+    space_id: str,
+    created_by: str,
+    item_type: str,
+    item_id: str,
+    topic: str | None = None,
+    next_due_date: str | None = None,
+    assigned_to: str | None = None,
+) -> dict[str, Any] | None:
+    """Create a group revision item. Caller must be a space member."""
+    if not _is_workspace_member(database_path, space_id, created_by):
+        return None
+    if item_type not in {"quiz", "flashcard", "topic"}:
+        return None
+    revision_id = f"rev_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    if next_due_date is None:
+        from datetime import timedelta as _timedelta
+        next_due_date = (datetime.now(UTC) + _timedelta(days=1)).isoformat()
+    topic = (topic or "").strip() or None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO group_revision_items(
+                    item_id, space_id, item_type, target_item_id, topic,
+                    next_due_date, status, assigned_to, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+                """,
+                (
+                    revision_id,
+                    space_id,
+                    item_type,
+                    item_id,
+                    topic,
+                    next_due_date,
+                    assigned_to,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "itemId": revision_id,
+        "spaceId": space_id,
+        "itemType": item_type,
+        "itemId": item_id,
+        "topic": topic,
+        "nextDueDate": next_due_date,
+        "status": "pending",
+        "assignedTo": assigned_to,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_group_revision_items(
+    database_path: Path,
+    *,
+    space_id: str,
+    user_id: str,
+    status: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """List group revision items for a space. Caller must be a member."""
+    if not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    query = """
+        SELECT item_id, space_id, item_type, target_item_id, topic,
+               next_due_date, status, assigned_to, created_at, updated_at
+        FROM group_revision_items
+        WHERE space_id = ?
+    """
+    params: list[Any] = [space_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY next_due_date ASC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "itemId": row["item_id"],
+            "spaceId": row["space_id"],
+            "itemType": row["item_type"],
+            "itemId": row["target_item_id"],
+            "topic": row["topic"],
+            "nextDueDate": row["next_due_date"],
+            "status": row["status"],
+            "assignedTo": row["assigned_to"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_group_revision_item(
+    database_path: Path,
+    *,
+    item_id: str,
+    actor_user_id: str,
+    status: str | None = None,
+    next_due_date: str | None = None,
+    assigned_to: str | None = None,
+) -> bool:
+    """Update a group revision item. Caller must be a space member."""
+    if status is not None and status not in {"pending", "completed", "skipped"}:
+        return False
+    row = None
+    space_id = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT r.item_id, r.space_id, r.status
+            FROM group_revision_items AS r
+            WHERE r.item_id = ?
+            """,
+            (item_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        space_id = row["space_id"]
+        if not _is_workspace_member(database_path, space_id, actor_user_id):
+            return False
+        updates = []
+        values = []
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if next_due_date is not None:
+            updates.append("next_due_date = ?")
+            values.append(next_due_date)
+        if assigned_to is not None:
+            updates.append("assigned_to = ?")
+            values.append(assigned_to)
+        if not updates:
+            return True
+        updates.append("updated_at = ?")
+        values.append(datetime.now(UTC).isoformat())
+        values.append(item_id)
+        with connection:
+            connection.execute(
+                f"UPDATE group_revision_items SET {', '.join(updates)} WHERE item_id = ?",
+                tuple(values),
+            )
+    return True

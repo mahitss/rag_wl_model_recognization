@@ -2161,3 +2161,231 @@ class RoomAIQuizResponse(ApiModel):
     topic: str
     questions: list[dict[str, Any]]
     status: str
+
+
+# ---------------------------------------------------------------------------
+# M63: Collaborative AI Course Builder & Curriculum Generator.
+# Course creation, curriculum management, and progress tracking.
+# ---------------------------------------------------------------------------
+
+
+class CourseCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    spaceId: str | None = Field(default=None, min_length=1, max_length=80)
+    sourceType: str = Field(default="document")
+    difficultyLevel: str | None = Field(
+        default=None,
+        description="foundational, building, practice, or advanced",
+    )
+    estimatedWorkloadMinutes: int | None = Field(
+        default=None, ge=1
+    )
+
+
+class CourseResponse(ApiModel):
+    courseId: str
+    userId: str
+    spaceId: str | None
+    title: str
+    description: str
+    sourceType: str
+    sourceRefs: list[dict[str, Any]]
+    status: str
+    difficultyLevel: str | None
+    estimatedWorkloadMinutes: int | None
+    createdAt: str
+    updatedAt: str
+
+
+class CourseListResponse(ApiModel):
+    courses: list[CourseResponse]
+
+
+class CourseUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    status: str | None = None
+    difficultyLevel: str | None = None
+    estimatedWorkloadMinutes: int | None = None
+
+
+class CourseModuleCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    orderIndex: int = Field(default=0, ge=0)
+
+
+class CourseModuleResponse(ApiModel):
+    moduleId: str
+    courseId: str
+    title: str
+    description: str
+    orderIndex: int
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class CourseModuleListResponse(ApiModel):
+    modules: list[CourseModuleResponse]
+
+
+class CourseTopicCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    orderIndex: int = Field(default=0, ge=0)
+    prerequisiteTopicIds: list[str] = Field(default_factory=list)
+    difficultyLevel: str | None = None
+    estimatedMinutes: int | None = None
+
+
+class CourseTopicResponse(ApiModel):
+    topicId: str
+    moduleId: str
+    title: str
+    description: str
+    orderIndex: int
+    prerequisiteTopicIds: list[str]
+    difficultyLevel: str | None
+    estimatedMinutes: int | None
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class CourseTopicListResponse(ApiModel):
+    topics: list[CourseTopicResponse]
+
+
+class CourseObjectiveCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    orderIndex: int = Field(default=0, ge=0)
+
+
+class CourseObjectiveResponse(ApiModel):
+    objectiveId: str
+    courseId: str
+    title: str
+    description: str
+    orderIndex: int
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class CourseObjectiveListResponse(ApiModel):
+    objectives: list[CourseObjectiveResponse]
+
+
+class CourseAssessmentCreateRequest(ApiModel):
+    topicId: str | None = None
+    assessmentType: str = Field(
+        default="quiz",
+        description="quiz, flashcard, or review",
+    )
+    quizId: str | None = None
+
+
+class CourseAssessmentResponse(ApiModel):
+    assessmentId: str
+    courseId: str
+    topicId: str | None
+    assessmentType: str
+    quizId: str | None
+    status: str
+    createdAt: str
+    completedAt: str | None
+
+
+class CourseAssessmentListResponse(ApiModel):
+    assessments: list[CourseAssessmentResponse]
+
+
+class CourseProgressCreateRequest(ApiModel):
+    topicId: str
+    status: str = Field(default="not_started")
+    masteryScore: float | None = None
+    completedAt: str | None = None
+
+
+class CourseProgressResponse(ApiModel):
+    courseId: str
+    userId: str
+    topicId: str
+    status: str
+    masteryScore: float | None
+    completedAt: str | None
+
+
+class CourseProgressUpdateRequest(ApiModel):
+    status: str | None = None
+    masteryScore: float | None = None
+    completedAt: str | None = None
+
+
+class CourseBuildRequest(ApiModel):
+    topic: str = Field(min_length=1, max_length=200)
+    spaceId: str | None = Field(default=None, min_length=1, max_length=80)
+    documentIds: list[str] | None = Field(default=None, max_length=50)
+    limit: int = Field(default=10, ge=1, le=50)
+    mode: str | None = None
+    difficultyLevel: str | None = None
+
+
+class CourseBuildResponse(ApiModel):
+    courseId: str | None
+    userId: str
+    spaceId: str | None
+    title: str
+    description: str
+    sourceType: str
+    sourceRefs: list[dict[str, Any]]
+    status: str
+    difficultyLevel: str | None
+    estimatedWorkloadMinutes: int | None
+    createdAt: str
+    updatedAt: str
+    modules: list[dict[str, Any]]
+
+
+class CourseCurriculumResponse(ApiModel):
+    courseId: str
+    title: str
+    description: str
+    modules: list[dict[str, Any]]
+
+
+class CourseNextTopicResponse(ApiModel):
+    moduleId: str | None
+    moduleTitle: str | None
+    topicId: str | None
+    title: str | None
+    description: str | None
+    difficultyLevel: str | None
+    estimatedMinutes: int | None
+    prerequisitesMet: bool | None
+
+
+class CourseAdaptiveRecommendationsResponse(ApiModel):
+    recommendations: list[dict[str, Any]]
+
+
+# AI-powered course content generation.
+
+
+class CourseContentGenerateRequest(ApiModel):
+    courseId: str
+    topicId: str
+
+
+class CourseContentGenerateResponse(ApiModel):
+    courseId: str
+    topicId: str
+    sectionId: str | None
+    title: str
+    content: str
+    citations: list[dict[str, Any]]
+    status: str
+

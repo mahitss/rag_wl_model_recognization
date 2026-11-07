@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -2853,6 +2853,162 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_study_room_summaries_room "
                     "ON study_room_summaries(room_id)"
+                )
+
+                # M63: Collaborative AI Course Builder & Curriculum Generator.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS courses (
+                        course_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        space_id TEXT REFERENCES study_spaces(space_id)
+                            ON DELETE SET NULL,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 4000),
+                        source_type TEXT NOT NULL CHECK (source_type IN (
+                            'document', 'knowledge_graph', 'content_resource', 'manual'
+                        )),
+                        source_refs_json TEXT NOT NULL DEFAULT '[]',
+                        status TEXT NOT NULL CHECK (status IN (
+                            'draft', 'active', 'completed', 'archived'
+                        )),
+                        difficulty_level TEXT CHECK (difficulty_level IN (
+                            'foundational', 'building', 'practice', 'advanced'
+                        )),
+                        estimated_workload_minutes INTEGER CHECK (estimated_workload_minutes > 0),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_courses_user_id "
+                    "ON courses(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_courses_space_id "
+                    "ON courses(space_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS course_modules (
+                        module_id TEXT PRIMARY KEY,
+                        course_id TEXT NOT NULL REFERENCES courses(course_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 4000),
+                        order_index INTEGER NOT NULL CHECK (order_index >= 0),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'not_started', 'in_progress', 'completed', 'skipped'
+                        )),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_course_modules_course_id "
+                    "ON course_modules(course_id, order_index)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS course_topics (
+                        topic_id TEXT PRIMARY KEY,
+                        module_id TEXT NOT NULL REFERENCES course_modules(module_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 4000),
+                        order_index INTEGER NOT NULL CHECK (order_index >= 0),
+                        prerequisite_topic_ids TEXT NOT NULL DEFAULT '[]',
+                        difficulty_level TEXT CHECK (difficulty_level IN (
+                            'foundational', 'building', 'practice', 'advanced'
+                        )),
+                        estimated_minutes INTEGER CHECK (estimated_minutes > 0),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'not_started', 'in_progress', 'completed', 'skipped'
+                        )),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_course_topics_module_id "
+                    "ON course_topics(module_id, order_index)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS course_objectives (
+                        objective_id TEXT PRIMARY KEY,
+                        course_id TEXT NOT NULL REFERENCES courses(course_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 4000),
+                        order_index INTEGER NOT NULL CHECK (order_index >= 0),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'not_started', 'in_progress', 'completed', 'skipped'
+                        )),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_course_objectives_course_id "
+                    "ON course_objectives(course_id, order_index)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS course_assessments (
+                        assessment_id TEXT PRIMARY KEY,
+                        course_id TEXT NOT NULL REFERENCES courses(course_id)
+                            ON DELETE CASCADE,
+                        topic_id TEXT REFERENCES course_topics(topic_id)
+                            ON DELETE SET NULL,
+                        quiz_id TEXT REFERENCES quiz_sets(quiz_id)
+                            ON DELETE SET NULL,
+                        assessment_type TEXT NOT NULL CHECK (assessment_type IN (
+                            'quiz', 'flashcard', 'review'
+                        )),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'not_started', 'in_progress', 'completed'
+                        )),
+                        created_at TEXT NOT NULL,
+                        completed_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_course_assessments_course_id "
+                    "ON course_assessments(course_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS course_progress (
+                        course_id TEXT NOT NULL REFERENCES courses(course_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        topic_id TEXT NOT NULL REFERENCES course_topics(topic_id)
+                            ON DELETE CASCADE,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'not_started', 'in_progress', 'completed', 'skipped'
+                        )),
+                        mastery_score REAL CHECK (mastery_score >= 0.0 AND mastery_score <= 1.0),
+                        completed_at TEXT,
+                        PRIMARY KEY (course_id, user_id, topic_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_course_progress_user_id "
+                    "ON course_progress(user_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -9885,4 +10041,789 @@ def get_study_room_summary(
         "aiGenerated": bool(summary["ai_generated"]),
         "createdAt": summary["created_at"],
     }
+
+
+# ---------------------------------------------------------------------------
+# M63: Collaborative AI Course Builder & Curriculum Generator functions.
+# Course creation, curriculum management, and progress tracking.
+# ---------------------------------------------------------------------------
+
+def create_course(
+    database_path: Path,
+    *,
+    user_id: str,
+    space_id: str | None,
+    title: str,
+    description: str,
+    source_type: str,
+    source_refs: list[dict[str, Any]],
+    difficulty_level: str | None = None,
+    estimated_workload_minutes: int | None = None,
+) -> dict[str, Any] | None:
+    """Create a new course. Caller must be authenticated."""
+    if source_type not in {"document", "knowledge_graph", "content_resource", "manual"}:
+        return None
+    if difficulty_level is not None and difficulty_level not in {
+        "foundational", "building", "practice", "advanced"
+    }:
+        return None
+    course_id = f"course_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = (description or "").strip()
+    if not title:
+        return None
+    if space_id is not None and not _is_workspace_member(database_path, space_id, user_id):
+        return None
+    source_refs_json = json.dumps(source_refs or [])
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO courses(
+                    course_id, user_id, space_id, title, description, source_type,
+                    source_refs_json, status, difficulty_level, estimated_workload_minutes,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?, ?)
+                """,
+                (
+                    course_id,
+                    user_id,
+                    space_id,
+                    title,
+                    description,
+                    source_type,
+                    source_refs_json,
+                    difficulty_level,
+                    estimated_workload_minutes,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "courseId": course_id,
+        "userId": user_id,
+        "spaceId": space_id,
+        "title": title,
+        "description": description,
+        "sourceType": source_type,
+        "sourceRefs": source_refs,
+        "status": "draft",
+        "difficultyLevel": difficulty_level,
+        "estimatedWorkloadMinutes": estimated_workload_minutes,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_course(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a course if the user owns it or is a member of its space."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT c.course_id, c.user_id, c.space_id, c.title, c.description,
+                   c.source_type, c.source_refs_json, c.status, c.difficulty_level,
+                   c.estimated_workload_minutes, c.created_at, c.updated_at
+            FROM courses AS c
+            WHERE c.course_id = ?
+            """,
+            (course_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id and not _is_workspace_member(
+            database_path, row["space_id"], user_id
+        ):
+            return None
+    return {
+        "courseId": row["course_id"],
+        "userId": row["user_id"],
+        "spaceId": row["space_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "sourceType": row["source_type"],
+        "sourceRefs": json.loads(row["source_refs_json"] or "[]"),
+        "status": row["status"],
+        "difficultyLevel": row["difficulty_level"],
+        "estimatedWorkloadMinutes": row["estimated_workload_minutes"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_courses(
+    database_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List courses owned by the user or shared via a space they belong to."""
+    query = """
+        SELECT c.course_id, c.user_id, c.space_id, c.title, c.description,
+               c.source_type, c.source_refs_json, c.status, c.difficulty_level,
+               c.estimated_workload_minutes, c.created_at, c.updated_at
+        FROM courses AS c
+        WHERE c.user_id = ?
+            OR c.space_id IN (
+                SELECT m.space_id FROM workspace_members AS m WHERE m.user_id = ?
+            )
+    """
+    params: list[Any] = [user_id, user_id]
+    if status is not None:
+        query += " AND c.status = ?"
+        params.append(status)
+    query += " ORDER BY c.updated_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "courseId": row["course_id"],
+            "userId": row["user_id"],
+            "spaceId": row["space_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "sourceType": row["source_type"],
+            "sourceRefs": json.loads(row["source_refs_json"] or "[]"),
+            "status": row["status"],
+            "difficultyLevel": row["difficulty_level"],
+            "estimatedWorkloadMinutes": row["estimated_workload_minutes"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_course(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+    difficulty_level: str | None = None,
+    estimated_workload_minutes: int | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable course fields. Owner only."""
+    if status is not None and status not in {"draft", "active", "completed", "archived"}:
+        return None
+    if difficulty_level is not None and difficulty_level not in {
+        "foundational", "building", "practice", "advanced"
+    }:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        now = datetime.now(UTC).isoformat()
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if description is not None:
+            description = description.strip()
+            updates.append("description = ?")
+            values.append(description)
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if difficulty_level is not None:
+            updates.append("difficulty_level = ?")
+            values.append(difficulty_level)
+        if estimated_workload_minutes is not None:
+            updates.append("estimated_workload_minutes = ?")
+            values.append(estimated_workload_minutes)
+        if not updates:
+            return get_course(database_path, course_id=course_id, user_id=user_id)
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(course_id)
+        with connection:
+            connection.execute(
+                f"UPDATE courses SET {', '.join(updates)} WHERE course_id = ?",
+                tuple(values),
+            )
+    return get_course(database_path, course_id=course_id, user_id=user_id)
+
+
+def delete_course(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+) -> bool:
+    """Delete a course. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM courses WHERE course_id = ?",
+                (course_id,),
+            )
+    return True
+
+
+# Course modules functions.
+
+
+def create_course_module(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+    title: str,
+    description: str,
+    order_index: int,
+) -> dict[str, Any] | None:
+    """Create a module within a course. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        module_id = f"mod_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        title = title.strip()
+        description = (description or "").strip()
+        if not title:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO course_modules(
+                    module_id, course_id, title, description, order_index,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'not_started', ?, ?)
+                """,
+                (module_id, course_id, title, description, order_index, now, now),
+            )
+    return {
+        "moduleId": module_id,
+        "courseId": course_id,
+        "title": title,
+        "description": description,
+        "orderIndex": order_index,
+        "status": "not_started",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_course_modules(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List modules for a course. Caller must own the course."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT module_id, title, description, order_index, status,
+                   created_at, updated_at
+            FROM course_modules
+            WHERE course_id = ?
+            ORDER BY order_index ASC
+            """,
+            (course_id,),
+        ).fetchall()
+    return [
+        {
+            "moduleId": row["module_id"],
+            "courseId": course_id,
+            "title": row["title"],
+            "description": row["description"],
+            "orderIndex": row["order_index"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+# Course topics functions.
+
+
+def create_course_topic(
+    database_path: Path,
+    *,
+    module_id: str,
+    user_id: str,
+    title: str,
+    description: str,
+    order_index: int,
+    prerequisite_topic_ids: list[str] | None = None,
+    difficulty_level: str | None = None,
+    estimated_minutes: int | None = None,
+) -> dict[str, Any] | None:
+    """Create a topic within a module. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT c.user_id FROM course_modules AS m
+            JOIN courses AS c ON c.course_id = m.course_id
+            WHERE m.module_id = ?
+            """,
+            (module_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        topic_id = f"topic_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        title = title.strip()
+        description = (description or "").strip()
+        difficulty_level = (
+            difficulty_level
+            if difficulty_level in {"foundational", "building", "practice", "advanced"}
+            else None
+        )
+        if not title:
+            return None
+        prerequisite_topic_ids = prerequisite_topic_ids or []
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO course_topics(
+                    topic_id, module_id, title, description, order_index,
+                    prerequisite_topic_ids, difficulty_level, estimated_minutes,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'not_started', ?, ?)
+                """,
+                (
+                    topic_id,
+                    module_id,
+                    title,
+                    description,
+                    order_index,
+                    json.dumps(prerequisite_topic_ids),
+                    difficulty_level,
+                    estimated_minutes,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "topicId": topic_id,
+        "moduleId": module_id,
+        "title": title,
+        "description": description,
+        "orderIndex": order_index,
+        "prerequisiteTopicIds": prerequisite_topic_ids,
+        "difficultyLevel": difficulty_level,
+        "estimatedMinutes": estimated_minutes,
+        "status": "not_started",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_course_topics(
+    database_path: Path,
+    *,
+    module_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List topics within a module. Caller must own the course."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT c.user_id FROM course_modules AS m
+            JOIN courses AS c ON c.course_id = m.course_id
+            WHERE m.module_id = ?
+            """,
+            (module_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT topic_id, title, description, order_index,
+                   prerequisite_topic_ids, difficulty_level, estimated_minutes,
+                   status, created_at, updated_at
+            FROM course_topics
+            WHERE module_id = ?
+            ORDER BY order_index ASC
+            """,
+            (module_id,),
+        ).fetchall()
+    return [
+        {
+            "topicId": row["topic_id"],
+            "moduleId": module_id,
+            "title": row["title"],
+            "description": row["description"],
+            "orderIndex": row["order_index"],
+            "prerequisiteTopicIds": json.loads(row["prerequisite_topic_ids"] or "[]"),
+            "difficultyLevel": row["difficulty_level"],
+            "estimatedMinutes": row["estimated_minutes"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+# Course objectives functions.
+
+
+def create_course_objective(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+    title: str,
+    description: str,
+    order_index: int,
+) -> dict[str, Any] | None:
+    """Create a learning objective within a course. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        objective_id = f"obj_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        title = title.strip()
+        description = (description or "").strip()
+        if not title:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO course_objectives(
+                    objective_id, course_id, title, description, order_index,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'not_started', ?, ?)
+                """,
+                (objective_id, course_id, title, description, order_index, now, now),
+            )
+    return {
+        "objectiveId": objective_id,
+        "courseId": course_id,
+        "title": title,
+        "description": description,
+        "orderIndex": order_index,
+        "status": "not_started",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_course_objectives(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List objectives for a course. Caller must own the course."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT objective_id, title, description, order_index, status,
+                   created_at, updated_at
+            FROM course_objectives
+            WHERE course_id = ?
+            ORDER BY order_index ASC
+            """,
+            (course_id,),
+        ).fetchall()
+    return [
+        {
+            "objectiveId": row["objective_id"],
+            "courseId": course_id,
+            "title": row["title"],
+            "description": row["description"],
+            "orderIndex": row["order_index"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+# Course assessments functions.
+
+
+def create_course_assessment(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+    topic_id: str | None,
+    assessment_type: str,
+    quiz_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Create an assessment linked to a course topic. Owner only."""
+    if assessment_type not in {"quiz", "flashcard", "review"}:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        assessment_id = f"assess_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO course_assessments(
+                    assessment_id, course_id, topic_id, assessment_type,
+                    quiz_id, status, created_at
+                ) VALUES (?, ?, ?, ?, ?, 'not_started', ?)
+                """,
+                (assessment_id, course_id, topic_id, assessment_type, quiz_id, now),
+            )
+    return {
+        "assessmentId": assessment_id,
+        "courseId": course_id,
+        "topicId": topic_id,
+        "assessmentType": assessment_type,
+        "quizId": quiz_id,
+        "status": "not_started",
+        "createdAt": now,
+        "completedAt": None,
+    }
+
+
+def list_course_assessments(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List assessments for a course. Caller must own the course."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT assessment_id, topic_id, assessment_type, quiz_id,
+                   status, created_at, completed_at
+            FROM course_assessments
+            WHERE course_id = ?
+            ORDER BY created_at ASC
+            """,
+            (course_id,),
+        ).fetchall()
+    return [
+        {
+            "assessmentId": row["assessment_id"],
+            "courseId": course_id,
+            "topicId": row["topic_id"],
+            "assessmentType": row["assessment_type"],
+            "quizId": row["quiz_id"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "completedAt": row["completed_at"],
+        }
+        for row in rows
+    ]
+
+
+# Course progress functions.
+
+
+def create_course_progress(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+    topic_id: str,
+    status: str = "not_started",
+    mastery_score: float | None = None,
+    completed_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Create or update progress for a course topic. Caller must own the course."""
+    if status not in {"not_started", "in_progress", "completed", "skipped"}:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO course_progress(
+                    course_id, user_id, topic_id, status, mastery_score,
+                    completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(course_id, user_id, topic_id) DO UPDATE SET
+                    status = excluded.status,
+                    mastery_score = excluded.mastery_score,
+                    completed_at = excluded.completed_at
+                """,
+                (course_id, user_id, topic_id, status, mastery_score, completed_at),
+            )
+    return {
+        "courseId": course_id,
+        "userId": user_id,
+        "topicId": topic_id,
+        "status": status,
+        "masteryScore": mastery_score,
+        "completedAt": completed_at,
+    }
+
+
+def get_course_progress(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+    topic_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Get progress for a course topic. Caller must own the course."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        if topic_id is not None:
+            row = connection.execute(
+                """
+                SELECT topic_id, status, mastery_score, completed_at
+                FROM course_progress
+                WHERE course_id = ? AND user_id = ? AND topic_id = ?
+                """,
+                (course_id, user_id, topic_id),
+            ).fetchone()
+        else:
+            rows = connection.execute(
+                """
+                SELECT topic_id, status, mastery_score, completed_at
+                FROM course_progress
+                WHERE course_id = ? AND user_id = ?
+                ORDER BY topic_id
+                """,
+                (course_id, user_id),
+            ).fetchall()
+            return [
+                {
+                    "courseId": course_id,
+                    "userId": user_id,
+                    "topicId": r["topic_id"],
+                    "status": r["status"],
+                    "masteryScore": r["mastery_score"],
+                    "completedAt": r["completed_at"],
+                }
+                for r in rows
+            ]
+    if row is None:
+        return None
+    return {
+        "courseId": course_id,
+        "userId": user_id,
+        "topicId": row["topic_id"],
+        "status": row["status"],
+        "masteryScore": row["mastery_score"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def update_course_progress(
+    database_path: Path,
+    *,
+    course_id: str,
+    user_id: str,
+    topic_id: str,
+    status: str | None = None,
+    mastery_score: float | None = None,
+    completed_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Update progress for a course topic. Caller must own the course."""
+    if status is not None and status not in {
+        "not_started", "in_progress", "completed", "skipped"
+    }:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM courses WHERE course_id = ?",
+            (course_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if mastery_score is not None:
+            updates.append("mastery_score = ?")
+            values.append(mastery_score)
+        if completed_at is not None:
+            updates.append("completed_at = ?")
+            values.append(completed_at)
+        if not updates:
+            return get_course_progress(
+                database_path, course_id=course_id, user_id=user_id, topic_id=topic_id
+            )
+        with connection:
+            connection.execute(
+                f"UPDATE course_progress SET {', '.join(updates)} "
+                f"WHERE course_id = ? AND user_id = ? AND topic_id = ?",
+                (*values, course_id, user_id, topic_id),
+            )
+    return get_course_progress(
+        database_path, course_id=course_id, user_id=user_id, topic_id=topic_id
+    )
 

@@ -2389,3 +2389,189 @@ class CourseContentGenerateResponse(ApiModel):
     citations: list[dict[str, Any]]
     status: str
 
+
+# ---------------------------------------------------------------------------
+# M64: Collaborative AI Assessment & Competency Management schemas.
+# Assessment creation, taking, scoring, competency tracking.
+# ---------------------------------------------------------------------------
+
+
+class AssessmentCreateRequest(ApiModel):
+    courseId: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    assessmentType: str = Field(
+        default="custom",
+        description="quiz, diagnostic, practice, final, or custom",
+    )
+    status: str = Field(default="draft", description="draft, published, or archived")
+
+
+class AssessmentResponse(ApiModel):
+    assessmentId: str
+    userId: str
+    courseId: str | None
+    title: str
+    description: str
+    assessmentType: str
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class AssessmentListResponse(ApiModel):
+    assessments: list[AssessmentResponse]
+
+
+class AssessmentUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    status: str | None = Field(
+        default=None, description="draft, published, or archived"
+    )
+
+
+class AssessmentQuestionCreateRequest(ApiModel):
+    questionType: str = Field(
+        description="multiple_choice, multiple_select, short_answer, long_answer, or code"
+    )
+    prompt: str = Field(min_length=1, max_length=5000)
+    answerKey: str
+    acceptedAnswers: list[str] | None = None
+    explanation: str | None = None
+    difficultyLevel: str | None = Field(
+        default=None, description="foundational, building, practice, or advanced"
+    )
+    citations: list[dict[str, Any]] | None = None
+
+
+class AssessmentQuestionResponse(ApiModel):
+    questionId: str
+    assessmentId: str
+    questionType: str
+    prompt: str
+    answerKey: str | None = None
+    acceptedAnswers: list[str] = []
+    explanation: str | None = None
+    difficultyLevel: str | None = None
+    citations: list[dict[str, Any]] = []
+    createdAt: str
+
+
+class AssessmentQuestionListResponse(ApiModel):
+    questions: list[AssessmentQuestionResponse]
+
+
+class AssessmentAttemptCreateRequest(ApiModel):
+    status: str = Field(
+        default="in_progress", description="in_progress, completed, or abandoned"
+    )
+
+
+class AssessmentAttemptResponse(ApiModel):
+    attemptId: str
+    assessmentId: str
+    userId: str
+    status: str
+    createdAt: str
+    completedAt: str | None
+
+
+class AssessmentAttemptListResponse(ApiModel):
+    attempts: list[AssessmentAttemptResponse]
+
+
+class QuestionAnswerSubmitRequest(ApiModel):
+    questionType: str = Field(
+        description="multiple_choice, multiple_select, short_answer, long_answer, or code"
+    )
+    submittedAnswer: str
+    answerKey: str | None = None
+    acceptedAnswers: list[str] | None = None
+    explanation: str | None = None
+    result: str = Field(
+        description="correct, incorrect, partial, or ambiguous"
+    )
+    score: float | None = Field(default=None, ge=0.0, le=1.0)
+    citations: list[dict[str, Any]] | None = None
+
+
+class QuestionAnswerResponse(ApiModel):
+    attemptId: str
+    questionId: str
+    userId: str
+    submittedAnswer: str
+    answerKey: str | None = None
+    acceptedAnswers: list[str] = []
+    explanation: str | None = None
+    result: str | None = None
+    score: float | None = None
+    citations: list[dict[str, Any]] = []
+    createdAt: str
+
+
+class QuestionAnswerListResponse(ApiModel):
+    answers: list[QuestionAnswerResponse]
+
+
+class CompetencyCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    parentCompetencyId: str | None = None
+    level: int = Field(default=0, ge=0)
+
+
+class CompetencyResponse(ApiModel):
+    competencyId: str
+    userId: str
+    title: str
+    description: str
+    parentCompetencyId: str | None
+    level: int
+    createdAt: str
+    updatedAt: str
+
+
+class CompetencyListResponse(ApiModel):
+    competencies: list[CompetencyResponse]
+
+
+class CompetencyUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    parentCompetencyId: str | None = None
+    level: int | None = Field(default=None, ge=0)
+
+
+class CompetencyPrerequisiteLinkRequest(ApiModel):
+    competencyId: str
+    prerequisiteCompetencyId: str
+
+
+class CompetencyPrerequisiteResponse(ApiModel):
+    competencyId: str
+    title: str
+    level: int
+
+
+class ObjectiveCompetencyLinkRequest(ApiModel):
+    objectiveId: str
+    competencyId: str
+
+
+class QuestionCompetencyLinkRequest(ApiModel):
+    questionId: str
+    competencyId: str
+
+
+class CompetencyMasteryResponse(ApiModel):
+    competencyId: str
+    userId: str
+    masteryScore: float
+    evidenceCount: int
+    lastAssessedAt: str | None
+
+
+class CompetencyMasteryUpdateRequest(ApiModel):
+    masteryScore: float = Field(ge=0.0, le=1.0)
+

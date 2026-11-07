@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 24
+SCHEMA_VERSION = 25
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -3009,6 +3009,230 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_course_progress_user_id "
                     "ON course_progress(user_id)"
+                )
+
+                # M64: Collaborative AI Assessment & Competency Management.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assessments (
+                        assessment_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        course_id TEXT REFERENCES courses(course_id)
+                            ON DELETE SET NULL,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 4000),
+                        assessment_type TEXT NOT NULL CHECK (assessment_type IN (
+                            'quiz', 'diagnostic', 'practice', 'final', 'custom'
+                        )),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'draft', 'published', 'archived'
+                        )),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessments_user_id "
+                    "ON assessments(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessments_course_id "
+                    "ON assessments(course_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assessment_questions (
+                        question_id TEXT PRIMARY KEY,
+                        assessment_id TEXT NOT NULL REFERENCES assessments(assessment_id)
+                            ON DELETE CASCADE,
+                        position INTEGER NOT NULL CHECK (position >= 0),
+                        question_type TEXT NOT NULL CHECK (question_type IN (
+                            'multiple_choice', 'multiple_select', 'short_answer',
+                            'long_answer', 'code'
+                        )),
+                        prompt TEXT NOT NULL CHECK (length(prompt) BETWEEN 1 AND 5000),
+                        options_json TEXT,
+                        answer_key TEXT,
+                        accepted_answers_json TEXT,
+                        explanation TEXT,
+                        difficulty_level TEXT CHECK (difficulty_level IN (
+                            'foundational', 'building', 'practice', 'advanced'
+                        )),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessment_questions_assessment_id "
+                    "ON assessment_questions(assessment_id, position)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assessment_question_citations (
+                        question_id TEXT NOT NULL REFERENCES assessment_questions(question_id)
+                            ON DELETE CASCADE,
+                        citation_id TEXT NOT NULL,
+                        position INTEGER NOT NULL CHECK (position >= 0),
+                        retrieval_json TEXT NOT NULL,
+                        user_id TEXT NOT NULL,
+                        PRIMARY KEY (question_id, citation_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessment_question_citations_user_id "
+                    "ON assessment_question_citations(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assessment_attempts (
+                        attempt_id TEXT PRIMARY KEY,
+                        assessment_id TEXT NOT NULL REFERENCES assessments(assessment_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'in_progress', 'completed', 'abandoned'
+                        )),
+                        overall_score REAL CHECK (overall_score >= 0.0 AND overall_score <= 1.0),
+                        time_spent_ms INTEGER CHECK (time_spent_ms >= 0)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessment_attempts_user_id "
+                    "ON assessment_attempts(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessment_attempts_assessment_id "
+                    "ON assessment_attempts(assessment_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assessment_question_attempts (
+                        attempt_item_id TEXT PRIMARY KEY,
+                        attempt_id TEXT NOT NULL REFERENCES assessment_attempts(attempt_id)
+                            ON DELETE CASCADE,
+                        question_id TEXT NOT NULL REFERENCES assessment_questions(question_id)
+                            ON DELETE CASCADE,
+                        submitted_answer TEXT NOT NULL,
+                        outcome TEXT NOT NULL CHECK (outcome IN (
+                            'correct', 'incorrect', 'partial', 'ambiguous'
+                        )),
+                        score REAL CHECK (score >= 0.0 AND score <= 1.0),
+                        feedback TEXT,
+                        citations_used_json TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessment_question_attempts_attempt_id "
+                    "ON assessment_question_attempts(attempt_id)"
+                )
+
+                # Competencies
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS competencies (
+                        competency_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 4000),
+                        parent_competency_id TEXT REFERENCES competencies(competency_id)
+                            ON DELETE SET NULL,
+                        level INTEGER NOT NULL CHECK (level >= 0),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_competencies_user_id "
+                    "ON competencies(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_competencies_parent_id "
+                    "ON competencies(parent_competency_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS competency_prerequisites (
+                        competency_id TEXT NOT NULL REFERENCES competencies(competency_id)
+                            ON DELETE CASCADE,
+                        prerequisite_competency_id TEXT NOT NULL REFERENCES competencies(competency_id)
+                            ON DELETE CASCADE,
+                        PRIMARY KEY (competency_id, prerequisite_competency_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_competency_prerequisites_prerequisite_id "
+                    "ON competency_prerequisites(prerequisite_competency_id)"
+                )
+
+                # Learning objective ↔ competency links
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS course_objective_competencies (
+                        objective_id TEXT NOT NULL REFERENCES course_objectives(objective_id)
+                            ON DELETE CASCADE,
+                        competency_id TEXT NOT NULL REFERENCES competencies(competency_id)
+                            ON DELETE CASCADE,
+                        PRIMARY KEY (objective_id, competency_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_course_objective_competencies_competency_id "
+                    "ON course_objective_competencies(competency_id)"
+                )
+
+                # Question → competency mappings
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS assessment_question_competencies (
+                        question_id TEXT NOT NULL REFERENCES assessment_questions(question_id)
+                            ON DELETE CASCADE,
+                        competency_id TEXT NOT NULL REFERENCES competencies(competency_id)
+                            ON DELETE CASCADE,
+                        PRIMARY KEY (question_id, competency_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_assessment_question_competencies_competency_id "
+                    "ON assessment_question_competencies(competency_id)"
+                )
+
+                # User competency mastery
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS user_competency_mastery (
+                        competency_id TEXT NOT NULL REFERENCES competencies(competency_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        mastery_score REAL NOT NULL CHECK (mastery_score >= 0.0 AND mastery_score <= 1.0),
+                        evidence_count INTEGER NOT NULL CHECK (evidence_count >= 0),
+                        last_assessed_at TEXT,
+                        PRIMARY KEY (competency_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_user_competency_mastery_user_id "
+                    "ON user_competency_mastery(user_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -10826,4 +11050,1041 @@ def update_course_progress(
     return get_course_progress(
         database_path, course_id=course_id, user_id=user_id, topic_id=topic_id
     )
+
+
+# ---------------------------------------------------------------------------
+# M64: Collaborative AI Assessment & Competency Management functions.
+# Assessment creation, taking, scoring, competency tracking.
+# ---------------------------------------------------------------------------
+
+def create_assessment(
+    database_path: Path,
+    *,
+    user_id: str,
+    course_id: str | None,
+    title: str,
+    description: str,
+    assessment_type: str,
+    status: str = "draft",
+) -> dict[str, Any] | None:
+    """Create a new assessment. Caller must be authenticated."""
+    if assessment_type not in {"quiz", "diagnostic", "practice", "final", "custom"}:
+        return None
+    if status not in {"draft", "published", "archived"}:
+        return None
+    assessment_id = f"assess_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = (description or "").strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        if course_id is not None:
+            row = connection.execute(
+                "SELECT user_id FROM courses WHERE course_id = ?",
+                (course_id,),
+            ).fetchone()
+            if row is None or row["user_id"] != user_id:
+                return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO assessments(
+                    assessment_id, user_id, course_id, title, description,
+                    assessment_type, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    assessment_id,
+                    user_id,
+                    course_id,
+                    title,
+                    description,
+                    assessment_type,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "assessmentId": assessment_id,
+        "userId": user_id,
+        "courseId": course_id,
+        "title": title,
+        "description": description,
+        "assessmentType": assessment_type,
+        "status": status,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_assessment(
+    database_path: Path,
+    *,
+    assessment_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return an assessment if owned by the user."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT a.assessment_id, a.user_id, a.course_id, a.title, a.description,
+                   a.assessment_type, a.status, a.created_at, a.updated_at
+            FROM assessments AS a
+            WHERE a.assessment_id = ?
+            """,
+            (assessment_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "assessmentId": row["assessment_id"],
+        "userId": row["user_id"],
+        "courseId": row["course_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "assessmentType": row["assessment_type"],
+        "status": row["status"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_assessments(
+    database_path: Path,
+    *,
+    user_id: str,
+    course_id: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List assessments owned by the user, optionally filtered by course/status."""
+    query = """
+        SELECT assessment_id, user_id, course_id, title, description,
+               assessment_type, status, created_at, updated_at
+        FROM assessments
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if course_id is not None:
+        query += " AND course_id = ?"
+        params.append(course_id)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "assessmentId": row["assessment_id"],
+            "userId": row["user_id"],
+            "courseId": row["course_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "assessmentType": row["assessment_type"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_assessment(
+    database_path: Path,
+    *,
+    assessment_id: str,
+    user_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable assessment fields. Owner only."""
+    if status is not None and status not in {"draft", "published", "archived"}:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        now = datetime.now(UTC).isoformat()
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if description is not None:
+            description = description.strip()
+            updates.append("description = ?")
+            values.append(description)
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if not updates:
+            return get_assessment(database_path, assessment_id=assessment_id, user_id=user_id)
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(assessment_id)
+        with connection:
+            connection.execute(
+                f"UPDATE assessments SET {', '.join(updates)} WHERE assessment_id = ?",
+                tuple(values),
+            )
+    return get_assessment(database_path, assessment_id=assessment_id, user_id=user_id)
+
+
+def delete_assessment(
+    database_path: Path,
+    *,
+    assessment_id: str,
+    user_id: str,
+) -> bool:
+    """Delete an assessment. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM assessments WHERE assessment_id = ?",
+                (assessment_id,),
+            )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# M64: Assessment questions functions.
+# ---------------------------------------------------------------------------
+
+def create_assessment_question(
+    database_path: Path,
+    *,
+    assessment_id: str,
+    user_id: str,
+    question_type: str,
+    prompt: str,
+    answer_key: str,
+    accepted_answers: list[str] | None = None,
+    explanation: str | None = None,
+    difficulty_level: str | None = None,
+    citations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Create a question within an assessment. Owner only."""
+    if question_type not in {
+        "multiple_choice", "multiple_select", "short_answer",
+        "long_answer", "code",
+    }:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        question_id = f"aq_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO assessment_questions(
+                    question_id, assessment_id, position, question_type,
+                    prompt, answer_key, accepted_answers_json, explanation,
+                    difficulty_level, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    question_id,
+                    assessment_id,
+                    0,
+                    question_type,
+                    prompt,
+                    answer_key,
+                    json.dumps(accepted_answers or []),
+                    explanation,
+                    difficulty_level,
+                    now,
+                ),
+            )
+            for citation_position, citation in enumerate(citations or []):
+                connection.execute(
+                    """
+                    INSERT INTO assessment_question_citations(
+                        question_id, citation_id, position, retrieval_json,
+                        user_id
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        question_id,
+                        citation["citationId"],
+                        citation_position,
+                        json.dumps(citation.get("retrieval", {})),
+                        user_id,
+                    ),
+                )
+    return {
+        "questionId": question_id,
+        "assessmentId": assessment_id,
+        "questionType": question_type,
+        "prompt": prompt,
+        "answerKey": answer_key,
+        "acceptedAnswers": accepted_answers or [],
+        "explanation": explanation,
+        "difficultyLevel": difficulty_level,
+        "citations": citations or [],
+        "createdAt": now,
+    }
+
+
+def get_assessment_question(
+    database_path: Path,
+    *,
+    question_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return an assessment question if owned by the assessment owner."""
+    row = None
+    assessment_id = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT question_id, assessment_id, position, question_type,
+                   prompt, answer_key, accepted_answers_json, explanation,
+                   difficulty_level, created_at
+            FROM assessment_questions
+            WHERE question_id = ?
+            """,
+            (question_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        assessment_id = row["assessment_id"]
+        arow = connection.execute(
+            "SELECT user_id FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if arow is None or arow["user_id"] != user_id:
+            return None
+    return {
+        "questionId": row["question_id"],
+        "assessmentId": row["assessment_id"],
+        "position": row["position"],
+        "questionType": row["question_type"],
+        "prompt": row["prompt"],
+        "answerKey": row["answer_key"],
+        "acceptedAnswers": json.loads(row["accepted_answers_json"] or "[]"),
+        "explanation": row["explanation"],
+        "difficultyLevel": row["difficulty_level"],
+        "createdAt": row["created_at"],
+    }
+
+
+def list_assessment_questions(
+    database_path: Path,
+    *,
+    assessment_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List questions for an assessment. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT question_id, position, question_type, prompt,
+                   answer_key, accepted_answers_json, explanation,
+                   difficulty_level, created_at
+            FROM assessment_questions
+            WHERE assessment_id = ?
+            ORDER BY position ASC
+            """,
+            (assessment_id,),
+        ).fetchall()
+    return [
+        {
+            "questionId": row["question_id"],
+            "assessmentId": assessment_id,
+            "position": row["position"],
+            "questionType": row["question_type"],
+            "prompt": row["prompt"],
+            "answerKey": row["answer_key"],
+            "acceptedAnswers": json.loads(row["accepted_answers_json"] or "[]"),
+            "explanation": row["explanation"],
+            "difficultyLevel": row["difficulty_level"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Assessment attempt functions.
+# ---------------------------------------------------------------------------
+
+
+def record_assessment_attempt(
+    database_path: Path,
+    *,
+    assessment_id: str,
+    user_id: str,
+    status: str = "in_progress",
+) -> dict[str, Any] | None:
+    """Start or update an assessment attempt. Owner only."""
+    if status not in {"in_progress", "completed", "abandoned"}:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM assessments WHERE assessment_id = ?",
+            (assessment_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        attempt_id = f"attempt_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO assessment_attempts(
+                    attempt_id, assessment_id, user_id, status,
+                    started_at, completed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (attempt_id, assessment_id, user_id, status, now, None),
+            )
+    return {
+        "attemptId": attempt_id,
+        "assessmentId": assessment_id,
+        "userId": user_id,
+        "status": status,
+        "createdAt": now,
+        "completedAt": None,
+    }
+
+
+def get_assessment_attempt(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return an assessment attempt if owned by the user."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT attempt_id, assessment_id, user_id, status,
+                   started_at, completed_at
+            FROM assessment_attempts
+            WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "attemptId": row["attempt_id"],
+        "assessmentId": row["assessment_id"],
+        "userId": row["user_id"],
+        "status": row["status"],
+        "createdAt": row["started_at"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def list_assessment_attempts(
+    database_path: Path,
+    *,
+    assessment_id: str | None = None,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    """List attempts for an assessment. Owner only."""
+    query = """
+        SELECT attempt_id, assessment_id, user_id, status,
+               started_at, completed_at
+        FROM assessment_attempts
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if assessment_id is not None:
+        query += " AND assessment_id = ?"
+        params.append(assessment_id)
+    query += " ORDER BY started_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "attemptId": row["attempt_id"],
+            "assessmentId": row["assessment_id"],
+            "userId": row["user_id"],
+            "status": row["status"],
+            "createdAt": row["started_at"],
+            "completedAt": row["completed_at"],
+        }
+        for row in rows
+    ]
+
+
+def record_assessment_question_answer(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    question_id: str,
+    user_id: str,
+    question_type: str,
+    submitted_answer: str,
+    answer_key: str | None = None,
+    accepted_answers: list[str] | None = None,
+    explanation: str | None = None,
+    result: str | None = None,
+    score: float | None = None,
+    citations: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Record an answer to a question in an attempt. Owner only."""
+    if result not in {"correct", "incorrect", "partial", "ambiguous"}:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT a.attempt_id, a.user_id, q.question_id
+            FROM assessment_attempts a
+            JOIN assessment_questions q ON q.question_id = ?
+            WHERE a.attempt_id = ?
+            """,
+            (question_id, attempt_id),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+        answer_id = f"ans_{secrets.token_urlsafe(12)}"
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO assessment_question_attempts(
+                    attempt_id, question_id, submitted_answer,
+                    feedback, outcome, score, citations_used_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attempt_id,
+                    question_id,
+                    submitted_answer,
+                    explanation,
+                    result,
+                    score,
+                    json.dumps(citations or []),
+                    now,
+                ),
+            )
+    return {
+        "attemptId": attempt_id,
+        "questionId": question_id,
+        "userId": user_id,
+        "submittedAnswer": submitted_answer,
+        "answerKey": answer_key,
+        "acceptedAnswers": accepted_answers or [],
+        "explanation": explanation,
+        "result": result,
+        "score": score,
+        "citations": citations or [],
+        "createdAt": now,
+    }
+
+
+def list_assessment_question_attempts(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List question attempt results for an attempt. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM assessment_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT attempt_id, question_id, submitted_answer,
+                   feedback, outcome, score, citations_used_json, created_at
+            FROM assessment_question_attempts
+            WHERE attempt_id = ?
+            ORDER BY created_at ASC
+            """,
+            (attempt_id,),
+        ).fetchall()
+    return [
+        {
+            "attemptId": row["attempt_id"],
+            "questionId": row["question_id"],
+            "userId": user_id,
+            "submittedAnswer": row["submitted_answer"],
+            "answerKey": None,
+            "acceptedAnswers": [],
+            "explanation": row["feedback"],
+            "result": row["outcome"],
+            "score": row["score"],
+            "citations": json.loads(row["citations_used_json"] or "[]"),
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Competency functions.
+# ---------------------------------------------------------------------------
+
+
+def create_competency(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    description: str | None = None,
+    parent_competency_id: str | None = None,
+    level: int = 0,
+) -> dict[str, Any] | None:
+    """Create a competency. Owner only."""
+    competency_id = f"comp_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = (description or "").strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO competencies(
+                    competency_id, user_id, title, description,
+                    parent_competency_id, level, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    competency_id,
+                    user_id,
+                    title,
+                    description,
+                    parent_competency_id,
+                    level,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "competencyId": competency_id,
+        "userId": user_id,
+        "title": title,
+        "description": description,
+        "parentCompetencyId": parent_competency_id,
+        "level": level,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_competency(
+    database_path: Path,
+    *,
+    competency_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a competency if owned by the user."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT competency_id, user_id, title, description,
+                   parent_competency_id, level, created_at, updated_at
+            FROM competencies
+            WHERE competency_id = ?
+            """,
+            (competency_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "competencyId": row["competency_id"],
+        "userId": row["user_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "parentCompetencyId": row["parent_competency_id"],
+        "level": row["level"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_competencies(
+    database_path: Path,
+    *,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    """List competencies owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT competency_id, user_id, title, description,
+                   parent_competency_id, level, created_at, updated_at
+            FROM competencies
+            WHERE user_id = ?
+            ORDER BY created_at DESC
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "competencyId": row["competency_id"],
+            "userId": row["user_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "parentCompetencyId": row["parent_competency_id"],
+            "level": row["level"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_competency(
+    database_path: Path,
+    *,
+    competency_id: str,
+    user_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    parent_competency_id: str | None = None,
+    level: int | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable competency fields. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        now = datetime.now(UTC).isoformat()
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if description is not None:
+            description = description.strip()
+            updates.append("description = ?")
+            values.append(description)
+        if parent_competency_id is not None:
+            updates.append("parent_competency_id = ?")
+            values.append(parent_competency_id)
+        if level is not None:
+            updates.append("level = ?")
+            values.append(level)
+        if not updates:
+            return get_competency(database_path, competency_id=competency_id, user_id=user_id)
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(competency_id)
+        with connection:
+            connection.execute(
+                f"UPDATE competencies SET {', '.join(updates)} WHERE competency_id = ?",
+                tuple(values),
+            )
+    return get_competency(database_path, competency_id=competency_id, user_id=user_id)
+
+
+def delete_competency(
+    database_path: Path,
+    *,
+    competency_id: str,
+    user_id: str,
+) -> bool:
+    """Delete a competency. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM competencies WHERE competency_id = ?",
+                (competency_id,),
+            )
+    return True
+
+
+def add_competency_prerequisite(
+    database_path: Path,
+    *,
+    competency_id: str,
+    prerequisite_competency_id: str,
+    user_id: str,
+) -> bool:
+    """Add a prerequisite relationship. Owner only."""
+    if competency_id == prerequisite_competency_id:
+        return False
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        row2 = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (prerequisite_competency_id,),
+        ).fetchone()
+        if row2 is None or row2["user_id"] != user_id:
+            return False
+        with connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO competency_prerequisites(
+                        competency_id, prerequisite_competency_id
+                    ) VALUES (?, ?)
+                    """,
+                    (competency_id, prerequisite_competency_id),
+                )
+            except sqlite3.IntegrityError:
+                return False
+    return True
+
+
+def list_competency_prerequisites(
+    database_path: Path,
+    *,
+    competency_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List prerequisite competencies. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT cp.prerequisite_competency_id, c.title, c.level
+            FROM competency_prerequisites cp
+            JOIN competencies c ON c.competency_id = cp.prerequisite_competency_id
+            WHERE cp.competency_id = ?
+            ORDER BY c.title
+            """,
+            (competency_id,),
+        ).fetchall()
+    return [
+        {
+            "competencyId": row["prerequisite_competency_id"],
+            "title": row["title"],
+            "level": row["level"],
+        }
+        for row in rows
+    ]
+
+
+def link_objective_competency(
+    database_path: Path,
+    *,
+    objective_id: str,
+    competency_id: str,
+    user_id: str,
+) -> bool:
+    """Link a learning objective to a competency. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT 1 FROM course_objectives WHERE objective_id = ?",
+            (objective_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        row2 = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row2 is None or row2["user_id"] != user_id:
+            return False
+        with connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO course_objective_competencies(
+                        objective_id, competency_id
+                    ) VALUES (?, ?)
+                    """,
+                    (objective_id, competency_id),
+                )
+            except sqlite3.IntegrityError:
+                return False
+    return True
+
+
+def link_question_competency(
+    database_path: Path,
+    *,
+    question_id: str,
+    competency_id: str,
+    user_id: str,
+) -> bool:
+    """Link an assessment question to a competency. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT q.question_id, a.user_id
+            FROM assessment_questions q
+            JOIN assessments a ON a.assessment_id = q.assessment_id
+            WHERE q.question_id = ?
+            """,
+            (question_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        row2 = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row2 is None or row2["user_id"] != user_id:
+            return False
+        with connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO assessment_question_competencies(
+                        question_id, competency_id
+                    ) VALUES (?, ?)
+                    """,
+                    (question_id, competency_id),
+                )
+            except sqlite3.IntegrityError:
+                return False
+    return True
+
+
+def get_competency_mastery(
+    database_path: Path,
+    *,
+    competency_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Get mastery level for a competency. Owner only."""
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT competency_id, user_id, mastery_score, evidence_count,
+                   last_assessed_at
+            FROM user_competency_mastery
+            WHERE competency_id = ? AND user_id = ?
+            """,
+            (competency_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+    return {
+        "competencyId": row["competency_id"],
+        "userId": row["user_id"],
+        "masteryScore": row["mastery_score"],
+        "evidenceCount": row["evidence_count"],
+        "lastAssessedAt": row["last_assessed_at"],
+    }
+
+
+def update_competency_mastery(
+    database_path: Path,
+    *,
+    competency_id: str,
+    user_id: str,
+    mastery_score: float,
+) -> dict[str, Any] | None:
+    """Update mastery level for a competency. Owner only."""
+    if mastery_score < 0.0 or mastery_score > 1.0:
+        return None
+    row = None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO user_competency_mastery(
+                    competency_id, user_id, mastery_score,
+                    evidence_count, last_assessed_at
+                ) VALUES (?, ?, ?, 1, ?)
+                ON CONFLICT(competency_id, user_id) DO UPDATE SET
+                    mastery_score = excluded.mastery_score,
+                    evidence_count = evidence_count + 1,
+                    last_assessed_at = excluded.last_assessed_at
+                """,
+                (
+                    competency_id,
+                    user_id,
+                    mastery_score,
+                    now,
+                ),
+            )
+        mastery_row = connection.execute(
+            """
+            SELECT mastery_score, evidence_count, last_assessed_at
+            FROM user_competency_mastery
+            WHERE competency_id = ? AND user_id = ?
+            """,
+            (competency_id, user_id),
+        ).fetchone()
+    return {
+        "competencyId": competency_id,
+        "userId": user_id,
+        "masteryScore": mastery_row["mastery_score"],
+        "evidenceCount": mastery_row["evidence_count"],
+        "lastAssessedAt": mastery_row["last_assessed_at"],
+    }
+
+
+# Course module functions.
 

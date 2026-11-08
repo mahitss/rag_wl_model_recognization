@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 29
+SCHEMA_VERSION = 30
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -3782,6 +3782,201 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_lesson_questions_user_id "
                     "ON lesson_questions(user_id)"
+                )
+
+                # M70: Live Interactive Classroom & Virtual Learning Environment.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        lesson_plan_id TEXT REFERENCES lesson_plans(lesson_plan_id)
+                            ON DELETE SET NULL,
+                        educator_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 100),
+                        topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 200),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'scheduled', 'active', 'paused', 'ended', 'cancelled'
+                        )),
+                        started_at TEXT,
+                        ended_at TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_sessions_educator_id "
+                    "ON classroom_sessions(educator_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_sessions_status "
+                    "ON classroom_sessions(status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_sessions_lesson_plan_id "
+                    "ON classroom_sessions(lesson_plan_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_participants (
+                        participant_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN ('educator', 'learner')),
+                        joined_at TEXT NOT NULL,
+                        left_at TEXT,
+                        is_connected INTEGER NOT NULL DEFAULT 1
+                            CHECK (is_connected IN (0, 1))
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_participants_session_id "
+                    "ON classroom_participants(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_participants_user_id "
+                    "ON classroom_participants(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_presence (
+                        presence_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        last_heartbeat TEXT NOT NULL,
+                        is_online INTEGER NOT NULL DEFAULT 1
+                            CHECK (is_online IN (0, 1)),
+                        UNIQUE(session_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_presence_session_id "
+                    "ON classroom_presence(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_presence_user_id "
+                    "ON classroom_presence(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_questions (
+                        question_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        question_text TEXT NOT NULL CHECK (length(question_text) BETWEEN 1 AND 1000),
+                        is_answered INTEGER NOT NULL DEFAULT 0
+                            CHECK (is_answered IN (0, 1)),
+                        answer_text TEXT,
+                        answered_at TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_questions_session_id "
+                    "ON classroom_questions(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_questions_user_id "
+                    "ON classroom_questions(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_polls (
+                        poll_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        educator_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        question TEXT NOT NULL CHECK (length(question) BETWEEN 1 AND 1000),
+                        options_json TEXT NOT NULL CHECK (length(options_json) > 0),
+                        correct_option_index INTEGER,
+                        is_open INTEGER NOT NULL DEFAULT 1
+                            CHECK (is_open IN (0, 1)),
+                        created_at TEXT NOT NULL,
+                        closed_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_polls_session_id "
+                    "ON classroom_polls(session_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_poll_responses (
+                        response_id TEXT PRIMARY KEY,
+                        poll_id TEXT NOT NULL REFERENCES classroom_polls(poll_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        option_index INTEGER NOT NULL,
+                        responded_at TEXT NOT NULL,
+                        UNIQUE(poll_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_poll_responses_poll_id "
+                    "ON classroom_poll_responses(poll_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_poll_responses_user_id "
+                    "ON classroom_poll_responses(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_announcements (
+                        announcement_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        educator_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        message TEXT NOT NULL CHECK (length(message) BETWEEN 1 AND 1000),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_announcements_session_id "
+                    "ON classroom_announcements(session_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_activity_state (
+                        state_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        educator_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        state_type TEXT NOT NULL CHECK (state_type IN (
+                            'slide', 'section', 'whiteboard', 'activity', 'quiz'
+                        )),
+                        state_data_json TEXT NOT NULL DEFAULT '{}',
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_activity_state_session_id "
+                    "ON classroom_activity_state(session_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -15595,6 +15790,1127 @@ def list_lesson_questions(
         }
         for row in rows
     ]
+
+
+# Course module functions.
+
+
+# ---------------------------------------------------------------------------
+# M70: Live Interactive Classroom & Virtual Learning Environment functions.
+# Classroom sessions, participants, presence, questions, polls, announcements,
+# activity state, and session recovery.
+# ---------------------------------------------------------------------------
+
+
+def create_classroom_session(
+    database_path: Path,
+    *,
+    educator_id: str,
+    lesson_plan_id: str | None,
+    title: str,
+    subject: str,
+    topic: str,
+    status: str = "scheduled",
+) -> dict[str, Any] | None:
+    """Create a new live classroom session. Educator only."""
+    if status not in {"scheduled", "active", "paused", "ended", "cancelled"}:
+        return None
+    title = title.strip()
+    subject = subject.strip()
+    topic = topic.strip()
+    if not title or not subject or not topic:
+        return None
+    session_id = f"classroom_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        if lesson_plan_id is not None:
+            row = connection.execute(
+                "SELECT user_id FROM lesson_plans WHERE lesson_plan_id = ?",
+                (lesson_plan_id,),
+            ).fetchone()
+            if row is None or row["user_id"] != educator_id:
+                return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_sessions(
+                    session_id, lesson_plan_id, educator_id, title, subject,
+                    topic, status, started_at, ended_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+                """,
+                (
+                    session_id,
+                    lesson_plan_id,
+                    educator_id,
+                    title,
+                    subject,
+                    topic,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "sessionId": session_id,
+        "lessonPlanId": lesson_plan_id,
+        "educatorId": educator_id,
+        "title": title,
+        "subject": subject,
+        "topic": topic,
+        "status": status,
+        "startedAt": None,
+        "endedAt": None,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_classroom_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a classroom session if the user is the educator or a participant."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT session_id, lesson_plan_id, educator_id, title, subject,
+                   topic, status, started_at, ended_at, created_at, updated_at
+            FROM classroom_sessions
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["educator_id"] != user_id:
+            participant = connection.execute(
+                "SELECT 1 FROM classroom_participants WHERE session_id = ? AND user_id = ?",
+                (session_id, user_id),
+            ).fetchone()
+            if participant is None:
+                return None
+    return {
+        "sessionId": row["session_id"],
+        "lessonPlanId": row["lesson_plan_id"],
+        "educatorId": row["educator_id"],
+        "title": row["title"],
+        "subject": row["subject"],
+        "topic": row["topic"],
+        "status": row["status"],
+        "startedAt": row["started_at"],
+        "endedAt": row["ended_at"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_classroom_sessions(
+    database_path: Path,
+    *,
+    educator_id: str | None = None,
+    user_id: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List classroom sessions. Filter by educator, participant, or status."""
+    query = """
+        SELECT session_id, lesson_plan_id, educator_id, title, subject,
+               topic, status, started_at, ended_at, created_at, updated_at
+        FROM classroom_sessions
+        WHERE 1=1
+    """
+    params: list[Any] = []
+    if educator_id is not None:
+        query += " AND educator_id = ?"
+        params.append(educator_id)
+    if user_id is not None:
+        query += """
+            AND session_id IN (
+                SELECT session_id FROM classroom_participants WHERE user_id = ?
+            )
+        """
+        params.append(user_id)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "sessionId": row["session_id"],
+            "lessonPlanId": row["lesson_plan_id"],
+            "educatorId": row["educator_id"],
+            "title": row["title"],
+            "subject": row["subject"],
+            "topic": row["topic"],
+            "status": row["status"],
+            "startedAt": row["started_at"],
+            "endedAt": row["ended_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_classroom_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    educator_id: str,
+    title: str | None = None,
+    subject: str | None = None,
+    topic: str | None = None,
+    status: str | None = None,
+    started_at: str | None = None,
+    ended_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a classroom session. Educator only."""
+    if status is not None and status not in {
+        "scheduled", "active", "paused", "ended", "cancelled"
+    }:
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None or row["educator_id"] != educator_id:
+            return None
+        updates = []
+        values = []
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if subject is not None:
+            subject = subject.strip()
+            if not subject:
+                return None
+            updates.append("subject = ?")
+            values.append(subject)
+        if topic is not None:
+            topic = topic.strip()
+            if not topic:
+                return None
+            updates.append("topic = ?")
+            values.append(topic)
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if started_at is not None:
+            updates.append("started_at = ?")
+            values.append(started_at)
+        if ended_at is not None:
+            updates.append("ended_at = ?")
+            values.append(ended_at)
+        if not updates:
+            return get_classroom_session(
+                database_path, session_id=session_id, user_id=educator_id
+            )
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(session_id)
+        with connection:
+            connection.execute(
+                f"UPDATE classroom_sessions SET {', '.join(updates)} WHERE session_id = ?",
+                tuple(values),
+            )
+    return get_classroom_session(
+        database_path, session_id=session_id, user_id=educator_id
+    )
+
+
+def delete_classroom_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    educator_id: str,
+) -> bool:
+    """Delete a classroom session. Educator only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None or row["educator_id"] != educator_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM classroom_sessions WHERE session_id = ?",
+                (session_id,),
+            )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Classroom participants functions.
+# ---------------------------------------------------------------------------
+
+
+def join_classroom_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    role: str = "learner",
+) -> dict[str, Any] | None:
+    """Join a live classroom session. Role defaults to 'learner'."""
+    if role not in {"educator", "learner"}:
+        return None
+    participant_id = f"participant_{secrets.token_urlsafe(12)}"
+    joined_at = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT status FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        if session["status"] not in {"scheduled", "active", "paused"}:
+            return None
+        existing = connection.execute(
+            "SELECT participant_id FROM classroom_participants WHERE session_id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if existing is not None:
+            # Re-join: mark as connected again
+            with connection:
+                connection.execute(
+                    """
+                    UPDATE classroom_participants
+                    SET left_at = NULL, is_connected = 1, joined_at = ?
+                    WHERE participant_id = ?
+                    """,
+                    (joined_at, existing["participant_id"]),
+                )
+            return {
+                "participantId": existing["participant_id"],
+                "sessionId": session_id,
+                "userId": user_id,
+                "role": existing["role"],
+                "joinedAt": joined_at,
+                "leftAt": None,
+                "isConnected": True,
+            }
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_participants(
+                    participant_id, session_id, user_id, role, joined_at,
+                    left_at, is_connected
+                ) VALUES (?, ?, ?, ?, ?, NULL, 1)
+                """,
+                (participant_id, session_id, user_id, role, joined_at),
+            )
+            connection.execute(
+                """
+                INSERT OR REPLACE INTO classroom_presence(
+                    presence_id, session_id, user_id, last_heartbeat, is_online
+                ) VALUES (?, ?, ?, ?, 1)
+                """,
+                (f"presence_{secrets.token_urlsafe(12)}", session_id, user_id, joined_at),
+            )
+    return {
+        "participantId": participant_id,
+        "sessionId": session_id,
+        "userId": user_id,
+        "role": role,
+        "joinedAt": joined_at,
+        "leftAt": None,
+        "isConnected": True,
+    }
+
+
+def leave_classroom_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> bool:
+    """Leave a live classroom session."""
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT participant_id FROM classroom_participants WHERE session_id = ? AND user_id = ? AND is_connected = 1",
+            (session_id, user_id),
+        ).fetchone()
+        if row is None:
+            return False
+        with connection:
+            connection.execute(
+                """
+                UPDATE classroom_participants
+                SET left_at = ?, is_connected = 0
+                WHERE participant_id = ?
+                """,
+                (now, row["participant_id"]),
+            )
+            connection.execute(
+                "UPDATE classroom_presence SET is_online = 0 WHERE session_id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
+    return True
+
+
+def list_classroom_participants(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List participants in a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT participant_id, session_id, user_id, role, joined_at,
+                   left_at, is_connected
+            FROM classroom_participants
+            WHERE session_id = ?
+            ORDER BY joined_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "participantId": row["participant_id"],
+            "sessionId": row["session_id"],
+            "userId": row["user_id"],
+            "role": row["role"],
+            "joinedAt": row["joined_at"],
+            "leftAt": row["left_at"],
+            "isConnected": bool(row["is_connected"]),
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Classroom presence functions.
+# ---------------------------------------------------------------------------
+
+
+def record_classroom_heartbeat(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Record a presence heartbeat for a participant in a session."""
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT 1 FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        participant = connection.execute(
+            "SELECT 1 FROM classroom_participants WHERE session_id = ? AND user_id = ?",
+            (session_id, user_id),
+        ).fetchone()
+        if participant is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_presence(
+                    presence_id, session_id, user_id, last_heartbeat, is_online
+                ) VALUES (?, ?, ?, ?, 1)
+                ON CONFLICT(session_id, user_id) DO UPDATE SET
+                    last_heartbeat = excluded.last_heartbeat,
+                    is_online = excluded.is_online
+                """,
+                (f"presence_{secrets.token_urlsafe(12)}", session_id, user_id, now),
+            )
+    return {
+        "sessionId": session_id,
+        "userId": user_id,
+        "lastHeartbeat": now,
+        "isOnline": True,
+    }
+
+
+def list_classroom_presence(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List presence records for participants in a session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT presence_id, session_id, user_id, last_heartbeat, is_online
+            FROM classroom_presence
+            WHERE session_id = ?
+            ORDER BY last_heartbeat DESC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "presenceId": row["presence_id"],
+            "sessionId": row["session_id"],
+            "userId": row["user_id"],
+            "lastHeartbeat": row["last_heartbeat"],
+            "isOnline": bool(row["is_online"]),
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Classroom questions functions.
+# ---------------------------------------------------------------------------
+
+
+def record_classroom_question(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    question_text: str,
+) -> dict[str, Any] | None:
+    """Record a learner question during a classroom session."""
+    question_text = question_text.strip()
+    if not question_text:
+        return None
+    question_id = f"classroom_question_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT 1 FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        participant = connection.execute(
+            "SELECT 1 FROM classroom_participants WHERE session_id = ? AND user_id = ? AND is_connected = 1",
+            (session_id, user_id),
+        ).fetchone()
+        if participant is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_questions(
+                    question_id, session_id, user_id, question_text,
+                    is_answered, answer_text, answered_at, created_at
+                ) VALUES (?, ?, ?, ?, 0, NULL, NULL, ?)
+                """,
+                (question_id, session_id, user_id, question_text, now),
+            )
+    return {
+        "questionId": question_id,
+        "sessionId": session_id,
+        "userId": user_id,
+        "questionText": question_text,
+        "isAnswered": False,
+        "answerText": None,
+        "answeredAt": None,
+        "createdAt": now,
+    }
+
+
+def list_classroom_questions(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List questions for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT question_id, session_id, user_id, question_text,
+                   is_answered, answer_text, answered_at, created_at
+            FROM classroom_questions
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "questionId": row["question_id"],
+            "sessionId": row["session_id"],
+            "userId": row["user_id"],
+            "questionText": row["question_text"],
+            "isAnswered": bool(row["is_answered"]),
+            "answerText": row["answer_text"],
+            "answeredAt": row["answered_at"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def answer_classroom_question(
+    database_path: Path,
+    *,
+    session_id: str,
+    question_id: str,
+    educator_id: str,
+    answer_text: str,
+) -> dict[str, Any] | None:
+    """Answer a classroom question. Educator only."""
+    answer_text = answer_text.strip()
+    if not answer_text:
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["educator_id"] != educator_id:
+            return None
+        row = connection.execute(
+            "SELECT question_id FROM classroom_questions WHERE question_id = ? AND session_id = ?",
+            (question_id, session_id),
+        ).fetchone()
+        if row is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                UPDATE classroom_questions
+                SET is_answered = 1, answer_text = ?, answered_at = ?
+                WHERE question_id = ?
+                """,
+                (answer_text, now, question_id),
+            )
+    return {
+        "questionId": question_id,
+        "sessionId": session_id,
+        "educatorId": educator_id,
+        "answerText": answer_text,
+        "answeredAt": now,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Classroom polls functions.
+# ---------------------------------------------------------------------------
+
+
+def create_classroom_poll(
+    database_path: Path,
+    *,
+    session_id: str,
+    educator_id: str,
+    question: str,
+    options: list[str],
+    correct_option_index: int | None = None,
+) -> dict[str, Any] | None:
+    """Create a classroom poll. Educator only."""
+    question = question.strip()
+    if not question:
+        return None
+    if not options or len(options) < 2:
+        return None
+    options = [o.strip() for o in options if o.strip()]
+    if len(options) < 2:
+        return None
+    if correct_option_index is not None and (
+        correct_option_index < 0 or correct_option_index >= len(options)
+    ):
+        return None
+    poll_id = f"classroom_poll_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["educator_id"] != educator_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_polls(
+                    poll_id, session_id, educator_id, question, options_json,
+                    correct_option_index, is_open, created_at, closed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL)
+                """,
+                (
+                    poll_id,
+                    session_id,
+                    educator_id,
+                    question,
+                    json.dumps(options),
+                    correct_option_index,
+                    now,
+                ),
+            )
+    return {
+        "pollId": poll_id,
+        "sessionId": session_id,
+        "educatorId": educator_id,
+        "question": question,
+        "options": options,
+        "correctOptionIndex": correct_option_index,
+        "isOpen": True,
+        "createdAt": now,
+        "closedAt": None,
+    }
+
+
+def list_classroom_polls(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List polls for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT poll_id, session_id, educator_id, question, options_json,
+                   correct_option_index, is_open, created_at, closed_at
+            FROM classroom_polls
+            WHERE session_id = ?
+            ORDER BY created_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "pollId": row["poll_id"],
+            "sessionId": row["session_id"],
+            "educatorId": row["educator_id"],
+            "question": row["question"],
+            "options": json.loads(row["options_json"] or "[]"),
+            "correctOptionIndex": row["correct_option_index"],
+            "isOpen": bool(row["is_open"]),
+            "createdAt": row["created_at"],
+            "closedAt": row["closed_at"],
+        }
+        for row in rows
+    ]
+
+
+def respond_to_classroom_poll(
+    database_path: Path,
+    *,
+    poll_id: str,
+    user_id: str,
+    option_index: int,
+) -> dict[str, Any] | None:
+    """Respond to a classroom poll. Learner only."""
+    with closing(connect_database(database_path)) as connection:
+        poll = connection.execute(
+            """
+            SELECT poll_id, session_id, options_json, is_open
+            FROM classroom_polls WHERE poll_id = ?
+            """,
+            (poll_id,),
+        ).fetchone()
+        if poll is None:
+            return None
+        if not poll["is_open"]:
+            return None
+        options = json.loads(poll["options_json"] or "[]")
+        if option_index < 0 or option_index >= len(options):
+            return None
+        participant = connection.execute(
+            "SELECT 1 FROM classroom_participants WHERE session_id = ? AND user_id = ? AND is_connected = 1",
+            (poll["session_id"], user_id),
+        ).fetchone()
+        if participant is None:
+            return None
+        response_id = f"poll_response_{secrets.token_urlsafe(12)}"
+        responded_at = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_poll_responses(
+                    response_id, poll_id, user_id, option_index, responded_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(poll_id, user_id) DO UPDATE SET
+                    option_index = excluded.option_index,
+                    responded_at = excluded.responded_at
+                """,
+                (response_id, poll_id, user_id, option_index, responded_at),
+            )
+    return {
+        "responseId": response_id,
+        "pollId": poll_id,
+        "userId": user_id,
+        "optionIndex": option_index,
+        "respondedAt": responded_at,
+    }
+
+
+def get_classroom_poll_results(
+    database_path: Path,
+    *,
+    poll_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Get poll results."""
+    with closing(connect_database(database_path)) as connection:
+        poll = connection.execute(
+            """
+            SELECT poll_id, session_id, educator_id, question, options_json,
+                   correct_option_index, is_open, created_at, closed_at
+            FROM classroom_polls WHERE poll_id = ?
+            """,
+            (poll_id,),
+        ).fetchone()
+        if poll is None:
+            return None
+        session = get_classroom_session(
+            database_path, session_id=poll["session_id"], user_id=user_id
+        )
+        if session is None:
+            return None
+        options = json.loads(poll["options_json"] or "[]")
+        responses = connection.execute(
+            """
+            SELECT response_id, poll_id, user_id, option_index, responded_at
+            FROM classroom_poll_responses
+            WHERE poll_id = ?
+            """,
+            (poll_id,),
+        ).fetchall()
+        option_counts = [0] * len(options)
+        for r in responses:
+            if 0 <= r["option_index"] < len(option_counts):
+                option_counts[r["option_index"]] += 1
+    return {
+        "pollId": poll["poll_id"],
+        "sessionId": poll["session_id"],
+        "educatorId": poll["educator_id"],
+        "question": poll["question"],
+        "options": options,
+        "optionCounts": option_counts,
+        "totalResponses": len(responses),
+        "correctOptionIndex": poll["correct_option_index"],
+        "isOpen": bool(poll["is_open"]),
+        "createdAt": poll["created_at"],
+        "closedAt": poll["closed_at"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Classroom announcements functions.
+# ---------------------------------------------------------------------------
+
+
+def create_classroom_announcement(
+    database_path: Path,
+    *,
+    session_id: str,
+    educator_id: str,
+    message: str,
+) -> dict[str, Any] | None:
+    """Create a classroom announcement. Educator only."""
+    message = message.strip()
+    if not message:
+        return None
+    announcement_id = f"announcement_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["educator_id"] != educator_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_announcements(
+                    announcement_id, session_id, educator_id, message, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (announcement_id, session_id, educator_id, message, now),
+            )
+    return {
+        "announcementId": announcement_id,
+        "sessionId": session_id,
+        "educatorId": educator_id,
+        "message": message,
+        "createdAt": now,
+    }
+
+
+def list_classroom_announcements(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List announcements for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT announcement_id, session_id, educator_id, message, created_at
+            FROM classroom_announcements
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "announcementId": row["announcement_id"],
+            "sessionId": row["session_id"],
+            "educatorId": row["educator_id"],
+            "message": row["message"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Classroom activity state functions.
+# ---------------------------------------------------------------------------
+
+
+def update_classroom_activity_state(
+    database_path: Path,
+    *,
+    session_id: str,
+    educator_id: str,
+    state_type: str,
+    state_data: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Update shared activity state. Educator only."""
+    if state_type not in {"slide", "section", "whiteboard", "activity", "quiz"}:
+        return None
+    now = datetime.now(UTC).isoformat()
+    state_id = f"activity_state_{secrets.token_urlsafe(12)}"
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["educator_id"] != educator_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_activity_state(
+                    state_id, session_id, educator_id, state_type,
+                    state_data_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    state_id,
+                    session_id,
+                    educator_id,
+                    state_type,
+                    json.dumps(state_data),
+                    now,
+                ),
+            )
+    return {
+        "stateId": state_id,
+        "sessionId": session_id,
+        "educatorId": educator_id,
+        "stateType": state_type,
+        "stateData": state_data,
+        "updatedAt": now,
+    }
+
+
+def get_classroom_activity_state(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Get current activity state for a session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT state_id, session_id, educator_id, state_type,
+                   state_data_json, updated_at
+            FROM classroom_activity_state
+            WHERE session_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    return {
+        "stateId": row["state_id"],
+        "sessionId": row["session_id"],
+        "educatorId": row["educator_id"],
+        "stateType": row["state_type"],
+        "stateData": json.loads(row["state_data_json"] or "{}"),
+        "updatedAt": row["updated_at"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Classroom session recovery functions.
+# ---------------------------------------------------------------------------
+
+
+def recover_classroom_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Recover classroom session state after disconnection."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        participants = connection.execute(
+            """
+            SELECT participant_id, session_id, user_id, role, joined_at,
+                   left_at, is_connected
+            FROM classroom_participants
+            WHERE session_id = ?
+            ORDER BY joined_at ASC
+            """,
+            (session_id,),
+        ).fetchall()
+        presence_rows = connection.execute(
+            """
+            SELECT user_id, last_heartbeat, is_online
+            FROM classroom_presence
+            WHERE session_id = ?
+            ORDER BY last_heartbeat DESC
+            """,
+            (session_id,),
+        ).fetchall()
+        questions = connection.execute(
+            """
+            SELECT question_id, session_id, user_id, question_text,
+                   is_answered, answer_text, answered_at, created_at
+            FROM classroom_questions
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT 20
+            """,
+            (session_id,),
+        ).fetchall()
+        announcements = connection.execute(
+            """
+            SELECT announcement_id, session_id, educator_id, message, created_at
+            FROM classroom_announcements
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            LIMIT 10
+            """,
+            (session_id,),
+        ).fetchall()
+        activity = connection.execute(
+            """
+            SELECT state_id, session_id, educator_id, state_type,
+                   state_data_json, updated_at
+            FROM classroom_activity_state
+            WHERE session_id = ?
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (session_id,),
+        ).fetchone()
+    return {
+        "session": session,
+        "participants": [
+            {
+                "participantId": r["participant_id"],
+                "sessionId": r["session_id"],
+                "userId": r["user_id"],
+                "role": r["role"],
+                "joinedAt": r["joined_at"],
+                "leftAt": r["left_at"],
+                "isConnected": bool(r["is_connected"]),
+            }
+            for r in participants
+        ],
+        "presence": [
+            {
+                "userId": r["user_id"],
+                "lastHeartbeat": r["last_heartbeat"],
+                "isOnline": bool(r["is_online"]),
+            }
+            for r in presence_rows
+        ],
+        "questions": [
+            {
+                "questionId": r["question_id"],
+                "sessionId": r["session_id"],
+                "userId": r["user_id"],
+                "questionText": r["question_text"],
+                "isAnswered": bool(r["is_answered"]),
+                "answerText": r["answer_text"],
+                "answeredAt": r["answered_at"],
+                "createdAt": r["created_at"],
+            }
+            for r in questions
+        ],
+        "announcements": [
+            {
+                "announcementId": r["announcement_id"],
+                "sessionId": r["session_id"],
+                "educatorId": r["educator_id"],
+                "message": r["message"],
+                "createdAt": r["created_at"],
+            }
+            for r in announcements
+        ],
+        "activityState": (
+            {
+                "stateId": activity["state_id"],
+                "sessionId": activity["session_id"],
+                "educatorId": activity["educator_id"],
+                "stateType": activity["state_type"],
+                "stateData": json.loads(activity["state_data_json"] or "{}"),
+                "updatedAt": activity["updated_at"],
+            }
+            if activity is not None
+            else None
+        ),
+    }
 
 
 # Course module functions.

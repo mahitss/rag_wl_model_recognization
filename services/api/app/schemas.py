@@ -3249,3 +3249,176 @@ class LessonPlanGenerateResponse(ApiModel):
     status: str
     createdAt: str
 
+
+# ---------------------------------------------------------------------------
+# M70: Live Interactive Classroom & Virtual Learning Environment schemas.
+# Classroom sessions, participants, presence, questions, polls, announcements,
+# activity state, and session recovery.
+# ---------------------------------------------------------------------------
+
+
+class ClassroomSessionCreateRequest(ApiModel):
+    lessonPlanId: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    subject: str = Field(min_length=1, max_length=100)
+    topic: str = Field(min_length=1, max_length=200)
+    status: str = Field(default="scheduled")
+
+
+class ClassroomSessionResponse(ApiModel):
+    sessionId: str
+    lessonPlanId: str | None
+    educatorId: str
+    title: str
+    subject: str
+    topic: str
+    status: str
+    startedAt: str | None
+    endedAt: str | None
+    createdAt: str
+    updatedAt: str
+
+
+class ClassroomSessionListResponse(ApiModel):
+    sessions: list[ClassroomSessionResponse]
+
+
+class ClassroomSessionUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    subject: str | None = Field(default=None, min_length=1, max_length=100)
+    topic: str | None = Field(default=None, min_length=1, max_length=200)
+    status: str | None = None
+    startedAt: str | None = None
+    endedAt: str | None = None
+
+
+class ClassroomParticipantResponse(ApiModel):
+    participantId: str
+    sessionId: str
+    userId: str
+    role: str
+    joinedAt: str
+    leftAt: str | None
+    isConnected: bool
+
+
+class ClassroomParticipantJoinRequest(ApiModel):
+    role: str = Field(default="learner")
+
+
+class ClassroomPresenceResponse(ApiModel):
+    sessionId: str
+    userId: str
+    lastHeartbeat: str
+    isOnline: bool
+
+
+class ClassroomPresenceListResponse(ApiModel):
+    presence: list[ClassroomPresenceResponse]
+
+
+class ClassroomQuestionRecord(ApiModel):
+    sessionId: str
+    userId: str
+    questionText: str = Field(min_length=1, max_length=1000)
+
+
+class ClassroomQuestionResponse(ApiModel):
+    questionId: str
+    sessionId: str
+    userId: str
+    questionText: str
+    isAnswered: bool
+    answerText: str | None
+    answeredAt: str | None
+    createdAt: str
+
+
+class ClassroomQuestionListResponse(ApiModel):
+    questions: list[ClassroomQuestionResponse]
+
+
+class ClassroomQuestionAnswerRequest(ApiModel):
+    answerText: str = Field(min_length=1)
+
+
+class ClassroomPollCreateRequest(ApiModel):
+    question: str = Field(min_length=1, max_length=1000)
+    options: list[str] = Field(min_length=2, max_length=10)
+    correctOptionIndex: int | None = Field(default=None, ge=0)
+
+
+class ClassroomPollResponse(ApiModel):
+    pollId: str
+    sessionId: str
+    educatorId: str
+    question: str
+    options: list[str]
+    correctOptionIndex: int | None
+    isOpen: bool
+    createdAt: str
+    closedAt: str | None
+
+
+class ClassroomPollListResponse(ApiModel):
+    polls: list[ClassroomPollResponse]
+
+
+class ClassroomPollRespondRequest(ApiModel):
+    optionIndex: int = Field(ge=0)
+
+
+class ClassroomPollResultsResponse(ApiModel):
+    pollId: str
+    sessionId: str
+    educatorId: str
+    question: str
+    options: list[str]
+    optionCounts: list[int]
+    totalResponses: int
+    correctOptionIndex: int | None
+    isOpen: bool
+    createdAt: str
+    closedAt: str | None
+
+
+class ClassroomAnnouncementCreateRequest(ApiModel):
+    sessionId: str
+    educatorId: str
+    message: str = Field(min_length=1, max_length=1000)
+
+
+class ClassroomAnnouncementResponse(ApiModel):
+    announcementId: str
+    sessionId: str
+    educatorId: str
+    message: str
+    createdAt: str
+
+
+class ClassroomAnnouncementListResponse(ApiModel):
+    announcements: list[ClassroomAnnouncementResponse]
+
+
+class ClassroomActivityStateUpdateRequest(ApiModel):
+    stateType: str
+    stateData: dict[str, Any]
+
+
+class ClassroomActivityStateResponse(ApiModel):
+    stateId: str
+    sessionId: str
+    educatorId: str
+    stateType: str
+    stateData: dict[str, Any]
+    updatedAt: str
+
+
+class ClassroomSessionRecoveryResponse(ApiModel):
+    session: ClassroomSessionResponse
+    participants: list[ClassroomParticipantResponse]
+    presence: list[ClassroomPresenceResponse]
+    questions: list[ClassroomQuestionResponse]
+    announcements: list[ClassroomAnnouncementResponse]
+    activityState: ClassroomActivityStateResponse | None
+

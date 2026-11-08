@@ -26,6 +26,7 @@ from app.api.v1.exam_routes import router as exam_router
 from app.api.v1.gap_routes import router as gap_router
 from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.classroom_routes import router as classroom_router
+from app.api.v1.classroom_intelligence_routes import router as classroom_intelligence_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
@@ -151,6 +152,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(lesson_router)
     # Live Interactive Classroom & Virtual Learning Environment (M70)
     application.include_router(classroom_router)
+    # Classroom Intelligence & Teaching Effectiveness Analytics (M71)
+    application.include_router(classroom_intelligence_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

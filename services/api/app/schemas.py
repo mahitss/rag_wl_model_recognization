@@ -3422,3 +3422,164 @@ class ClassroomSessionRecoveryResponse(ApiModel):
     announcements: list[ClassroomAnnouncementResponse]
     activityState: ClassroomActivityStateResponse | None
 
+
+# ---------------------------------------------------------------------------
+# M71: Classroom Intelligence & Teaching Effectiveness Analytics schemas.
+# Performance analytics, teaching effectiveness, recommendations.
+# ---------------------------------------------------------------------------
+
+
+class ClassroomAnalyticsSnapshotResponse(ApiModel):
+    snapshotId: str
+    sessionId: str
+    snapshotDate: str
+    userId: str
+    totalParticipants: int
+    activeParticipants: int
+    totalQuestions: int
+    answeredQuestions: int
+    totalPolls: int
+    totalPollResponses: int
+    averageAssessmentScore: float | None
+    totalAssessments: int
+    totalAssignmentsCompleted: int
+    totalAssignmentsAssigned: int
+    averageMasteryScore: float | None
+    createdAt: str
+
+
+class ClassroomAnalyticsSnapshotListResponse(ApiModel):
+    snapshots: list[ClassroomAnalyticsSnapshotResponse]
+
+
+class ClassroomTopicPerformanceResponse(ApiModel):
+    topicPerformanceId: str
+    sessionId: str
+    topicId: str
+    topic: str
+    totalAttempts: int
+    correctAttempts: int
+    incorrectAttempts: int
+    ambiguousAttempts: int
+    accuracy: float | None
+    masteryScore: float | None
+    lastUpdated: str
+
+
+class ClassroomTopicPerformanceListResponse(ApiModel):
+    topicPerformance: list[ClassroomTopicPerformanceResponse]
+
+
+class ClassroomCompetencyPerformanceResponse(ApiModel):
+    competencyPerformanceId: str
+    sessionId: str
+    competencyId: str
+    competencyName: str
+    totalAssessments: int
+    passedAssessments: int
+    averageMastery: float | None
+    evidenceCount: int
+    lastUpdated: str
+
+
+class ClassroomCompetencyPerformanceListResponse(ApiModel):
+    competencyPerformance: list[ClassroomCompetencyPerformanceResponse]
+
+
+class ClassroomLearningGapTrendResponse(ApiModel):
+    gapTrendId: str
+    sessionId: str
+    gapType: str
+    gapDescription: str
+    topicId: str | None
+    topic: str | None
+    competencyId: str | None
+    severity: str
+    affectedStudentCount: int
+    totalStudents: int
+    severityPercentage: float
+    firstDetected: str
+    lastUpdated: str
+
+
+class ClassroomLearningGapTrendListResponse(ApiModel):
+    gapTrends: list[ClassroomLearningGapTrendResponse]
+
+
+class ClassroomAssessmentTrendResponse(ApiModel):
+    assessmentTrendId: str
+    sessionId: str
+    assessmentType: str
+    assessmentId: str | None
+    assessmentTitle: str | None
+    totalParticipants: int
+    totalCompleted: int
+    totalIncomplete: int
+    averageScore: float | None
+    minScore: float | None
+    maxScore: float | None
+    passCount: int
+    failCount: int
+    passRate: float | None
+    lastUpdated: str
+
+
+class ClassroomAssessmentTrendListResponse(ApiModel):
+    assessmentTrends: list[ClassroomAssessmentTrendResponse]
+
+
+class ClassroomTeachingEffectivenessResponse(ApiModel):
+    effectivenessId: str
+    sessionId: str
+    educatorId: str
+    effectivenessType: str
+    indicatorName: str
+    indicatorValue: float | None
+    indicatorDescription: str | None
+    evidenceCount: int
+    dataSource: str
+    measuredAt: str
+
+
+class ClassroomTeachingEffectivenessListResponse(ApiModel):
+    effectivenessIndicators: list[ClassroomTeachingEffectivenessResponse]
+
+
+class ClassroomRecommendationResponse(ApiModel):
+    recommendationId: str
+    sessionId: str
+    educatorId: str
+    recommendationType: str
+    title: str
+    description: str
+    rationale: str | None
+    priorityScore: float
+    targetTopic: str | None
+    targetCompetency: str | None
+    evidenceSummary: str | None
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class ClassroomRecommendationListResponse(ApiModel):
+    recommendations: list[ClassroomRecommendationResponse]
+
+
+class ClassroomIntelligenceDashboardResponse(ApiModel):
+    sessionId: str
+    educatorId: str
+    sessionTitle: str
+    sessionTopic: str
+    sessionStatus: str
+    generatedAt: str
+    sampleSize: int
+    overallMetrics: dict[str, Any]
+    topicPerformance: list[ClassroomTopicPerformanceResponse]
+    competencyPerformance: list[ClassroomCompetencyPerformanceResponse]
+    learningGapTrends: list[ClassroomLearningGapTrendResponse]
+    assessmentTrends: list[ClassroomAssessmentTrendResponse]
+    teachingEffectiveness: list[ClassroomTeachingEffectivenessResponse]
+    recommendations: list[ClassroomRecommendationResponse]
+    dataLimitations: list[str]
+

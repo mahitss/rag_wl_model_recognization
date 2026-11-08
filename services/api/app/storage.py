@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 30
+SCHEMA_VERSION = 31
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -3977,6 +3977,214 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_classroom_activity_state_session_id "
                     "ON classroom_activity_state(session_id)"
+                )
+
+                # M71: Classroom Intelligence & Teaching Effectiveness Analytics.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_analytics_snapshots (
+                        snapshot_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        snapshot_date TEXT NOT NULL,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        total_participants INTEGER NOT NULL DEFAULT 0,
+                        active_participants INTEGER NOT NULL DEFAULT 0,
+                        total_questions INTEGER NOT NULL DEFAULT 0,
+                        answered_questions INTEGER NOT NULL DEFAULT 0,
+                        total_polls INTEGER NOT NULL DEFAULT 0,
+                        total_poll_responses INTEGER NOT NULL DEFAULT 0,
+                        average_assessment_score REAL,
+                        total_assessments INTEGER NOT NULL DEFAULT 0,
+                        total_assignments_completed INTEGER NOT NULL DEFAULT 0,
+                        total_assignments_assigned INTEGER NOT NULL DEFAULT 0,
+                        average_mastery_score REAL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_analytics_snapshots_session_id "
+                    "ON classroom_analytics_snapshots(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_analytics_snapshots_date "
+                    "ON classroom_analytics_snapshots(snapshot_date)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_topic_performance (
+                        topic_performance_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        topic_id TEXT NOT NULL,
+                        topic TEXT NOT NULL,
+                        total_attempts INTEGER NOT NULL DEFAULT 0,
+                        correct_attempts INTEGER NOT NULL DEFAULT 0,
+                        incorrect_attempts INTEGER NOT NULL DEFAULT 0,
+                        ambiguous_attempts INTEGER NOT NULL DEFAULT 0,
+                        accuracy REAL,
+                        mastery_score REAL,
+                        last_updated TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_topic_performance_session_id "
+                    "ON classroom_topic_performance(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_topic_performance_topic_id "
+                    "ON classroom_topic_performance(topic_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_competency_performance (
+                        competency_performance_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        competency_id TEXT NOT NULL,
+                        competency_name TEXT NOT NULL,
+                        total_assessments INTEGER NOT NULL DEFAULT 0,
+                        passed_assessments INTEGER NOT NULL DEFAULT 0,
+                        average_mastery REAL,
+                        evidence_count INTEGER NOT NULL DEFAULT 0,
+                        last_updated TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_competency_performance_session_id "
+                    "ON classroom_competency_performance(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_competency_performance_comp_id "
+                    "ON classroom_competency_performance(competency_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_learning_gap_trends (
+                        gap_trend_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        gap_type TEXT NOT NULL,
+                        gap_description TEXT NOT NULL,
+                        affected_topic TEXT,
+                        affected_competency TEXT,
+                        severity TEXT NOT NULL,
+                        affected_student_count INTEGER NOT NULL DEFAULT 0,
+                        total_students INTEGER NOT NULL DEFAULT 0,
+                        severity_percentage REAL,
+                        first_detected TEXT NOT NULL,
+                        last_updated TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_learning_gap_trends_session_id "
+                    "ON classroom_learning_gap_trends(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_learning_gap_trends_type "
+                    "ON classroom_learning_gap_trends(gap_type)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_assessment_trends (
+                        assessment_trend_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        assessment_type TEXT NOT NULL,
+                        assessment_id TEXT,
+                        assessment_title TEXT,
+                        total_participants INTEGER NOT NULL DEFAULT 0,
+                        total_completed INTEGER NOT NULL DEFAULT 0,
+                        total_incomplete INTEGER NOT NULL DEFAULT 0,
+                        average_score REAL,
+                        min_score REAL,
+                        max_score REAL,
+                        pass_count INTEGER NOT NULL DEFAULT 0,
+                        fail_count INTEGER NOT NULL DEFAULT 0,
+                        pass_rate REAL,
+                        last_updated TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_assessment_trends_session_id "
+                    "ON classroom_assessment_trends(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_assessment_trends_type "
+                    "ON classroom_assessment_trends(assessment_type)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_teaching_effectiveness (
+                        effectiveness_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        educator_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        effectiveness_type TEXT NOT NULL,
+                        indicator_name TEXT NOT NULL,
+                        indicator_value REAL,
+                        indicator_description TEXT,
+                        evidence_count INTEGER NOT NULL DEFAULT 0,
+                        data_source TEXT NOT NULL,
+                        measured_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_teaching_effectiveness_session_id "
+                    "ON classroom_teaching_effectiveness(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_teaching_effectiveness_type "
+                    "ON classroom_teaching_effectiveness(effectiveness_type)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_recommendations (
+                        recommendation_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        educator_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        recommendation_type TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        description TEXT NOT NULL,
+                        rationale TEXT,
+                        priority_score REAL NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending', 'approved', 'dismissed', 'implemented')),
+                        target_topic TEXT,
+                        target_competency TEXT,
+                        evidence_summary TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_recommendations_session_id "
+                    "ON classroom_recommendations(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_recommendations_type "
+                    "ON classroom_recommendations(recommendation_type)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_recommendations_status "
+                    "ON classroom_recommendations(status)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -16911,6 +17119,1036 @@ def recover_classroom_session(
             else None
         ),
     }
+
+
+# Course module functions.
+
+
+# ---------------------------------------------------------------------------
+# M71: Classroom Intelligence & Teaching Effectiveness Analytics functions.
+# Classroom performance analytics, teaching effectiveness, recommendations.
+# ---------------------------------------------------------------------------
+
+
+def create_classroom_analytics_snapshot(
+    database_path: Path,
+    *,
+    session_id: str,
+    snapshot_date: str,
+    user_id: str,
+    total_participants: int,
+    active_participants: int,
+    total_questions: int,
+    answered_questions: int,
+    total_polls: int,
+    total_poll_responses: int,
+    average_assessment_score: float | None,
+    total_assessments: int,
+    total_assignments_completed: int,
+    total_assignments_assigned: int,
+    average_mastery_score: float | None,
+) -> dict[str, Any] | None:
+    """Create a classroom analytics snapshot for trend analysis."""
+    if total_participants < 0 or active_participants < 0:
+        return None
+    if total_questions < 0 or answered_questions < 0:
+        return None
+    if total_polls < 0 or total_poll_responses < 0:
+        return None
+    if total_assessments < 0 or total_assignments_completed < 0:
+        return None
+    if total_assignments_assigned < 0:
+        return None
+    if average_assessment_score is not None and not (0.0 <= average_assessment_score <= 100.0):
+        return None
+    if average_mastery_score is not None and not (0.0 <= average_mastery_score <= 1.0):
+        return None
+    snapshot_id = f"snap_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["educator_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_analytics_snapshots(
+                    snapshot_id, session_id, snapshot_date, user_id,
+                    total_participants, active_participants,
+                    total_questions, answered_questions,
+                    total_polls, total_poll_responses,
+                    average_assessment_score, total_assessments,
+                    total_assignments_completed, total_assignments_assigned,
+                    average_mastery_score, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id,
+                    session_id,
+                    snapshot_date,
+                    user_id,
+                    total_participants,
+                    active_participants,
+                    total_questions,
+                    answered_questions,
+                    total_polls,
+                    total_poll_responses,
+                    average_assessment_score,
+                    total_assessments,
+                    total_assignments_completed,
+                    total_assignments_assigned,
+                    average_mastery_score,
+                    now,
+                ),
+            )
+    return {
+        "snapshotId": snapshot_id,
+        "sessionId": session_id,
+        "snapshotDate": snapshot_date,
+        "userId": user_id,
+        "totalParticipants": total_participants,
+        "activeParticipants": active_participants,
+        "totalQuestions": total_questions,
+        "answeredQuestions": answered_questions,
+        "totalPolls": total_polls,
+        "totalPollResponses": total_poll_responses,
+        "averageAssessmentScore": average_assessment_score,
+        "totalAssessments": total_assessments,
+        "totalAssignmentsCompleted": total_assignments_completed,
+        "totalAssignmentsAssigned": total_assignments_assigned,
+        "averageMasteryScore": average_mastery_score,
+        "createdAt": now,
+    }
+
+
+def list_classroom_analytics_snapshots(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List analytics snapshots for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT snapshot_id, session_id, snapshot_date, user_id,
+                   total_participants, active_participants,
+                   total_questions, answered_questions,
+                   total_polls, total_poll_responses,
+                   average_assessment_score, total_assessments,
+                   total_assignments_completed, total_assignments_assigned,
+                   average_mastery_score, created_at
+            FROM classroom_analytics_snapshots
+            WHERE session_id = ?
+            ORDER BY snapshot_date DESC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "snapshotId": row["snapshot_id"],
+            "sessionId": row["session_id"],
+            "snapshotDate": row["snapshot_date"],
+            "userId": row["user_id"],
+            "totalParticipants": row["total_participants"],
+            "activeParticipants": row["active_participants"],
+            "totalQuestions": row["total_questions"],
+            "answeredQuestions": row["answered_questions"],
+            "totalPolls": row["total_polls"],
+            "totalPollResponses": row["total_poll_responses"],
+            "averageAssessmentScore": row["average_assessment_score"],
+            "totalAssessments": row["total_assessments"],
+            "totalAssignmentsCompleted": row["total_assignments_completed"],
+            "totalAssignmentsAssigned": row["total_assignments_assigned"],
+            "averageMasteryScore": row["average_mastery_score"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def record_classroom_topic_performance(
+    database_path: Path,
+    *,
+    session_id: str,
+    topic_id: str,
+    topic: str,
+    total_attempts: int,
+    correct_attempts: int,
+    incorrect_attempts: int,
+    ambiguous_attempts: int,
+) -> dict[str, Any] | None:
+    """Record topic performance for a classroom session."""
+    if total_attempts < 0 or correct_attempts < 0 or incorrect_attempts < 0:
+        return None
+    if ambiguous_attempts < 0:
+        return None
+    if total_attempts < correct_attempts + incorrect_attempts + ambiguous_attempts:
+        return None
+    topic_performance_id = f"topic_perf_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    total_scored = correct_attempts + incorrect_attempts
+    accuracy = correct_attempts / total_scored if total_scored > 0 else None
+    mastery_score = correct_attempts / total_attempts if total_attempts > 0 else None
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_topic_performance(
+                    topic_performance_id, session_id, topic_id, topic,
+                    total_attempts, correct_attempts, incorrect_attempts,
+                    ambiguous_attempts, accuracy, mastery_score, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(topic_performance_id) DO UPDATE SET
+                    total_attempts = excluded.total_attempts,
+                    correct_attempts = excluded.correct_attempts,
+                    incorrect_attempts = excluded.incorrect_attempts,
+                    ambiguous_attempts = excluded.ambiguous_attempts,
+                    accuracy = excluded.accuracy,
+                    mastery_score = excluded.mastery_score,
+                    last_updated = excluded.last_updated
+                """,
+                (
+                    topic_performance_id,
+                    session_id,
+                    topic_id,
+                    topic,
+                    total_attempts,
+                    correct_attempts,
+                    incorrect_attempts,
+                    ambiguous_attempts,
+                    accuracy,
+                    mastery_score,
+                    now,
+                ),
+            )
+    return {
+        "topicPerformanceId": topic_performance_id,
+        "sessionId": session_id,
+        "topicId": topic_id,
+        "topic": topic,
+        "totalAttempts": total_attempts,
+        "correctAttempts": correct_attempts,
+        "incorrectAttempts": incorrect_attempts,
+        "ambiguousAttempts": ambiguous_attempts,
+        "accuracy": accuracy,
+        "masteryScore": mastery_score,
+        "lastUpdated": now,
+    }
+
+
+def list_classroom_topic_performance(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List topic performance for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT topic_performance_id, session_id, topic_id, topic,
+                   total_attempts, correct_attempts, incorrect_attempts,
+                   ambiguous_attempts, accuracy, mastery_score, last_updated
+            FROM classroom_topic_performance
+            WHERE session_id = ?
+            ORDER BY topic ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "topicPerformanceId": row["topic_performance_id"],
+            "sessionId": row["session_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "totalAttempts": row["total_attempts"],
+            "correctAttempts": row["correct_attempts"],
+            "incorrectAttempts": row["incorrect_attempts"],
+            "ambiguousAttempts": row["ambiguous_attempts"],
+            "accuracy": row["accuracy"],
+            "masteryScore": row["mastery_score"],
+            "lastUpdated": row["last_updated"],
+        }
+        for row in rows
+    ]
+
+
+def record_classroom_competency_performance(
+    database_path: Path,
+    *,
+    session_id: str,
+    competency_id: str,
+    competency_name: str,
+    total_assessments: int,
+    passed_assessments: int,
+    average_mastery: float | None,
+    evidence_count: int,
+) -> dict[str, Any] | None:
+    """Record competency performance for a classroom session."""
+    if total_assessments < 0 or passed_assessments < 0:
+        return None
+    if evidence_count < 0:
+        return None
+    if total_assessments < passed_assessments:
+        return None
+    if average_mastery is not None and not (0.0 <= average_mastery <= 1.0):
+        return None
+    competency_performance_id = f"comp_perf_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_competency_performance(
+                    competency_performance_id, session_id, competency_id,
+                    competency_name, total_assessments, passed_assessments,
+                    average_mastery, evidence_count, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(competency_performance_id) DO UPDATE SET
+                    total_assessments = excluded.total_assessments,
+                    passed_assessments = excluded.passed_assessments,
+                    average_mastery = excluded.average_mastery,
+                    evidence_count = excluded.evidence_count,
+                    last_updated = excluded.last_updated
+                """,
+                (
+                    competency_performance_id,
+                    session_id,
+                    competency_id,
+                    competency_name,
+                    total_assessments,
+                    passed_assessments,
+                    average_mastery,
+                    evidence_count,
+                    now,
+                ),
+            )
+    return {
+        "competencyPerformanceId": competency_performance_id,
+        "sessionId": session_id,
+        "competencyId": competency_id,
+        "competencyName": competency_name,
+        "totalAssessments": total_assessments,
+        "passedAssessments": passed_assessments,
+        "averageMastery": average_mastery,
+        "evidenceCount": evidence_count,
+        "lastUpdated": now,
+    }
+
+
+def list_classroom_competency_performance(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List competency performance for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT competency_performance_id, session_id, competency_id,
+                   competency_name, total_assessments, passed_assessments,
+                   average_mastery, evidence_count, last_updated
+            FROM classroom_competency_performance
+            WHERE session_id = ?
+            ORDER BY competency_name ASC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "competencyPerformanceId": row["competency_performance_id"],
+            "sessionId": row["session_id"],
+            "competencyId": row["competency_id"],
+            "competencyName": row["competency_name"],
+            "totalAssessments": row["total_assessments"],
+            "passedAssessments": row["passed_assessments"],
+            "averageMastery": row["average_mastery"],
+            "evidenceCount": row["evidence_count"],
+            "lastUpdated": row["last_updated"],
+        }
+        for row in rows
+    ]
+
+
+def record_classroom_learning_gap_trend(
+    database_path: Path,
+    *,
+    session_id: str,
+    gap_type: str,
+    gap_description: str,
+    topic_id: str | None,
+    topic: str | None,
+    competency_id: str | None,
+    severity: str,
+    affected_student_count: int,
+    total_students: int,
+) -> dict[str, Any] | None:
+    """Record a learning gap trend for a classroom session."""
+    if gap_type not in {
+        "incorrect_response", "repeated_misconception",
+        "weak_competency", "missing_prerequisite",
+        "repeated_forgetting", "unanswered_objective",
+        "proficiency_gap",
+    }:
+        return None
+    if severity not in {"critical", "moderate", "minor"}:
+        return None
+    if affected_student_count < 0 or total_students < 0:
+        return None
+    if affected_student_count > total_students:
+        return None
+    gap_trend_id = f"gap_trend_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    severity_percentage = (
+        affected_student_count / total_students if total_students > 0 else 0.0
+    )
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_learning_gap_trends(
+                    gap_trend_id, session_id, gap_type, gap_description,
+                    topic_id, topic, competency_id, severity,
+                    affected_student_count, total_students,
+                    severity_percentage, first_detected, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(gap_trend_id) DO UPDATE SET
+                    gap_description = excluded.gap_description,
+                    topic_id = excluded.topic_id,
+                    topic = excluded.topic,
+                    competency_id = excluded.competency_id,
+                    severity = excluded.severity,
+                    affected_student_count = excluded.affected_student_count,
+                    total_students = excluded.total_students,
+                    severity_percentage = excluded.severity_percentage,
+                    last_updated = excluded.last_updated
+                """,
+                (
+                    gap_trend_id,
+                    session_id,
+                    gap_type,
+                    gap_description,
+                    topic_id,
+                    topic,
+                    competency_id,
+                    severity,
+                    affected_student_count,
+                    total_students,
+                    severity_percentage,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "gapTrendId": gap_trend_id,
+        "sessionId": session_id,
+        "gapType": gap_type,
+        "gapDescription": gap_description,
+        "topicId": topic_id,
+        "topic": topic,
+        "competencyId": competency_id,
+        "severity": severity,
+        "affectedStudentCount": affected_student_count,
+        "totalStudents": total_students,
+        "severityPercentage": severity_percentage,
+        "firstDetected": now,
+        "lastUpdated": now,
+    }
+
+
+def list_classroom_learning_gap_trends(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List learning gap trends for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT gap_trend_id, session_id, gap_type, gap_description,
+                   topic_id, topic, competency_id, severity,
+                   affected_student_count, total_students,
+                   severity_percentage, first_detected, last_updated
+            FROM classroom_learning_gap_trends
+            WHERE session_id = ?
+            ORDER BY severity, severity_percentage DESC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "gapTrendId": row["gap_trend_id"],
+            "sessionId": row["session_id"],
+            "gapType": row["gap_type"],
+            "gapDescription": row["gap_description"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "competencyId": row["competency_id"],
+            "severity": row["severity"],
+            "affectedStudentCount": row["affected_student_count"],
+            "totalStudents": row["total_students"],
+            "severityPercentage": row["severity_percentage"],
+            "firstDetected": row["first_detected"],
+            "lastUpdated": row["last_updated"],
+        }
+        for row in rows
+    ]
+
+
+def record_classroom_assessment_trend(
+    database_path: Path,
+    *,
+    session_id: str,
+    assessment_type: str,
+    assessment_id: str | None,
+    assessment_title: str | None,
+    total_participants: int,
+    total_completed: int,
+    total_incomplete: int,
+    average_score: float | None,
+    min_score: float | None,
+    max_score: float | None,
+    pass_count: int,
+    fail_count: int,
+) -> dict[str, Any] | None:
+    """Record assessment trend for a classroom session."""
+    if total_participants < 0 or total_completed < 0 or total_incomplete < 0:
+        return None
+    if pass_count < 0 or fail_count < 0:
+        return None
+    if total_completed + total_incomplete != total_participants:
+        return None
+    if pass_count + fail_count != total_completed:
+        return None
+    if average_score is not None and not (0.0 <= average_score <= 100.0):
+        return None
+    if min_score is not None and not (0.0 <= min_score <= 100.0):
+        return None
+    if max_score is not None and not (0.0 <= max_score <= 100.0):
+        return None
+    assessment_trend_id = f"assess_trend_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    pass_rate = pass_count / total_completed if total_completed > 0 else None
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_assessment_trends(
+                    assessment_trend_id, session_id, assessment_type,
+                    assessment_id, assessment_title, total_participants,
+                    total_completed, total_incomplete,
+                    average_score, min_score, max_score,
+                    pass_count, fail_count, pass_rate, last_updated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(assessment_trend_id) DO UPDATE SET
+                    total_participants = excluded.total_participants,
+                    total_completed = excluded.total_completed,
+                    total_incomplete = excluded.total_incomplete,
+                    average_score = excluded.average_score,
+                    min_score = excluded.min_score,
+                    max_score = excluded.max_score,
+                    pass_count = excluded.pass_count,
+                    fail_count = excluded.fail_count,
+                    pass_rate = excluded.pass_rate,
+                    last_updated = excluded.last_updated
+                """,
+                (
+                    assessment_trend_id,
+                    session_id,
+                    assessment_type,
+                    assessment_id,
+                    assessment_title,
+                    total_participants,
+                    total_completed,
+                    total_incomplete,
+                    average_score,
+                    min_score,
+                    max_score,
+                    pass_count,
+                    fail_count,
+                    pass_rate,
+                    now,
+                ),
+            )
+    return {
+        "assessmentTrendId": assessment_trend_id,
+        "sessionId": session_id,
+        "assessmentType": assessment_type,
+        "assessmentId": assessment_id,
+        "assessmentTitle": assessment_title,
+        "totalParticipants": total_participants,
+        "totalCompleted": total_completed,
+        "totalIncomplete": total_incomplete,
+        "averageScore": average_score,
+        "minScore": min_score,
+        "maxScore": max_score,
+        "passCount": pass_count,
+        "failCount": fail_count,
+        "passRate": pass_rate,
+        "lastUpdated": now,
+    }
+
+
+def list_classroom_assessment_trends(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List assessment trends for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT assessment_trend_id, session_id, assessment_type,
+                   assessment_id, assessment_title, total_participants,
+                   total_completed, total_incomplete,
+                   average_score, min_score, max_score,
+                   pass_count, fail_count, pass_rate, last_updated
+            FROM classroom_assessment_trends
+            WHERE session_id = ?
+            ORDER BY created_at DESC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "assessmentTrendId": row["assessment_trend_id"],
+            "sessionId": row["session_id"],
+            "assessmentType": row["assessment_type"],
+            "assessmentId": row["assessment_id"],
+            "assessmentTitle": row["assessment_title"],
+            "totalParticipants": row["total_participants"],
+            "totalCompleted": row["total_completed"],
+            "totalIncomplete": row["total_incomplete"],
+            "averageScore": row["average_score"],
+            "minScore": row["min_score"],
+            "maxScore": row["max_score"],
+            "passCount": row["pass_count"],
+            "failCount": row["fail_count"],
+            "passRate": row["pass_rate"],
+            "lastUpdated": row["last_updated"],
+        }
+        for row in rows
+    ]
+
+
+def record_classroom_teaching_effectiveness(
+    database_path: Path,
+    *,
+    session_id: str,
+    educator_id: str,
+    effectiveness_type: str,
+    indicator_name: str,
+    indicator_value: float,
+    indicator_description: str | None,
+    evidence_count: int,
+    data_source: str,
+) -> dict[str, Any] | None:
+    """Record teaching effectiveness indicator for a classroom session."""
+    if effectiveness_type not in {
+        "learning_objective_achievement",
+        "assessment_improvement",
+        "topic_understanding",
+        "common_misconception",
+        "unanswered_questions",
+        "assignment_completion",
+        "revision_effectiveness",
+        "learning_gap_resolution",
+    }:
+        return None
+    if evidence_count < 0:
+        return None
+    if indicator_value is not None and not (0.0 <= indicator_value <= 100.0):
+        return None
+    effectiveness_id = f"effectiveness_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["educator_id"] != educator_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_teaching_effectiveness(
+                    effectiveness_id, session_id, educator_id,
+                    effectiveness_type, indicator_name,
+                    indicator_value, indicator_description,
+                    evidence_count, data_source, measured_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    effectiveness_id,
+                    session_id,
+                    educator_id,
+                    effectiveness_type,
+                    indicator_name,
+                    indicator_value,
+                    indicator_description,
+                    evidence_count,
+                    data_source,
+                    now,
+                ),
+            )
+    return {
+        "effectivenessId": effectiveness_id,
+        "sessionId": session_id,
+        "educatorId": educator_id,
+        "effectivenessType": effectiveness_type,
+        "indicatorName": indicator_name,
+        "indicatorValue": indicator_value,
+        "indicatorDescription": indicator_description,
+        "evidenceCount": evidence_count,
+        "dataSource": data_source,
+        "measuredAt": now,
+    }
+
+
+def list_classroom_teaching_effectiveness(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List teaching effectiveness indicators for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT effectiveness_id, session_id, educator_id,
+                   effectiveness_type, indicator_name,
+                   indicator_value, indicator_description,
+                   evidence_count, data_source, measured_at
+            FROM classroom_teaching_effectiveness
+            WHERE session_id = ?
+            ORDER BY effectiveness_type, indicator_name
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "effectivenessId": row["effectiveness_id"],
+            "sessionId": row["session_id"],
+            "educatorId": row["educator_id"],
+            "effectivenessType": row["effectiveness_type"],
+            "indicatorName": row["indicator_name"],
+            "indicatorValue": row["indicator_value"],
+            "indicatorDescription": row["indicator_description"],
+            "evidenceCount": row["evidence_count"],
+            "dataSource": row["data_source"],
+            "measuredAt": row["measured_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_classroom_recommendation(
+    database_path: Path,
+    *,
+    session_id: str,
+    educator_id: str,
+    recommendation_type: str,
+    title: str,
+    description: str,
+    rationale: str | None,
+    priority_score: float,
+    target_topic: str | None,
+    target_competency: str | None,
+    evidence_summary: str | None,
+) -> dict[str, Any] | None:
+    """Create a classroom recommendation. Educator only."""
+    if recommendation_type not in {
+        "concept_reteaching",
+        "alternative_explanation",
+        "additional_practice",
+        "targeted_revision",
+        "differentiated_resources",
+        "follow_up_assessment",
+    }:
+        return None
+    if priority_score < 0.0 or priority_score > 100.0:
+        return None
+    recommendation_id = f"rec_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT educator_id FROM classroom_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None or session["educator_id"] != educator_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_recommendations(
+                    recommendation_id, session_id, educator_id,
+                    recommendation_type, title, description,
+                    rationale, priority_score, target_topic,
+                    target_competency, evidence_summary,
+                    status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    recommendation_id,
+                    session_id,
+                    educator_id,
+                    recommendation_type,
+                    title,
+                    description,
+                    rationale,
+                    priority_score,
+                    target_topic,
+                    target_competency,
+                    evidence_summary,
+                    "pending",
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "recommendationId": recommendation_id,
+        "sessionId": session_id,
+        "educatorId": educator_id,
+        "recommendationType": recommendation_type,
+        "title": title,
+        "description": description,
+        "rationale": rationale,
+        "priorityScore": priority_score,
+        "targetTopic": target_topic,
+        "targetCompetency": target_competency,
+        "evidenceSummary": evidence_summary,
+        "status": "pending",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_classroom_recommendations(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List recommendations for a classroom session."""
+    session = get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT recommendation_id, session_id, educator_id,
+                   recommendation_type, title, description,
+                   rationale, priority_score, target_topic,
+                   target_competency, evidence_summary,
+                   status, created_at, updated_at
+            FROM classroom_recommendations
+            WHERE session_id = ?
+            ORDER BY priority_score DESC, created_at DESC
+            """,
+            (session_id,),
+        ).fetchall()
+    return [
+        {
+            "recommendationId": row["recommendation_id"],
+            "sessionId": row["session_id"],
+            "educatorId": row["educator_id"],
+            "recommendationType": row["recommendation_type"],
+            "title": row["title"],
+            "description": row["description"],
+            "rationale": row["rationale"],
+            "priorityScore": row["priority_score"],
+            "targetTopic": row["target_topic"],
+            "targetCompetency": row["target_competency"],
+            "evidenceSummary": row["evidence_summary"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def list_quiz_attempts_for_user(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None = None,
+    limit: int = 1000,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List quiz attempts for a user, optionally filtered by topic.
+
+    Joins quiz_attempts with quiz_questions to expose topic_id/topic.
+    Results are ordered by created_at descending.
+    """
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT a.attempt_id, a.question_id, a.outcome, a.created_at, a.duration_ms,
+                   q.topic_id, q.topic, q.difficulty_level
+            FROM quiz_attempts AS a
+            JOIN quiz_questions AS q ON q.question_id = a.question_id
+            WHERE a.user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if topic_id is not None:
+            query += " AND q.topic_id = ?"
+            params.append(topic_id)
+        query += " ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "attemptId": row["attempt_id"],
+            "questionId": row["question_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "outcome": row["outcome"],
+            "createdAt": row["created_at"],
+            "durationMs": row["duration_ms"],
+            "difficultyLevel": row["difficulty_level"],
+        }
+        for row in rows
+    ]
+
+
+def list_study_sessions_for_user(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None = None,
+    completed_only: bool = True,
+    limit: int = 1000,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List study sessions for a user, optionally filtered by topic/completion.
+
+    Uses the M10 study_sessions table (owned study sessions, not group spaces).
+    """
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT session_id, topic_id, topic, started_at, completed_at
+            FROM study_sessions
+            WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if completed_only:
+            query += " AND completed_at IS NOT NULL"
+        if topic_id is not None:
+            query += " AND topic_id = ?"
+            params.append(topic_id)
+        query += " ORDER BY completed_at DESC, started_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "sessionId": row["session_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "startedAt": row["started_at"],
+            "completedAt": row["completed_at"],
+        }
+        for row in rows
+    ]
+
+
+def list_topic_reviews_for_user(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None = None,
+    limit: int = 1000,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List topic review items for a user, optionally filtered by topic."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT question_id, topic_id, topic, last_attempt_id, last_outcome,
+                   attempted_at, due_at
+            FROM topic_review_items
+            WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if topic_id is not None:
+            query += " AND topic_id = ?"
+            params.append(topic_id)
+        query += " ORDER BY attempted_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "questionId": row["question_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "lastAttemptId": row["last_attempt_id"],
+            "lastOutcome": row["last_outcome"],
+            "attemptedAt": row["attempted_at"],
+            "dueAt": row["due_at"],
+        }
+        for row in rows
+    ]
 
 
 # Course module functions.

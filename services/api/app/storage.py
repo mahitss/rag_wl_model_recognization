@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -3353,6 +3353,184 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_remediation_reassessments_gap_id "
                     "ON remediation_reassessments(gap_id)"
+                )
+
+                # M66: AI Examination Simulator & Exam Preparation Engine.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS exams (
+                        exam_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        course_id TEXT REFERENCES courses(course_id)
+                            ON DELETE SET NULL,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 100),
+                        topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 200),
+                        description TEXT CHECK (length(description) BETWEEN 0 AND 2000),
+                        duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
+                        total_marks INTEGER NOT NULL CHECK (total_marks > 0),
+                        question_count INTEGER NOT NULL CHECK (question_count > 0),
+                        passing_score REAL NOT NULL CHECK (passing_score >= 0.0 AND passing_score <= 1.0),
+                        negative_marking REAL NOT NULL CHECK (negative_marking >= 0.0 AND negative_marking <= 1.0),
+                        instructions TEXT,
+                        difficulty_distribution_json TEXT NOT NULL DEFAULT '{}',
+                        status TEXT NOT NULL CHECK (status IN ('draft', 'published', 'archived')),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exams_user_id "
+                    "ON exams(user_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exams_course_id "
+                    "ON exams(course_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS exam_sections (
+                        section_id TEXT PRIMARY KEY,
+                        exam_id TEXT NOT NULL REFERENCES exams(exam_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT,
+                        question_count INTEGER NOT NULL CHECK (question_count >= 0),
+                        marks INTEGER NOT NULL CHECK (marks >= 0),
+                        position INTEGER NOT NULL CHECK (position >= 0)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exam_sections_exam_id "
+                    "ON exam_sections(exam_id, position)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS exam_questions (
+                        exam_question_id TEXT PRIMARY KEY,
+                        exam_id TEXT NOT NULL REFERENCES exams(exam_id)
+                            ON DELETE CASCADE,
+                        section_id TEXT REFERENCES exam_sections(section_id)
+                            ON DELETE SET NULL,
+                        source_question_id TEXT,
+                        question_type TEXT NOT NULL CHECK (question_type IN (
+                            'multiple_choice', 'multiple_select', 'short_answer',
+                            'long_answer', 'code'
+                        )),
+                        prompt TEXT NOT NULL CHECK (length(prompt) BETWEEN 1 AND 5000),
+                        options_json TEXT,
+                        answer_key TEXT,
+                        accepted_answers_json TEXT,
+                        explanation TEXT,
+                        marks INTEGER NOT NULL CHECK (marks > 0),
+                        difficulty_level TEXT CHECK (difficulty_level IN (
+                            'foundational', 'building', 'practice', 'advanced'
+                        )),
+                        position INTEGER NOT NULL CHECK (position >= 0),
+                        citations_json TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exam_questions_exam_id "
+                    "ON exam_questions(exam_id, position)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS exam_attempts (
+                        attempt_id TEXT PRIMARY KEY,
+                        exam_id TEXT NOT NULL REFERENCES exams(exam_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'in_progress', 'submitted', 'auto_submitted', 'abandoned'
+                        )),
+                        time_spent_ms INTEGER CHECK (time_spent_ms >= 0),
+                        total_marks_obtained REAL,
+                        percentage REAL CHECK (percentage >= 0.0 AND percentage <= 100.0),
+                        passed INTEGER CHECK (passed IN (0, 1)),
+                        auto_submitted INTEGER NOT NULL DEFAULT 0 CHECK (auto_submitted IN (0, 1))
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exam_attempts_user_id "
+                    "ON exam_attempts(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exam_attempts_exam_id "
+                    "ON exam_attempts(exam_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS exam_answers (
+                        exam_answer_id TEXT PRIMARY KEY,
+                        attempt_id TEXT NOT NULL REFERENCES exam_attempts(attempt_id)
+                            ON DELETE CASCADE,
+                        exam_question_id TEXT NOT NULL REFERENCES exam_questions(exam_question_id)
+                            ON DELETE CASCADE,
+                        submitted_answer TEXT,
+                        marks_obtained REAL NOT NULL CHECK (marks_obtained >= 0.0),
+                        outcome TEXT NOT NULL CHECK (outcome IN (
+                            'correct', 'incorrect', 'partial', 'unanswered', 'ambiguous'
+                        )),
+                        is_marked_for_review INTEGER NOT NULL DEFAULT 0
+                            CHECK (is_marked_for_review IN (0, 1)),
+                        time_spent_ms INTEGER CHECK (time_spent_ms >= 0),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exam_answers_attempt_id "
+                    "ON exam_answers(attempt_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS exam_results (
+                        result_id TEXT PRIMARY KEY,
+                        attempt_id TEXT NOT NULL REFERENCES exam_attempts(attempt_id)
+                            ON DELETE CASCADE,
+                        exam_id TEXT NOT NULL REFERENCES exams(exam_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        total_marks INTEGER NOT NULL,
+                        marks_obtained REAL NOT NULL,
+                        percentage REAL NOT NULL CHECK (percentage >= 0.0 AND percentage <= 100.0),
+                        passed INTEGER NOT NULL CHECK (passed IN (0, 1)),
+                        correct_count INTEGER NOT NULL CHECK (correct_count >= 0),
+                        incorrect_count INTEGER NOT NULL CHECK (incorrect_count >= 0),
+                        unanswered_count INTEGER NOT NULL CHECK (unanswered_count >= 0),
+                        partial_count INTEGER NOT NULL CHECK (partial_count >= 0),
+                        time_spent_ms INTEGER,
+                        topic_wise_json TEXT,
+                        competency_wise_json TEXT,
+                        difficulty_wise_json TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exam_results_user_id "
+                    "ON exam_results(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_exam_results_exam_id "
+                    "ON exam_results(exam_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -13078,6 +13256,917 @@ def list_remediation_reassessments(
             "improvement": row["improvement"],
             "resolved": bool(row["resolved"]),
             "reassessedAt": row["reassessed_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# M66: AI Examination Simulator & Exam Preparation Engine functions.
+# Exam creation, taking, scoring, and readiness tracking.
+# ---------------------------------------------------------------------------
+
+def create_exam(
+    database_path: Path,
+    *,
+    user_id: str,
+    course_id: str | None,
+    title: str,
+    subject: str,
+    topic: str,
+    description: str | None,
+    duration_minutes: int,
+    total_marks: int,
+    question_count: int,
+    passing_score: float,
+    negative_marking: float,
+    instructions: str | None,
+    difficulty_distribution: dict[str, Any] | None,
+    status: str = "draft",
+) -> dict[str, Any] | None:
+    """Create a new examination. Owner only."""
+    if status not in {"draft", "published", "archived"}:
+        return None
+    if not (0.0 <= passing_score <= 1.0):
+        return None
+    if not (0.0 <= negative_marking <= 1.0):
+        return None
+    if duration_minutes <= 0 or total_marks <= 0 or question_count <= 0:
+        return None
+    title = title.strip()
+    subject = subject.strip()
+    topic = topic.strip()
+    if not title or not subject or not topic:
+        return None
+    exam_id = f"exam_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    difficulty_json = json.dumps(difficulty_distribution or {})
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO exams(
+                    exam_id, user_id, course_id, title, subject, topic,
+                    description, duration_minutes, total_marks, question_count,
+                    passing_score, negative_marking, instructions,
+                    difficulty_distribution_json, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    exam_id, user_id, course_id, title, subject, topic,
+                    description, duration_minutes, total_marks, question_count,
+                    passing_score, negative_marking, instructions,
+                    difficulty_json, status, now, now,
+                ),
+            )
+    return {
+        "examId": exam_id,
+        "userId": user_id,
+        "courseId": course_id,
+        "title": title,
+        "subject": subject,
+        "topic": topic,
+        "description": description,
+        "durationMinutes": duration_minutes,
+        "totalMarks": total_marks,
+        "questionCount": question_count,
+        "passingScore": passing_score,
+        "negativeMarking": negative_marking,
+        "instructions": instructions,
+        "difficultyDistribution": difficulty_distribution or {},
+        "status": status,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_exam(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return an exam if owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT exam_id, user_id, course_id, title, subject, topic,
+                   description, duration_minutes, total_marks, question_count,
+                   passing_score, negative_marking, instructions,
+                   difficulty_distribution_json, status, created_at, updated_at
+            FROM exams
+            WHERE exam_id = ?
+            """,
+            (exam_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "examId": row["exam_id"],
+        "userId": row["user_id"],
+        "courseId": row["course_id"],
+        "title": row["title"],
+        "subject": row["subject"],
+        "topic": row["topic"],
+        "description": row["description"],
+        "durationMinutes": row["duration_minutes"],
+        "totalMarks": row["total_marks"],
+        "questionCount": row["question_count"],
+        "passingScore": row["passing_score"],
+        "negativeMarking": row["negative_marking"],
+        "instructions": row["instructions"],
+        "difficultyDistribution": json.loads(row["difficulty_distribution_json"] or "{}"),
+        "status": row["status"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_exams(
+    database_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+    course_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List exams owned by the user, optionally filtered."""
+    query = """
+        SELECT exam_id, user_id, course_id, title, subject, topic,
+               description, duration_minutes, total_marks, question_count,
+               passing_score, negative_marking, instructions,
+               difficulty_distribution_json, status, created_at, updated_at
+        FROM exams
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    if course_id is not None:
+        query += " AND course_id = ?"
+        params.append(course_id)
+    query += " ORDER BY created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "examId": row["exam_id"],
+            "userId": row["user_id"],
+            "courseId": row["course_id"],
+            "title": row["title"],
+            "subject": row["subject"],
+            "topic": row["topic"],
+            "description": row["description"],
+            "durationMinutes": row["duration_minutes"],
+            "totalMarks": row["total_marks"],
+            "questionCount": row["question_count"],
+            "passingScore": row["passing_score"],
+            "negativeMarking": row["negative_marking"],
+            "instructions": row["instructions"],
+            "difficultyDistribution": json.loads(row["difficulty_distribution_json"] or "{}"),
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_exam(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+    title: str | None = None,
+    subject: str | None = None,
+    topic: str | None = None,
+    description: str | None = None,
+    duration_minutes: int | None = None,
+    total_marks: int | None = None,
+    question_count: int | None = None,
+    passing_score: float | None = None,
+    negative_marking: float | None = None,
+    instructions: str | None = None,
+    difficulty_distribution: dict[str, Any] | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable exam fields. Owner only."""
+    if status is not None and status not in {"draft", "published", "archived"}:
+        return None
+    if passing_score is not None and not (0.0 <= passing_score <= 1.0):
+        return None
+    if negative_marking is not None and not (0.0 <= negative_marking <= 1.0):
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if subject is not None:
+            subject = subject.strip()
+            if not subject:
+                return None
+            updates.append("subject = ?")
+            values.append(subject)
+        if topic is not None:
+            topic = topic.strip()
+            if not topic:
+                return None
+            updates.append("topic = ?")
+            values.append(topic)
+        if description is not None:
+            updates.append("description = ?")
+            values.append(description)
+        if duration_minutes is not None:
+            if duration_minutes <= 0:
+                return None
+            updates.append("duration_minutes = ?")
+            values.append(duration_minutes)
+        if total_marks is not None:
+            if total_marks <= 0:
+                return None
+            updates.append("total_marks = ?")
+            values.append(total_marks)
+        if question_count is not None:
+            if question_count <= 0:
+                return None
+            updates.append("question_count = ?")
+            values.append(question_count)
+        if passing_score is not None:
+            updates.append("passing_score = ?")
+            values.append(passing_score)
+        if negative_marking is not None:
+            updates.append("negative_marking = ?")
+            values.append(negative_marking)
+        if instructions is not None:
+            updates.append("instructions = ?")
+            values.append(instructions)
+        if difficulty_distribution is not None:
+            updates.append("difficulty_distribution_json = ?")
+            values.append(json.dumps(difficulty_distribution))
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if not updates:
+            return get_exam(database_path, exam_id=exam_id, user_id=user_id)
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(exam_id)
+        with connection:
+            connection.execute(
+                f"UPDATE exams SET {', '.join(updates)} WHERE exam_id = ?",
+                tuple(values),
+            )
+    return get_exam(database_path, exam_id=exam_id, user_id=user_id)
+
+
+def delete_exam(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+) -> bool:
+    """Delete an exam. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM exams WHERE exam_id = ?",
+                (exam_id,),
+            )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# M66: Exam sections and questions functions.
+# ---------------------------------------------------------------------------
+
+def create_exam_section(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+    title: str,
+    description: str | None,
+    question_count: int,
+    marks: int,
+    position: int,
+) -> dict[str, Any] | None:
+    """Create a section within an exam. Owner only."""
+    if question_count < 0 or marks < 0 or position < 0:
+        return None
+    title = title.strip()
+    if not title:
+        return None
+    section_id = f"exsec_{secrets.token_urlsafe(12)}"
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO exam_sections(
+                    section_id, exam_id, title, description,
+                    question_count, marks, position
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (section_id, exam_id, title, description, question_count, marks, position),
+            )
+    return {
+        "sectionId": section_id,
+        "examId": exam_id,
+        "title": title,
+        "description": description,
+        "questionCount": question_count,
+        "marks": marks,
+        "position": position,
+    }
+
+
+def list_exam_sections(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List sections for an exam. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT section_id, exam_id, title, description,
+                   question_count, marks, position
+            FROM exam_sections
+            WHERE exam_id = ?
+            ORDER BY position ASC
+            """,
+            (exam_id,),
+        ).fetchall()
+    return [
+        {
+            "sectionId": row["section_id"],
+            "examId": row["exam_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "questionCount": row["question_count"],
+            "marks": row["marks"],
+            "position": row["position"],
+        }
+        for row in rows
+    ]
+
+
+def create_exam_question(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+    section_id: str | None,
+    source_question_id: str | None,
+    question_type: str,
+    prompt: str,
+    answer_key: str | None,
+    accepted_answers: list[str] | None,
+    explanation: str | None,
+    marks: int,
+    difficulty_level: str | None,
+    position: int,
+    citations: list[dict[str, Any]] | None,
+) -> dict[str, Any] | None:
+    """Create a question within an exam. Owner only."""
+    if question_type not in {
+        "multiple_choice", "multiple_select", "short_answer",
+        "long_answer", "code",
+    }:
+        return None
+    if marks <= 0 or position < 0:
+        return None
+    prompt = prompt.strip()
+    if not prompt:
+        return None
+    exam_question_id = f"exq_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO exam_questions(
+                    exam_question_id, exam_id, section_id, source_question_id,
+                    question_type, prompt, options_json, answer_key,
+                    accepted_answers_json, explanation, marks,
+                    difficulty_level, position, citations_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    exam_question_id, exam_id, section_id, source_question_id,
+                    question_type, prompt, None, answer_key,
+                    json.dumps(accepted_answers or []), explanation, marks,
+                    difficulty_level, position, json.dumps(citations or []), now,
+                ),
+            )
+    return {
+        "examQuestionId": exam_question_id,
+        "examId": exam_id,
+        "sectionId": section_id,
+        "sourceQuestionId": source_question_id,
+        "questionType": question_type,
+        "prompt": prompt,
+        "answerKey": answer_key,
+        "acceptedAnswers": accepted_answers or [],
+        "explanation": explanation,
+        "marks": marks,
+        "difficultyLevel": difficulty_level,
+        "position": position,
+        "citations": citations or [],
+        "createdAt": now,
+    }
+
+
+def list_exam_questions(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List questions for an exam. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT exam_question_id, exam_id, section_id, source_question_id,
+                   question_type, prompt, answer_key, accepted_answers_json,
+                   explanation, marks, difficulty_level, position,
+                   citations_json, created_at
+            FROM exam_questions
+            WHERE exam_id = ?
+            ORDER BY position ASC
+            """,
+            (exam_id,),
+        ).fetchall()
+    return [
+        {
+            "examQuestionId": row["exam_question_id"],
+            "examId": row["exam_id"],
+            "sectionId": row["section_id"],
+            "sourceQuestionId": row["source_question_id"],
+            "questionType": row["question_type"],
+            "prompt": row["prompt"],
+            "answerKey": row["answer_key"],
+            "acceptedAnswers": json.loads(row["accepted_answers_json"] or "[]"),
+            "explanation": row["explanation"],
+            "marks": row["marks"],
+            "difficultyLevel": row["difficulty_level"],
+            "position": row["position"],
+            "citations": json.loads(row["citations_json"] or "[]"),
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# M66: Exam attempts and answers functions.
+# ---------------------------------------------------------------------------
+
+
+def record_exam_attempt(
+    database_path: Path,
+    *,
+    exam_id: str,
+    user_id: str,
+    status: str = "in_progress",
+) -> dict[str, Any] | None:
+    """Start an exam attempt. Owner only."""
+    if status not in {"in_progress", "submitted", "auto_submitted", "abandoned"}:
+        return None
+    attempt_id = f"exattempt_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO exam_attempts(
+                    attempt_id, exam_id, user_id, started_at,
+                    status, time_spent_ms, total_marks_obtained,
+                    percentage, passed, auto_submitted
+                ) VALUES (?, ?, ?, ?, ?, 0, NULL, NULL, NULL, 0)
+                """,
+                (attempt_id, exam_id, user_id, now, status),
+            )
+    return {
+        "attemptId": attempt_id,
+        "examId": exam_id,
+        "userId": user_id,
+        "startedAt": now,
+        "status": status,
+        "timeSpentMs": 0,
+        "totalMarksObtained": None,
+        "percentage": None,
+        "passed": None,
+        "autoSubmitted": False,
+    }
+
+
+def get_exam_attempt(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return an exam attempt if owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT attempt_id, exam_id, user_id, started_at, completed_at,
+                   status, time_spent_ms, total_marks_obtained, percentage,
+                   passed, auto_submitted
+            FROM exam_attempts
+            WHERE attempt_id = ?
+            """,
+            (attempt_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "attemptId": row["attempt_id"],
+        "examId": row["exam_id"],
+        "userId": row["user_id"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
+        "status": row["status"],
+        "timeSpentMs": row["time_spent_ms"],
+        "totalMarksObtained": row["total_marks_obtained"],
+        "percentage": row["percentage"],
+        "passed": bool(row["passed"]) if row["passed"] is not None else None,
+        "autoSubmitted": bool(row["auto_submitted"]),
+    }
+
+
+def list_exam_attempts(
+    database_path: Path,
+    *,
+    exam_id: str | None = None,
+    user_id: str,
+) -> list[dict[str, Any]]:
+    """List exam attempts for a user."""
+    query = """
+        SELECT attempt_id, exam_id, user_id, started_at, completed_at,
+               status, time_spent_ms, total_marks_obtained, percentage,
+               passed, auto_submitted
+        FROM exam_attempts
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if exam_id is not None:
+        query += " AND exam_id = ?"
+        params.append(exam_id)
+    query += " ORDER BY started_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "attemptId": row["attempt_id"],
+            "examId": row["exam_id"],
+            "userId": row["user_id"],
+            "startedAt": row["started_at"],
+            "completedAt": row["completed_at"],
+            "status": row["status"],
+            "timeSpentMs": row["time_spent_ms"],
+            "totalMarksObtained": row["total_marks_obtained"],
+            "percentage": row["percentage"],
+            "passed": bool(row["passed"]) if row["passed"] is not None else None,
+            "autoSubmitted": bool(row["auto_submitted"]),
+        }
+        for row in rows
+    ]
+
+
+def record_exam_answer(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    exam_question_id: str,
+    user_id: str,
+    submitted_answer: str | None,
+    marks_obtained: float,
+    outcome: str,
+    is_marked_for_review: bool = False,
+    time_spent_ms: int | None = None,
+) -> dict[str, Any] | None:
+    """Record an answer to an exam question. Owner only."""
+    if outcome not in {"correct", "incorrect", "partial", "unanswered", "ambiguous"}:
+        return None
+    if marks_obtained < 0:
+        return None
+    exam_answer_id = f"exans_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exam_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        qrow2 = connection.execute(
+            """
+            SELECT 1 FROM exam_questions q
+            JOIN exam_attempts a ON a.exam_id = q.exam_id
+            WHERE q.exam_question_id = ? AND a.attempt_id = ?
+            """,
+            (exam_question_id, attempt_id),
+        ).fetchone()
+        if qrow2 is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO exam_answers(
+                    exam_answer_id, attempt_id, exam_question_id,
+                    submitted_answer, marks_obtained, outcome,
+                    is_marked_for_review, time_spent_ms,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    exam_answer_id, attempt_id, exam_question_id,
+                    submitted_answer, marks_obtained, outcome,
+                    1 if is_marked_for_review else 0, time_spent_ms,
+                    now, now,
+                ),
+            )
+    return {
+        "examAnswerId": exam_answer_id,
+        "attemptId": attempt_id,
+        "examQuestionId": exam_question_id,
+        "submittedAnswer": submitted_answer,
+        "marksObtained": marks_obtained,
+        "outcome": outcome,
+        "isMarkedForReview": is_marked_for_review,
+        "timeSpentMs": time_spent_ms,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_exam_answers(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List answers for an exam attempt. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exam_attempts WHERE attempt_id = ?",
+            (attempt_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT exam_answer_id, attempt_id, exam_question_id,
+                   submitted_answer, marks_obtained, outcome,
+                   is_marked_for_review, time_spent_ms,
+                   created_at, updated_at
+            FROM exam_answers
+            WHERE attempt_id = ?
+            ORDER BY created_at ASC
+            """,
+            (attempt_id,),
+        ).fetchall()
+    return [
+        {
+            "examAnswerId": row["exam_answer_id"],
+            "attemptId": row["attempt_id"],
+            "examQuestionId": row["exam_question_id"],
+            "submittedAnswer": row["submitted_answer"],
+            "marksObtained": row["marks_obtained"],
+            "outcome": row["outcome"],
+            "isMarkedForReview": bool(row["is_marked_for_review"]),
+            "timeSpentMs": row["time_spent_ms"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# M66: Exam results functions.
+# ---------------------------------------------------------------------------
+
+
+def record_exam_result(
+    database_path: Path,
+    *,
+    attempt_id: str,
+    exam_id: str,
+    user_id: str,
+    total_marks: int,
+    marks_obtained: float,
+    percentage: float,
+    passed: bool,
+    correct_count: int,
+    incorrect_count: int,
+    unanswered_count: int,
+    partial_count: int,
+    time_spent_ms: int | None,
+    topic_wise: dict[str, Any] | None,
+    competency_wise: dict[str, Any] | None,
+    difficulty_wise: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Record final exam result. Owner only."""
+    if not (0.0 <= percentage <= 100.0):
+        return None
+    if total_marks < 0 or marks_obtained < 0:
+        return None
+    if correct_count < 0 or incorrect_count < 0 or unanswered_count < 0 or partial_count < 0:
+        return None
+    result_id = f"exresult_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM exams WHERE exam_id = ?",
+            (exam_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO exam_results(
+                    result_id, attempt_id, exam_id, user_id,
+                    total_marks, marks_obtained, percentage, passed,
+                    correct_count, incorrect_count, unanswered_count,
+                    partial_count, time_spent_ms, topic_wise_json,
+                    competency_wise_json, difficulty_wise_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result_id, attempt_id, exam_id, user_id,
+                    total_marks, marks_obtained, percentage, 1 if passed else 0,
+                    correct_count, incorrect_count, unanswered_count,
+                    partial_count, time_spent_ms,
+                    json.dumps(topic_wise or {}),
+                    json.dumps(competency_wise or {}),
+                    json.dumps(difficulty_wise or {}),
+                    now,
+                ),
+            )
+    return {
+        "resultId": result_id,
+        "attemptId": attempt_id,
+        "examId": exam_id,
+        "userId": user_id,
+        "totalMarks": total_marks,
+        "marksObtained": marks_obtained,
+        "percentage": percentage,
+        "passed": passed,
+        "correctCount": correct_count,
+        "incorrectCount": incorrect_count,
+        "unansweredCount": unanswered_count,
+        "partialCount": partial_count,
+        "timeSpentMs": time_spent_ms,
+        "topicWise": topic_wise or {},
+        "competencyWise": competency_wise or {},
+        "difficultyWise": difficulty_wise or {},
+        "createdAt": now,
+    }
+
+
+def get_exam_result(
+    database_path: Path,
+    *,
+    result_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return an exam result if owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT result_id, attempt_id, exam_id, user_id,
+                   total_marks, marks_obtained, percentage, passed,
+                   correct_count, incorrect_count, unanswered_count,
+                   partial_count, time_spent_ms, topic_wise_json,
+                   competency_wise_json, difficulty_wise_json, created_at
+            FROM exam_results
+            WHERE result_id = ?
+            """,
+            (result_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "resultId": row["result_id"],
+        "attemptId": row["attempt_id"],
+        "examId": row["exam_id"],
+        "userId": row["user_id"],
+        "totalMarks": row["total_marks"],
+        "marksObtained": row["marks_obtained"],
+        "percentage": row["percentage"],
+        "passed": bool(row["passed"]),
+        "correctCount": row["correct_count"],
+        "incorrectCount": row["incorrect_count"],
+        "unansweredCount": row["unanswered_count"],
+        "partialCount": row["partial_count"],
+        "timeSpentMs": row["time_spent_ms"],
+        "topicWise": json.loads(row["topic_wise_json"] or "{}"),
+        "competencyWise": json.loads(row["competency_wise_json"] or "{}"),
+        "difficultyWise": json.loads(row["difficulty_wise_json"] or "{}"),
+        "createdAt": row["created_at"],
+    }
+
+
+def list_exam_results(
+    database_path: Path,
+    *,
+    user_id: str,
+    exam_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List exam results for a user."""
+    query = """
+        SELECT result_id, attempt_id, exam_id, user_id,
+               total_marks, marks_obtained, percentage, passed,
+               correct_count, incorrect_count, unanswered_count,
+               partial_count, time_spent_ms, topic_wise_json,
+               competency_wise_json, difficulty_wise_json, created_at
+        FROM exam_results
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if exam_id is not None:
+        query += " AND exam_id = ?"
+        params.append(exam_id)
+    query += " ORDER BY created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "resultId": row["result_id"],
+            "attemptId": row["attempt_id"],
+            "examId": row["exam_id"],
+            "userId": row["user_id"],
+            "totalMarks": row["total_marks"],
+            "marksObtained": row["marks_obtained"],
+            "percentage": row["percentage"],
+            "passed": bool(row["passed"]),
+            "correctCount": row["correct_count"],
+            "incorrectCount": row["incorrect_count"],
+            "unansweredCount": row["unanswered_count"],
+            "partialCount": row["partial_count"],
+            "timeSpentMs": row["time_spent_ms"],
+            "topicWise": json.loads(row["topic_wise_json"] or "{}"),
+            "competencyWise": json.loads(row["competency_wise_json"] or "{}"),
+            "difficultyWise": json.loads(row["difficulty_wise_json"] or "{}"),
+            "createdAt": row["created_at"],
         }
         for row in rows
     ]

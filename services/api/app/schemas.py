@@ -2701,3 +2701,215 @@ class LearningGapDashboardResponse(ApiModel):
     dismissedGaps: int
     gaps: list[LearningGapResponse]
 
+
+# ---------------------------------------------------------------------------
+# M66: AI Examination Simulator & Exam Preparation Engine schemas.
+# Exam creation, taking, scoring, readiness.
+# ---------------------------------------------------------------------------
+
+
+class ExamCreateRequest(ApiModel):
+    courseId: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    subject: str = Field(min_length=1, max_length=100)
+    topic: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    durationMinutes: int = Field(ge=1)
+    totalMarks: int = Field(ge=1)
+    questionCount: int = Field(ge=1)
+    passingScore: float = Field(ge=0.0, le=1.0)
+    negativeMarking: float = Field(ge=0.0, le=1.0)
+    instructions: str | None = None
+    difficultyDistribution: dict[str, Any] | None = None
+    status: str = Field(default="draft")
+
+
+class ExamResponse(ApiModel):
+    examId: str
+    userId: str
+    courseId: str | None
+    title: str
+    subject: str
+    topic: str
+    description: str | None
+    durationMinutes: int
+    totalMarks: int
+    questionCount: int
+    passingScore: float
+    negativeMarking: float
+    instructions: str | None
+    difficultyDistribution: dict[str, Any]
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class ExamListResponse(ApiModel):
+    exams: list[ExamResponse]
+
+
+class ExamUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    subject: str | None = Field(default=None, min_length=1, max_length=100)
+    topic: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+    durationMinutes: int | None = Field(default=None, ge=1)
+    totalMarks: int | None = Field(default=None, ge=1)
+    questionCount: int | None = Field(default=None, ge=1)
+    passingScore: float | None = Field(default=None, ge=0.0, le=1.0)
+    negativeMarking: float | None = Field(default=None, ge=0.0, le=1.0)
+    instructions: str | None = Field(default=None)
+    difficultyDistribution: dict[str, Any] | None = None
+    status: str | None = None
+
+
+class ExamSectionCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    questionCount: int = Field(ge=0)
+    marks: int = Field(ge=0)
+    position: int = Field(ge=0)
+
+
+class ExamSectionResponse(ApiModel):
+    sectionId: str
+    examId: str
+    title: str
+    description: str | None
+    questionCount: int
+    marks: int
+    position: int
+
+
+class ExamQuestionCreateRequest(ApiModel):
+    sectionId: str | None = None
+    sourceQuestionId: str | None = None
+    questionType: str
+    prompt: str = Field(min_length=1, max_length=5000)
+    answerKey: str | None = None
+    acceptedAnswers: list[str] | None = None
+    explanation: str | None = None
+    marks: int = Field(ge=1)
+    difficultyLevel: str | None = None
+    position: int = Field(ge=0)
+    citations: list[dict[str, Any]] | None = None
+
+
+class ExamQuestionResponse(ApiModel):
+    examQuestionId: str
+    examId: str
+    sectionId: str | None
+    sourceQuestionId: str | None
+    questionType: str
+    prompt: str
+    answerKey: str | None
+    acceptedAnswers: list[str]
+    explanation: str | None
+    marks: int
+    difficultyLevel: str | None
+    position: int
+    citations: list[dict[str, Any]]
+    createdAt: str
+
+
+class ExamQuestionListResponse(ApiModel):
+    questions: list[ExamQuestionResponse]
+
+
+class ExamAttemptCreateRequest(ApiModel):
+    status: str = Field(default="in_progress")
+
+
+class ExamAttemptResponse(ApiModel):
+    attemptId: str
+    examId: str
+    userId: str
+    startedAt: str
+    completedAt: str | None
+    status: str
+    timeSpentMs: int
+    totalMarksObtained: float | None
+    percentage: float | None
+    passed: bool | None
+    autoSubmitted: bool
+
+
+class ExamAttemptListResponse(ApiModel):
+    attempts: list[ExamAttemptResponse]
+
+
+class ExamAnswerSubmitRequest(ApiModel):
+    submittedAnswer: str | None = None
+    marksObtained: float = Field(ge=0.0)
+    outcome: str
+    isMarkedForReview: bool = False
+    timeSpentMs: int | None = Field(default=None, ge=0)
+
+
+class ExamAnswerResponse(ApiModel):
+    examAnswerId: str
+    attemptId: str
+    examQuestionId: str
+    submittedAnswer: str | None
+    marksObtained: float
+    outcome: str
+    isMarkedForReview: bool
+    timeSpentMs: int | None
+    createdAt: str
+    updatedAt: str
+
+
+class ExamAnswerListResponse(ApiModel):
+    answers: list[ExamAnswerResponse]
+
+
+class ExamResultCreateRequest(ApiModel):
+    attemptId: str
+    totalMarks: int = Field(ge=0)
+    marksObtained: float = Field(ge=0.0)
+    percentage: float = Field(ge=0.0, le=100.0)
+    passed: bool
+    correctCount: int = Field(ge=0)
+    incorrectCount: int = Field(ge=0)
+    unansweredCount: int = Field(ge=0)
+    partialCount: int = Field(ge=0)
+    timeSpentMs: int | None = Field(default=None, ge=0)
+    topicWise: dict[str, Any] | None = None
+    competencyWise: dict[str, Any] | None = None
+    difficultyWise: dict[str, Any] | None = None
+
+
+class ExamResultResponse(ApiModel):
+    resultId: str
+    attemptId: str
+    examId: str
+    userId: str
+    totalMarks: int
+    marksObtained: float
+    percentage: float
+    passed: bool
+    correctCount: int
+    incorrectCount: int
+    unansweredCount: int
+    partialCount: int
+    timeSpentMs: int | None
+    topicWise: dict[str, Any]
+    competencyWise: dict[str, Any]
+    difficultyWise: dict[str, Any]
+    createdAt: str
+
+
+class ExamResultListResponse(ApiModel):
+    results: list[ExamResultResponse]
+
+
+class ExamReadinessResponse(ApiModel):
+    examId: str
+    userId: str
+    readinessScore: float = Field(ge=0.0, le=1.0)
+    readinessLevel: str
+    evidenceBased: bool
+    weakTopics: list[str]
+    recommendedActions: list[str]
+    calculatedAt: str
+

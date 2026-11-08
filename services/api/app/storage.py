@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 28
+SCHEMA_VERSION = 29
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -3640,6 +3640,148 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_topic_trends_user_id "
                     "ON topic_trends(user_id, topic_id, measurement_date)"
+                )
+
+                # M69: AI Lesson Planner & Teaching Studio.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lesson_plans (
+                        lesson_plan_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        classroom_id TEXT,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        subject TEXT NOT NULL CHECK (length(subject) BETWEEN 1 AND 100),
+                        topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 200),
+                        student_level TEXT CHECK (student_level IN (
+                            'foundational', 'building', 'practice', 'advanced'
+                        )),
+                        duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'draft', 'published', 'archived', 'completed'
+                        )),
+                        learning_objectives_json TEXT NOT NULL DEFAULT '[]',
+                        prerequisite_concepts_json TEXT NOT NULL DEFAULT '[]',
+                        source_material_refs_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        published_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_plans_user_id "
+                    "ON lesson_plans(user_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_plans_classroom_id "
+                    "ON lesson_plans(classroom_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lesson_plan_sections (
+                        section_id TEXT PRIMARY KEY,
+                        lesson_plan_id TEXT NOT NULL REFERENCES lesson_plans(lesson_plan_id)
+                            ON DELETE CASCADE,
+                        section_type TEXT NOT NULL CHECK (section_type IN (
+                            'learning_objective', 'prerequisite', 'introduction',
+                            'concept_explanation', 'teaching_sequence',
+                            'example_activity', 'practice_question',
+                            'assessment_checkpoint', 'conclusion',
+                            'follow_up_revision'
+                        )),
+                        section_title TEXT NOT NULL CHECK (length(section_title) BETWEEN 1 AND 200),
+                        content TEXT NOT NULL CHECK (length(content) >= 1),
+                        citations_json TEXT NOT NULL DEFAULT '[]',
+                        position INTEGER NOT NULL CHECK (position >= 0),
+                        order_index INTEGER NOT NULL CHECK (order_index >= 0),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_plan_sections_plan_id "
+                    "ON lesson_plan_sections(lesson_plan_id, position)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lesson_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        lesson_plan_id TEXT NOT NULL REFERENCES lesson_plans(lesson_plan_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        classroom_id TEXT,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        scheduled_at TEXT,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'scheduled', 'in_progress', 'completed', 'cancelled'
+                        )),
+                        started_at TEXT,
+                        completed_at TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_sessions_plan_id "
+                    "ON lesson_sessions(lesson_plan_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_sessions_user_id "
+                    "ON lesson_sessions(user_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_sessions_classroom_id "
+                    "ON lesson_sessions(classroom_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lesson_attendance (
+                        attendance_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES lesson_sessions(session_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        joined_at TEXT,
+                        left_at TEXT,
+                        participation_events_json TEXT NOT NULL DEFAULT '[]'
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_attendance_session_id "
+                    "ON lesson_attendance(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_attendance_user_id "
+                    "ON lesson_attendance(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lesson_questions (
+                        question_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES lesson_sessions(session_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        question_text TEXT NOT NULL CHECK (length(question_text) >= 1),
+                        answered_at TEXT,
+                        answer_text TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_questions_session_id "
+                    "ON lesson_questions(session_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lesson_questions_user_id "
+                    "ON lesson_questions(user_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -14667,6 +14809,789 @@ def list_topic_trends(
             "accuracy": row["accuracy"],
             "attemptCount": row["attempt_count"],
             "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# Course module functions.
+
+
+# ---------------------------------------------------------------------------
+# M69: AI Lesson Planner & Teaching Studio functions.
+# Lesson plan CRUD, sections, sessions, attendance, learner questions.
+# ---------------------------------------------------------------------------
+
+
+def create_lesson_plan(
+    database_path: Path,
+    *,
+    user_id: str,
+    classroom_id: str | None,
+    title: str,
+    subject: str,
+    topic: str,
+    student_level: str | None,
+    duration_minutes: int,
+    status: str = "draft",
+    learning_objectives: list[str] | None = None,
+    prerequisite_concepts: list[str] | None = None,
+    source_material_refs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Create a new lesson plan. Owner (educator) only."""
+    if status not in {"draft", "published", "archived", "completed"}:
+        return None
+    if student_level is not None and student_level not in {
+        "foundational", "building", "practice", "advanced",
+    }:
+        return None
+    if duration_minutes <= 0:
+        return None
+    title = title.strip()
+    subject = subject.strip()
+    topic = topic.strip()
+    if not title or not subject or not topic:
+        return None
+    lesson_plan_id = f"lesson_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO lesson_plans(
+                    lesson_plan_id, user_id, classroom_id, title, subject,
+                    topic, student_level, duration_minutes, status,
+                    learning_objectives_json, prerequisite_concepts_json,
+                    source_material_refs_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    lesson_plan_id,
+                    user_id,
+                    classroom_id,
+                    title,
+                    subject,
+                    topic,
+                    student_level,
+                    duration_minutes,
+                    status,
+                    json.dumps(learning_objectives or []),
+                    json.dumps(prerequisite_concepts or []),
+                    json.dumps(source_material_refs or []),
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "lessonPlanId": lesson_plan_id,
+        "userId": user_id,
+        "classroomId": classroom_id,
+        "title": title,
+        "subject": subject,
+        "topic": topic,
+        "studentLevel": student_level,
+        "durationMinutes": duration_minutes,
+        "status": status,
+        "learningObjectives": learning_objectives or [],
+        "prerequisiteConcepts": prerequisite_concepts or [],
+        "sourceMaterialRefs": source_material_refs or [],
+        "createdAt": now,
+        "updatedAt": now,
+        "publishedAt": None,
+    }
+
+
+def get_lesson_plan(
+    database_path: Path,
+    *,
+    lesson_plan_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a lesson plan if owned by the educator."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT lesson_plan_id, user_id, classroom_id, title, subject,
+                   topic, student_level, duration_minutes, status,
+                   learning_objectives_json, prerequisite_concepts_json,
+                   source_material_refs_json, created_at, updated_at,
+                   published_at
+            FROM lesson_plans
+            WHERE lesson_plan_id = ?
+            """,
+            (lesson_plan_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "lessonPlanId": row["lesson_plan_id"],
+        "userId": row["user_id"],
+        "classroomId": row["classroom_id"],
+        "title": row["title"],
+        "subject": row["subject"],
+        "topic": row["topic"],
+        "studentLevel": row["student_level"],
+        "durationMinutes": row["duration_minutes"],
+        "status": row["status"],
+        "learningObjectives": json.loads(row["learning_objectives_json"] or "[]"),
+        "prerequisiteConcepts": json.loads(row["prerequisite_concepts_json"] or "[]"),
+        "sourceMaterialRefs": json.loads(row["source_material_refs_json"] or "[]"),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "publishedAt": row["published_at"],
+    }
+
+
+def list_lesson_plans(
+    database_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+    classroom_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List lesson plans owned by the educator, optionally filtered."""
+    query = """
+        SELECT lesson_plan_id, user_id, classroom_id, title, subject,
+               topic, student_level, duration_minutes, status,
+               learning_objectives_json, prerequisite_concepts_json,
+               source_material_refs_json, created_at, updated_at,
+               published_at
+        FROM lesson_plans
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    if classroom_id is not None:
+        query += " AND classroom_id = ?"
+        params.append(classroom_id)
+    query += " ORDER BY updated_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "lessonPlanId": row["lesson_plan_id"],
+            "userId": row["user_id"],
+            "classroomId": row["classroom_id"],
+            "title": row["title"],
+            "subject": row["subject"],
+            "topic": row["topic"],
+            "studentLevel": row["student_level"],
+            "durationMinutes": row["duration_minutes"],
+            "status": row["status"],
+            "learningObjectives": json.loads(row["learning_objectives_json"] or "[]"),
+            "prerequisiteConcepts": json.loads(row["prerequisite_concepts_json"] or "[]"),
+            "sourceMaterialRefs": json.loads(row["source_material_refs_json"] or "[]"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "publishedAt": row["published_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_lesson_plan(
+    database_path: Path,
+    *,
+    lesson_plan_id: str,
+    user_id: str,
+    title: str | None = None,
+    subject: str | None = None,
+    topic: str | None = None,
+    student_level: str | None = None,
+    duration_minutes: int | None = None,
+    status: str | None = None,
+    learning_objectives: list[str] | None = None,
+    prerequisite_concepts: list[str] | None = None,
+    source_material_refs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable lesson plan fields. Owner only."""
+    if status is not None and status not in {
+        "draft", "published", "archived", "completed"
+    }:
+        return None
+    if student_level is not None and student_level not in {
+        "foundational", "building", "practice", "advanced",
+    }:
+        return None
+    if duration_minutes is not None and duration_minutes <= 0:
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id, published_at FROM lesson_plans WHERE lesson_plan_id = ?",
+            (lesson_plan_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if subject is not None:
+            subject = subject.strip()
+            if not subject:
+                return None
+            updates.append("subject = ?")
+            values.append(subject)
+        if topic is not None:
+            topic = topic.strip()
+            if not topic:
+                return None
+            updates.append("topic = ?")
+            values.append(topic)
+        if student_level is not None:
+            updates.append("student_level = ?")
+            values.append(student_level)
+        if duration_minutes is not None:
+            updates.append("duration_minutes = ?")
+            values.append(duration_minutes)
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+            if status == "published" and row["published_at"] is None:
+                updates.append("published_at = ?")
+                values.append(now)
+        if learning_objectives is not None:
+            updates.append("learning_objectives_json = ?")
+            values.append(json.dumps(learning_objectives))
+        if prerequisite_concepts is not None:
+            updates.append("prerequisite_concepts_json = ?")
+            values.append(json.dumps(prerequisite_concepts))
+        if source_material_refs is not None:
+            updates.append("source_material_refs_json = ?")
+            values.append(json.dumps(source_material_refs))
+        if not updates:
+            return get_lesson_plan(database_path, lesson_plan_id=lesson_plan_id, user_id=user_id)
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(lesson_plan_id)
+        with connection:
+            connection.execute(
+                f"UPDATE lesson_plans SET {', '.join(updates)} WHERE lesson_plan_id = ?",
+                tuple(values),
+            )
+    return get_lesson_plan(database_path, lesson_plan_id=lesson_plan_id, user_id=user_id)
+
+
+def delete_lesson_plan(
+    database_path: Path,
+    *,
+    lesson_plan_id: str,
+    user_id: str,
+) -> bool:
+    """Delete a lesson plan. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM lesson_plans WHERE lesson_plan_id = ?",
+            (lesson_plan_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM lesson_plans WHERE lesson_plan_id = ?",
+                (lesson_plan_id,),
+            )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Lesson plan sections functions.
+# ---------------------------------------------------------------------------
+
+
+def create_lesson_plan_section(
+    database_path: Path,
+    *,
+    lesson_plan_id: str,
+    user_id: str,
+    section_type: str,
+    section_title: str,
+    content: str,
+    citations: list[dict[str, Any]] | None = None,
+    position: int = 0,
+    order_index: int = 0,
+) -> dict[str, Any] | None:
+    """Create a section within a lesson plan. Owner only."""
+    if section_type not in {
+        "learning_objective", "prerequisite", "introduction",
+        "concept_explanation", "teaching_sequence", "example_activity",
+        "practice_question", "assessment_checkpoint", "conclusion",
+        "follow_up_revision",
+    }:
+        return None
+    if position < 0 or order_index < 0:
+        return None
+    section_title = section_title.strip()
+    content = content.strip()
+    if not section_title or not content:
+        return None
+    section_id = f"lesson_section_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id, published_at FROM lesson_plans WHERE lesson_plan_id = ?",
+            (lesson_plan_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO lesson_plan_sections(
+                    section_id, lesson_plan_id, section_type, section_title,
+                    content, citations_json, position, order_index, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    section_id,
+                    lesson_plan_id,
+                    section_type,
+                    section_title,
+                    content,
+                    json.dumps(citations or []),
+                    position,
+                    order_index,
+                    now,
+                ),
+            )
+    return {
+        "sectionId": section_id,
+        "lessonPlanId": lesson_plan_id,
+        "sectionType": section_type,
+        "sectionTitle": section_title,
+        "content": content,
+        "citations": citations or [],
+        "position": position,
+        "orderIndex": order_index,
+        "createdAt": now,
+    }
+
+
+def list_lesson_plan_sections(
+    database_path: Path,
+    *,
+    lesson_plan_id: str,
+    user_id: str,
+) -> list[dict[str, Any]] | None:
+    """List sections for a lesson plan. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id, published_at FROM lesson_plans WHERE lesson_plan_id = ?",
+            (lesson_plan_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        rows = connection.execute(
+            """
+            SELECT section_id, lesson_plan_id, section_type, section_title,
+                   content, citations_json, position, order_index, created_at
+            FROM lesson_plan_sections
+            WHERE lesson_plan_id = ?
+            ORDER BY position ASC, order_index ASC
+            """,
+            (lesson_plan_id,),
+        ).fetchall()
+    return [
+        {
+            "sectionId": row["section_id"],
+            "lessonPlanId": row["lesson_plan_id"],
+            "sectionType": row["section_type"],
+            "sectionTitle": row["section_title"],
+            "content": row["content"],
+            "citations": json.loads(row["citations_json"] or "[]"),
+            "position": row["position"],
+            "orderIndex": row["order_index"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Lesson sessions functions.
+# ---------------------------------------------------------------------------
+
+
+def create_lesson_session(
+    database_path: Path,
+    *,
+    lesson_plan_id: str,
+    user_id: str,
+    classroom_id: str | None,
+    title: str,
+    scheduled_at: str | None,
+    status: str = "scheduled",
+) -> dict[str, Any] | None:
+    """Create a scheduled/in-progress lesson session. Owner only."""
+    if status not in {"scheduled", "in_progress", "completed", "cancelled"}:
+        return None
+    title = title.strip()
+    if not title:
+        return None
+    session_id = f"lesson_session_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id, published_at FROM lesson_plans WHERE lesson_plan_id = ?",
+            (lesson_plan_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO lesson_sessions(
+                    session_id, lesson_plan_id, user_id, classroom_id,
+                    title, scheduled_at, status, started_at, completed_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                """,
+                (
+                    session_id,
+                    lesson_plan_id,
+                    user_id,
+                    classroom_id,
+                    title,
+                    scheduled_at,
+                    status,
+                    now,
+                ),
+            )
+    return {
+        "sessionId": session_id,
+        "lessonPlanId": lesson_plan_id,
+        "userId": user_id,
+        "classroomId": classroom_id,
+        "title": title,
+        "scheduledAt": scheduled_at,
+        "status": status,
+        "startedAt": None,
+        "completedAt": None,
+    }
+
+
+def get_lesson_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a lesson session if owned by the educator."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT session_id, lesson_plan_id, user_id, classroom_id,
+                   title, scheduled_at, status, started_at, completed_at
+            FROM lesson_sessions
+            WHERE session_id = ?
+            """,
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "sessionId": row["session_id"],
+        "lessonPlanId": row["lesson_plan_id"],
+        "userId": row["user_id"],
+        "classroomId": row["classroom_id"],
+        "title": row["title"],
+        "scheduledAt": row["scheduled_at"],
+        "status": row["status"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
+    }
+
+
+def list_lesson_sessions(
+    database_path: Path,
+    *,
+    lesson_plan_id: str | None = None,
+    user_id: str,
+    classroom_id: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List lesson sessions."""
+    query = """
+        SELECT session_id, lesson_plan_id, user_id, classroom_id,
+               title, scheduled_at, status, started_at, completed_at
+        FROM lesson_sessions
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if lesson_plan_id is not None:
+        query += " AND lesson_plan_id = ?"
+        params.append(lesson_plan_id)
+    if classroom_id is not None:
+        query += " AND classroom_id = ?"
+        params.append(classroom_id)
+    if status is not None:
+        query += " AND status = ?"
+        params.append(status)
+    query += " ORDER BY scheduled_at DESC, created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "sessionId": row["session_id"],
+            "lessonPlanId": row["lesson_plan_id"],
+            "userId": row["user_id"],
+            "classroomId": row["classroom_id"],
+            "title": row["title"],
+            "scheduledAt": row["scheduled_at"],
+            "status": row["status"],
+            "startedAt": row["started_at"],
+            "completedAt": row["completed_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_lesson_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    title: str | None = None,
+    scheduled_at: str | None = None,
+    status: str | None = None,
+    started_at: str | None = None,
+    completed_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a lesson session. Owner only."""
+    if status is not None and status not in {
+        "scheduled", "in_progress", "completed", "cancelled"
+    }:
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM lesson_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates = []
+        values = []
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if scheduled_at is not None:
+            updates.append("scheduled_at = ?")
+            values.append(scheduled_at)
+        if status is not None:
+            updates.append("status = ?")
+            values.append(status)
+        if started_at is not None:
+            updates.append("started_at = ?")
+            values.append(started_at)
+        if completed_at is not None:
+            updates.append("completed_at = ?")
+            values.append(completed_at)
+        if not updates:
+            return get_lesson_session(database_path, session_id=session_id, user_id=user_id)
+        values.append(session_id)
+        with connection:
+            connection.execute(
+                f"UPDATE lesson_sessions SET {', '.join(updates)} WHERE session_id = ?",
+                tuple(values),
+            )
+    return get_lesson_session(database_path, session_id=session_id, user_id=user_id)
+
+
+# ---------------------------------------------------------------------------
+# Lesson attendance functions.
+# ---------------------------------------------------------------------------
+
+
+def record_lesson_attendance(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    joined_at: str | None = None,
+    left_at: str | None = None,
+    participation_events: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Record learner attendance/participation in a lesson session."""
+    attendance_id = f"lesson_attendance_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM lesson_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO lesson_attendance(
+                    attendance_id, session_id, user_id, joined_at,
+                    left_at, participation_events_json
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    attendance_id,
+                    session_id,
+                    user_id,
+                    joined_at,
+                    left_at,
+                    json.dumps(participation_events or []),
+                ),
+            )
+    return {
+        "attendanceId": attendance_id,
+        "sessionId": session_id,
+        "userId": user_id,
+        "joinedAt": joined_at,
+        "leftAt": left_at,
+        "participationEvents": participation_events or [],
+        "recordedAt": now,
+    }
+
+
+def list_lesson_attendance(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """List attendance records for a session."""
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT user_id FROM lesson_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        query = """
+            SELECT attendance_id, session_id, user_id, joined_at,
+                   left_at, participation_events_json
+            FROM lesson_attendance
+            WHERE session_id = ?
+        """
+        params: list[Any] = [session_id]
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY joined_at ASC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "attendanceId": row["attendance_id"],
+            "sessionId": row["session_id"],
+            "userId": row["user_id"],
+            "joinedAt": row["joined_at"],
+            "leftAt": row["left_at"],
+            "participationEvents": json.loads(row["participation_events_json"] or "[]"),
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Lesson questions functions.
+# ---------------------------------------------------------------------------
+
+
+def record_lesson_question(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    question_text: str,
+    answered_at: str | None = None,
+    answer_text: str | None = None,
+) -> dict[str, Any] | None:
+    """Record a learner question during a lesson session."""
+    question_text = question_text.strip()
+    if not question_text:
+        return None
+    question_id = f"lesson_question_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT user_id FROM lesson_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO lesson_questions(
+                    question_id, session_id, user_id, question_text,
+                    answered_at, answer_text
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    question_id,
+                    session_id,
+                    user_id,
+                    question_text,
+                    answered_at,
+                    answer_text,
+                ),
+            )
+    return {
+        "questionId": question_id,
+        "sessionId": session_id,
+        "userId": user_id,
+        "questionText": question_text,
+        "answeredAt": answered_at,
+        "answerText": answer_text,
+        "recordedAt": now,
+    }
+
+
+def list_lesson_questions(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str | None = None,
+) -> list[dict[str, Any]] | None:
+    """List questions for a lesson session."""
+    with closing(connect_database(database_path)) as connection:
+        session = connection.execute(
+            "SELECT user_id FROM lesson_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if session is None:
+            return None
+        query = """
+            SELECT question_id, session_id, user_id, question_text,
+                   answered_at, answer_text
+            FROM lesson_questions
+            WHERE session_id = ?
+        """
+        params: list[Any] = [session_id]
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY rowid ASC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "questionId": row["question_id"],
+            "sessionId": row["session_id"],
+            "userId": row["user_id"],
+            "questionText": row["question_text"],
+            "answeredAt": row["answered_at"],
+            "answerText": row["answer_text"],
         }
         for row in rows
     ]

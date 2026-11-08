@@ -3066,3 +3066,186 @@ class RecommendationsResponse(ApiModel):
     recommendations: list[RecommendationItem]
     generatedAt: str
 
+
+# ---------------------------------------------------------------------------
+# M69: AI Lesson Planner & Teaching Studio schemas.
+# Lesson planning, teaching sessions, attendance, learner questions.
+# ---------------------------------------------------------------------------
+
+
+class LessonPlanCreateRequest(ApiModel):
+    classroomId: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    subject: str = Field(min_length=1, max_length=100)
+    topic: str = Field(min_length=1, max_length=200)
+    studentLevel: str | None = Field(
+        default=None, description="foundational, building, practice, or advanced"
+    )
+    durationMinutes: int = Field(ge=1)
+    status: str = Field(default="draft")
+    learningObjectives: list[str] | None = None
+    prerequisiteConcepts: list[str] | None = None
+    sourceMaterialRefs: list[dict[str, Any]] | None = None
+
+
+class LessonPlanResponse(ApiModel):
+    lessonPlanId: str
+    userId: str
+    classroomId: str | None
+    title: str
+    subject: str
+    topic: str
+    studentLevel: str | None
+    durationMinutes: int
+    status: str
+    learningObjectives: list[str]
+    prerequisiteConcepts: list[str]
+    sourceMaterialRefs: list[dict[str, Any]]
+    createdAt: str
+    updatedAt: str
+    publishedAt: str | None
+
+
+class LessonPlanListResponse(ApiModel):
+    lessonPlans: list[LessonPlanResponse]
+
+
+class LessonPlanUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    subject: str | None = Field(default=None, min_length=1, max_length=100)
+    topic: str | None = Field(default=None, min_length=1, max_length=200)
+    studentLevel: str | None = None
+    durationMinutes: int | None = Field(default=None, ge=1)
+    status: str | None = None
+    learningObjectives: list[str] | None = None
+    prerequisiteConcepts: list[str] | None = None
+    sourceMaterialRefs: list[dict[str, Any]] | None = None
+
+
+class LessonPlanSectionCreateRequest(ApiModel):
+    sectionType: str
+    sectionTitle: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1)
+    citations: list[dict[str, Any]] | None = None
+    position: int = Field(default=0, ge=0)
+    orderIndex: int = Field(default=0, ge=0)
+
+
+class LessonPlanSectionResponse(ApiModel):
+    sectionId: str
+    lessonPlanId: str
+    sectionType: str
+    sectionTitle: str
+    content: str
+    citations: list[dict[str, Any]]
+    position: int
+    orderIndex: int
+    createdAt: str
+
+
+class LessonPlanSectionListResponse(ApiModel):
+    sections: list[LessonPlanSectionResponse]
+
+
+class LessonSessionCreateRequest(ApiModel):
+    lessonPlanId: str
+    classroomId: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    scheduledAt: str | None = None
+    status: str = Field(default="scheduled")
+
+
+class LessonSessionResponse(ApiModel):
+    sessionId: str
+    lessonPlanId: str
+    userId: str
+    classroomId: str | None
+    title: str
+    scheduledAt: str | None
+    status: str
+    startedAt: str | None
+    completedAt: str | None
+
+
+class LessonSessionListResponse(ApiModel):
+    sessions: list[LessonSessionResponse]
+
+
+class LessonSessionUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    scheduledAt: str | None = None
+    status: str | None = None
+    startedAt: str | None = None
+    completedAt: str | None = None
+
+
+class LessonAttendanceRecord(ApiModel):
+    sessionId: str
+    userId: str
+    joinedAt: str | None = None
+    leftAt: str | None = None
+    participationEvents: list[dict[str, Any]] | None = None
+
+
+class LessonAttendanceResponse(ApiModel):
+    attendanceId: str
+    sessionId: str
+    userId: str
+    joinedAt: str | None
+    leftAt: str | None
+    participationEvents: list[dict[str, Any]]
+    recordedAt: str
+
+
+class LessonAttendanceListResponse(ApiModel):
+    attendance: list[LessonAttendanceResponse]
+
+
+class LessonQuestionRecord(ApiModel):
+    sessionId: str
+    userId: str
+    questionText: str = Field(min_length=1)
+    answeredAt: str | None = None
+    answerText: str | None = None
+
+
+class LessonQuestionResponse(ApiModel):
+    questionId: str
+    sessionId: str
+    userId: str
+    questionText: str
+    answeredAt: str | None
+    answerText: str | None
+    recordedAt: str
+
+
+class LessonQuestionListResponse(ApiModel):
+    questions: list[LessonQuestionResponse]
+
+
+class LessonPlanGenerateRequest(ApiModel):
+    subject: str = Field(min_length=1, max_length=100)
+    topic: str = Field(min_length=1, max_length=200)
+    studentLevel: str | None = Field(
+        default=None, description="foundational, building, practice, or advanced"
+    )
+    durationMinutes: int = Field(ge=1)
+    documentIds: list[str] | None = Field(default=None, max_length=50)
+    spaceId: str | None = Field(default=None, min_length=1, max_length=80)
+    limit: int = Field(default=10, ge=1, le=50)
+    mode: str | None = None
+
+
+class LessonPlanGenerateResponse(ApiModel):
+    lessonPlanId: str
+    userId: str
+    title: str
+    subject: str
+    topic: str
+    studentLevel: str | None
+    durationMinutes: int
+    sections: list[dict[str, Any]]
+    evidenceGaps: list[str]
+    status: str
+    createdAt: str
+

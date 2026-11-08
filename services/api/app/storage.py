@@ -17286,14 +17286,17 @@ def record_classroom_topic_performance(
     incorrect_attempts: int,
     ambiguous_attempts: int,
 ) -> dict[str, Any] | None:
-    """Record topic performance for a classroom session."""
+    """Record topic performance for a classroom session.
+
+    Upserts on (session_id, topic_id) so repeated recording for the same
+    topic does not create duplicate rows.
+    """
     if total_attempts < 0 or correct_attempts < 0 or incorrect_attempts < 0:
         return None
     if ambiguous_attempts < 0:
         return None
     if total_attempts < correct_attempts + incorrect_attempts + ambiguous_attempts:
         return None
-    topic_performance_id = f"topic_perf_{secrets.token_urlsafe(12)}"
     now = datetime.now(UTC).isoformat()
     total_scored = correct_attempts + incorrect_attempts
     accuracy = correct_attempts / total_scored if total_scored > 0 else None
@@ -17305,37 +17308,58 @@ def record_classroom_topic_performance(
         ).fetchone()
         if session is None:
             return None
+        existing = connection.execute(
+            "SELECT topic_performance_id FROM classroom_topic_performance "
+            "WHERE session_id = ? AND topic_id = ?",
+            (session_id, topic_id),
+        ).fetchone()
         with connection:
-            connection.execute(
-                """
-                INSERT INTO classroom_topic_performance(
-                    topic_performance_id, session_id, topic_id, topic,
-                    total_attempts, correct_attempts, incorrect_attempts,
-                    ambiguous_attempts, accuracy, mastery_score, last_updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(topic_performance_id) DO UPDATE SET
-                    total_attempts = excluded.total_attempts,
-                    correct_attempts = excluded.correct_attempts,
-                    incorrect_attempts = excluded.incorrect_attempts,
-                    ambiguous_attempts = excluded.ambiguous_attempts,
-                    accuracy = excluded.accuracy,
-                    mastery_score = excluded.mastery_score,
-                    last_updated = excluded.last_updated
-                """,
-                (
-                    topic_performance_id,
-                    session_id,
-                    topic_id,
-                    topic,
-                    total_attempts,
-                    correct_attempts,
-                    incorrect_attempts,
-                    ambiguous_attempts,
-                    accuracy,
-                    mastery_score,
-                    now,
-                ),
-            )
+            if existing is not None:
+                topic_performance_id = existing["topic_performance_id"]
+                connection.execute(
+                    """
+                    UPDATE classroom_topic_performance
+                    SET topic = ?, total_attempts = ?, correct_attempts = ?,
+                        incorrect_attempts = ?, ambiguous_attempts = ?,
+                        accuracy = ?, mastery_score = ?, last_updated = ?
+                    WHERE topic_performance_id = ?
+                    """,
+                    (
+                        topic,
+                        total_attempts,
+                        correct_attempts,
+                        incorrect_attempts,
+                        ambiguous_attempts,
+                        accuracy,
+                        mastery_score,
+                        now,
+                        topic_performance_id,
+                    ),
+                )
+            else:
+                topic_performance_id = f"topic_perf_{secrets.token_urlsafe(12)}"
+                connection.execute(
+                    """
+                    INSERT INTO classroom_topic_performance(
+                        topic_performance_id, session_id, topic_id, topic,
+                        total_attempts, correct_attempts, incorrect_attempts,
+                        ambiguous_attempts, accuracy, mastery_score, last_updated
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        topic_performance_id,
+                        session_id,
+                        topic_id,
+                        topic,
+                        total_attempts,
+                        correct_attempts,
+                        incorrect_attempts,
+                        ambiguous_attempts,
+                        accuracy,
+                        mastery_score,
+                        now,
+                    ),
+                )
     return {
         "topicPerformanceId": topic_performance_id,
         "sessionId": session_id,
@@ -18041,20 +18065,21 @@ def list_quiz_attempts_for_user(
 ) -> list[dict[str, Any]]:
     """List quiz attempts for a user, optionally filtered by topic.
 
-    Joins quiz_attempts with quiz_questions to expose topic_id/topic.
-    Results are ordered by created_at descending.
+    Joins quiz_attempts with quiz_questions and quiz_sets to expose
+    topic_id/topic. Results are ordered by created_at descending.
     """
     with closing(connect_database(database_path)) as connection:
         query = """
             SELECT a.attempt_id, a.question_id, a.outcome, a.created_at, a.duration_ms,
-                   q.topic_id, q.topic, q.difficulty_level
+                   s.topic_id, s.topic, q.difficulty_level
             FROM quiz_attempts AS a
             JOIN quiz_questions AS q ON q.question_id = a.question_id
+            JOIN quiz_sets AS s ON s.quiz_id = q.quiz_id
             WHERE a.user_id = ?
         """
         params: list[Any] = [user_id]
         if topic_id is not None:
-            query += " AND q.topic_id = ?"
+            query += " AND s.topic_id = ?"
             params.append(topic_id)
         query += " ORDER BY a.created_at DESC LIMIT ? OFFSET ?"
         params.extend([limit, offset])

@@ -29,15 +29,13 @@ from app.storage import (
     create_classroom_analytics_snapshot,
     create_classroom_recommendation,
     get_classroom_session,
-    list_classroom_analytics_snapshots,
-    list_classroom_assessment_trends,
-    list_classroom_competency_performance,
-    list_classroom_learning_gap_trends,
+    list_classroom_participants,
     list_classroom_polls,
     list_classroom_questions,
-    record_classroom_learning_gap_trend,
+    list_quiz_attempts_for_user,
+    list_study_sessions_for_user,
+    list_topic_reviews_for_user,
     record_classroom_teaching_effectiveness,
-    record_classroom_topic_performance,
 )
 
 # ---------------------------------------------------------------------------
@@ -100,17 +98,6 @@ def _aggregate_classroom_performance(
     Returns observed data only - no estimates or fabrications.
     Individual learner data is aggregated; no cross-user leakage.
     """
-    from app.storage import (
-        get_classroom_session,
-        list_classroom_participants,
-        list_classroom_presence,
-        list_classroom_questions,
-        list_classroom_polls,
-        list_quiz_attempts_for_user,
-        list_study_sessions_for_user,
-        list_topic_reviews_for_user,
-    )
-
     session = get_classroom_session(
         database_path, session_id=session_id, user_id=user_id
     )
@@ -314,6 +301,10 @@ def build_classroom_intelligence_dashboard(
     # classroom is too small to protect individual learner privacy.
     privacy_suppressed = perf["totalParticipants"] < MIN_STUDENTS_FOR_CLASSROOM_AGGREGATE
 
+    # Sample size: participants plus the educator (educator is not in
+    # classroom_participants, so add them explicitly).
+    sample_size = perf["totalParticipants"] + 1
+
     # Build topic performance from aggregates
     topic_performance: list[dict[str, Any]] = []
     for topic_id, ta in perf["topicAggregates"].items():
@@ -501,23 +492,23 @@ def build_classroom_intelligence_dashboard(
                         f"{tt['accuracy']:.0%}, below the "
                         f"{MASTERY_WEAK_THRESHOLD:.0%} threshold."
                     ),
-                    "evidence": {
-                        "topicId": tt["topicId"],
-                        "topic": tt["topic"],
-                        "accuracy": tt["accuracy"],
-                        "totalAttempts": tt["total"],
-                        "correctAttempts": tt["correct"],
-                    },
-                    "reason": (
-                        f"Classroom accuracy ({tt['accuracy']:.0%}) is below the "
-                        f"configured threshold ({MASTERY_WEAK_THRESHOLD:.0%})."
-                    ),
-                    "priorityScore": round((1.0 - tt["accuracy"]) * 100, 1),
-                    "targetTopic": tt["topic"],
-                    "targetCompetency": tt["topicId"],
-                    "evidenceSummary": (
-                        f"{tt['accuracy']:.0%} accuracy on {tt['total']} attempts"
-                    ),
+                "evidence": {
+                    "topicId": tt["topicId"],
+                    "topic": tt["topic"],
+                    "accuracy": tt["accuracy"],
+                    "totalAttempts": tt.get("totalAttempts"),
+                    "correctAttempts": tt.get("correctAttempts"),
+                },
+                "reason": (
+                    f"Classroom accuracy ({tt['accuracy']:.0%}) is below the "
+                    f"configured threshold ({MASTERY_WEAK_THRESHOLD:.0%})."
+                ),
+                "priorityScore": round((1.0 - tt["accuracy"]) * 100, 1),
+                "targetTopic": tt["topic"],
+                "targetCompetency": tt["topicId"],
+                "evidenceSummary": (
+                    f"{tt['accuracy']:.0%} accuracy on {tt.get('totalAttempts', 0)} attempts"
+                ),
                 })
 
     # Recommendation 2: Low participation
@@ -559,7 +550,7 @@ def build_classroom_intelligence_dashboard(
         "sessionTopic": session["topic"],
         "sessionStatus": session["status"],
         "generatedAt": current.isoformat(),
-        "sampleSize": perf["totalParticipants"],
+        "sampleSize": sample_size,
         "privacySuppressed": privacy_suppressed,
         "overallMetrics": {
             "totalParticipants": perf["totalParticipants"],
@@ -791,8 +782,8 @@ def generate_classroom_recommendations(
                     "topicId": tt["topicId"],
                     "topic": tt["topic"],
                     "accuracy": tt["accuracy"],
-                    "totalAttempts": tt["total"],
-                    "correctAttempts": tt["correct"],
+                    "totalAttempts": tt.get("totalAttempts"),
+                    "correctAttempts": tt.get("correctAttempts"),
                 },
                 "reason": (
                     f"Classroom accuracy ({tt['accuracy']:.0%}) is below the "
@@ -802,7 +793,7 @@ def generate_classroom_recommendations(
                 "targetTopic": tt["topic"],
                 "targetCompetency": tt["topicId"],
                 "evidenceSummary": (
-                    f"{tt['accuracy']:.0%} accuracy on {tt['total']} attempts"
+                    f"{tt['accuracy']:.0%} accuracy on {tt.get('totalAttempts', 0)} attempts"
                 ),
             })
 

@@ -6,6 +6,10 @@ import { fetchWithOffline, isOffline, onOnlineChange, flushQueue as flushOffline
 import { clearUserCache, clearQueue } from "./offlineStore.js";
 import KnowledgeExplorer from "./KnowledgeExplorer";
 import RevisionDashboard from "./RevisionDashboard";
+import CommunicationInbox from "./CommunicationInbox";
+import NotificationCenter from "./NotificationCenter";
+import LearnerProgressPortal from "./LearnerProgressPortal";
+import ClassroomAnnouncementFeed from "./ClassroomAnnouncementFeed";
 import "./style.css";
 
 type DiagramRegion = {
@@ -1175,6 +1179,24 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
   const [onboardingCompleted, setOnboardingCompleted] = useState<boolean>(false);
   const [onboardingSkipped, setOnboardingSkipped] = useState<boolean>(false);
 
+  // --- M72: Communication & Learning Progress Portal state ---
+  const [classroomSessions, setClassroomSessions] = useState<Array<{
+    sessionId: string;
+    title: string;
+    subject: string;
+    topic: string;
+    status: string;
+    educatorId: string;
+  }>>([]);
+  const [_classroomSessionsLoading, setClassroomSessionsLoading] = useState(false);
+  const [selectedClassroomSessionId, setSelectedClassroomSessionId] = useState<string | null>(null);
+  const [classroomParticipants, setClassroomParticipants] = useState<Array<{
+    userId: string;
+    username: string | null;
+    role: string;
+  }>>([]);
+  const [currentUserRole, setCurrentUserRole] = useState<"educator" | "learner" | "admin">("learner");
+
   const ONBOARDING_STEPS = [
     {
       title: "What WonderLearn does",
@@ -1318,6 +1340,7 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
     void loadJourneyOverview();
     void loadJourneyStageProgression();
     void loadJourneyNextAction();
+    void loadClassroomSessions();
     // Load onboarding state for the current user from localStorage.
     if (username) {
       try {
@@ -2583,6 +2606,66 @@ function LearningApp({ username, isAdmin, onLogout }: { username: string; isAdmi
       // Next action is non-blocking; silently ignore failures.
     }
   }
+
+  async function loadClassroomSessions() {
+    setClassroomSessionsLoading(true);
+    try {
+      const response = await fetch("/api/v1/classrooms");
+      if (!response.ok) {
+        setClassroomSessions([]);
+        return;
+      }
+      const data = await response.json();
+      const sessions = data.sessions ?? [];
+      setClassroomSessions(sessions);
+      if (sessions.length > 0 && !selectedClassroomSessionId) {
+        setSelectedClassroomSessionId(sessions[0].sessionId);
+        setCurrentUserRole(
+          sessions[0].educatorId === username ? "educator" : "learner",
+        );
+      }
+    } catch {
+      setClassroomSessions([]);
+    } finally {
+      setClassroomSessionsLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!selectedClassroomSessionId) {
+      setClassroomParticipants([]);
+      setCurrentUserRole("learner");
+      return;
+    }
+    setClassroomSessionsLoading(true);
+    fetch(
+      `/api/v1/classrooms/${encodeURIComponent(selectedClassroomSessionId)}/participants`
+    )
+      .then((response) => {
+        if (!response.ok) {
+          setClassroomParticipants([]);
+          setClassroomSessionsLoading(false);
+          return;
+        }
+        return response.json();
+      })
+      .then((data) => {
+        const participants = data.participants ?? [];
+        setClassroomParticipants(participants);
+        const educator = classroomSessions.find(
+          (s) => s.sessionId === selectedClassroomSessionId,
+        );
+        if (educator) {
+          setCurrentUserRole(
+            educator.educatorId === username ? "educator" : "learner",
+          );
+        }
+      })
+      .catch(() => {
+        setClassroomParticipants([]);
+      })
+      .finally(() => setClassroomSessionsLoading(false));
+  }, [selectedClassroomSessionId, username]);
 
   async function createImprovementTask(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -5150,6 +5233,87 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
               </button>
             </form>
           </section>
+        </section>
+      )}
+
+      {/* --- M72: Communication & Learning Progress Portal --- */}
+      {selectedClassroomSessionId && (
+        <section className="page">
+          <div className="page-header">
+            <h2 className="eyebrow">Classroom communication & progress</h2>
+            <h1>Classroom: {selectedClassroomSessionId.slice(0, 12)}</h1>
+          </div>
+          <div className="learning-layout">
+            <div>
+              <ClassroomAnnouncementFeed
+                sessionId={selectedClassroomSessionId}
+                sessionTitle={selectedClassroomSessionId.slice(0, 12)}
+                currentUserId={username}
+                currentUserRole={currentUserRole}
+              />
+              <CommunicationInbox
+                sessionId={selectedClassroomSessionId}
+                sessionTitle={selectedClassroomSessionId.slice(0, 12)}
+                participants={classroomParticipants}
+                currentUserId={username}
+                currentUserRole={currentUserRole}
+              />
+            </div>
+            <div>
+              <NotificationCenter currentUserId={username} />
+              <LearnerProgressPortal
+                currentUserId={username}
+                viewerRole={
+                  currentUserRole === "educator" ? "educator" : "learner"
+                }
+              />
+            </div>
+          </div>
+        </section>
+      )}
+      {!selectedClassroomSessionId && classroomSessions.length === 0 && (
+        <section className="page">
+          <div className="page-header">
+            <h2 className="eyebrow">Classrooms</h2>
+            <h1>No classrooms available</h1>
+          </div>
+          <div className="explorer-body">
+            <p className="muted">
+              You are not a participant of any classroom sessions yet.
+              Classrooms are created by educators.
+            </p>
+          </div>
+        </section>
+      )}
+      {!selectedClassroomSessionId && classroomSessions.length > 0 && (
+        <section className="page">
+          <div className="page-header">
+            <h2 className="eyebrow">Classrooms</h2>
+            <h1>Select a classroom</h1>
+          </div>
+          <div className="explorer-body">
+            <ul className="topic-list" role="list" aria-label="Available classrooms">
+              {classroomSessions.map((session) => (
+                <li key={session.sessionId} className="topic-list-item">
+                  <button
+                    type="button"
+                    className="text-action"
+                    onClick={() => {
+                      setSelectedClassroomSessionId(session.sessionId);
+                      setCurrentUserRole(
+                        session.educatorId === username ? "educator" : "learner",
+                      );
+                    }}
+                  >
+                    {session.title} ({session.topic})
+                  </button>
+                  <p className="muted">
+                    {session.status} · educator: {session.educatorId.slice(0, 8)}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
       )}
 

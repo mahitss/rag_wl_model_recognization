@@ -1114,3 +1114,279 @@ code {
   margin-top: 0.2rem;
   font-size: 0.85rem;
 }
+
+/* --- M72: Communication & Learning Progress Portal --- */
+.communication-inbox,
+.notification-center,
+.learner-progress-portal,
+.classroom-announcement-feed {
+  margin-top: 1.5rem;
+  padding: clamp(1rem, 3vw, 2rem);
+  border: 1px solid #d7e1d8;
+  border-radius: 1rem;
+  background: #fff;
+}
+
+.message-list,
+.notification-list,
+.announcement-list {
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid #e0e6de;
+  border-radius: 0.8rem;
+  background: #fbfcf8;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+}
+
+.message-thread,
+.notification-thread,
+.announcement-thread {
+  display: grid;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.message-item,
+.notification-item,
+.announcement-item {
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid #e0e6de;
+}
+
+.message-item:last-child,
+.notification-item:last-child,
+.announcement-item:last-child {
+  border-bottom: none;
+}
+
+.message-item--unread,
+.notification-item--unread {
+  background: #f0f7f1;
+  border-left: 3px solid #226544;
+}
+
+.message-header,
+.notification-header,
+.announcement-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.message-sender,
+.announcement-author {
+  font-weight: 700;
+  color: #18332d;
+}
+
+.message-type-badge,
+.notification-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.message-type-badge {
+  background: #e2e7df;
+  color: #466259;
+}
+
+.message-type-badge--unread,
+.notification-badge--unread {
+  background: #226544;
+  color: #fff;
+}
+
+.message-content,
+.notification-body,
+.announcement-message {
+  margin: 0.35rem 0 0.5rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.message-meta,
+.notification-meta {
+  margin: 0;
+  color: #55766a;
+  font-size: 0.8rem;
+}
+
+.composer-form,
+.compose-form-inner {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid #e2e7df;
+}
+
+.composer-form textarea,
+.compose-form-inner textarea {
+  width: 100%;
+  min-height: 4rem;
+  resize: vertical;
+}
+
+.compose-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.progress-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.summary-card {
+  padding: 1rem;
+  border: 1px solid #e0e6de;
+  border-radius: 0.8rem;
+  background: #fbfcf8;
+}
+
+.summary-card.full-width {
+  grid-column: 1 / -1;
+}
+
+.summary-card h3 {
+  margin: 0 0 0.5rem;
+  font-size: 1.1rem;
+}
+
+.assessment-list,
+.revision-list,
+.study-session-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.assessment-item,
+.revision-item,
+.study-session-item {
+  padding: 0.75rem;
+  border: 1px solid #e0e6de;
+  border-radius: 0.6rem;
+  background: #fff;
+}
+
+.assessment-header,
+.revision-header,
+.study-session-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.assessment-topic,
+.revision-topic,
+.study-session-topic {
+  font-weight: 700;
+}
+
+.assessment-accuracy,
+.revision-outcome,
+.study-session-status {
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.revision-outcome--remembered { color: #1f6a3d; }
+.revision-outcome--partially { color: #805515; }
+.revision-outcome--forgotten { color: #9d3b31; }
+
+.study-session-status--completed { color: #1f6a3d; }
+.study-session-status--active { color: #55766a; }
+
+.assessment-meta,
+.revision-meta,
+.study-session-meta {
+  margin: 0.25rem 0 0;
+  color: #55766a;
+  font-size: 0.85rem;
+}
+
+.message-notification-list {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.message-notification-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  border: 1px solid #e0e6de;
+  border-radius: 0.6rem;
+  background: #fff;
+}
+
+.message-notification-label {
+  color: #466259;
+}
+
+.message-notification-value {
+  font-weight: 750;
+  color: #18332d;
+}
+
+.announcement-composer {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid #e2e7df;
+}
+
+.learning-layout {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 28rem), 1fr));
+  gap: 1.25rem;
+  align-items: start;
+}
+
+@media (max-width: 760px) {
+  .learning-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.skip-link {
+  position: absolute;
+  top: -10000px;
+  left: 0.75rem;
+  z-index: 100;
+  padding: 0.6rem 1rem;
+  background: #17613d;
+  color: #fff;
+  text-decoration: none;
+  border-radius: 0.5rem;
+  font-weight: 700;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.15);
+}
+
+.skip-link:focus {
+  top: 0.75rem;
+  left: 0.75rem;
+}

@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 31
+SCHEMA_VERSION = 32
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -4185,6 +4185,108 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_classroom_recommendations_status "
                     "ON classroom_recommendations(status)"
+                )
+
+                # M72: Communication & Learning Progress Portal.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS classroom_messages (
+                        message_id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL REFERENCES classroom_sessions(session_id)
+                            ON DELETE CASCADE,
+                        sender_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        recipient_id TEXT,
+                        message_type TEXT NOT NULL CHECK (message_type IN (
+                            'classroom', 'direct', 'feedback', 'progress_update'
+                        )) DEFAULT 'classroom',
+                        content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 4000),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_messages_session_id "
+                    "ON classroom_messages(session_id, created_at DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_messages_sender_id "
+                    "ON classroom_messages(sender_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_classroom_messages_recipient_id "
+                    "ON classroom_messages(recipient_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS message_read_status (
+                        message_id TEXT NOT NULL REFERENCES classroom_messages(message_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        read_at TEXT,
+                        PRIMARY KEY (message_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_message_read_status_user_id "
+                    "ON message_read_status(user_id, read_at)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS notifications (
+                        notification_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        type TEXT NOT NULL CHECK (type IN (
+                            'announcement', 'assignment', 'feedback', 'assessment_result',
+                            'scheduled_activity', 'progress_update'
+                        )),
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        body TEXT NOT NULL CHECK (length(body) BETWEEN 1 AND 2000),
+                        related_id TEXT,
+                        related_type TEXT,
+                        read_at TEXT,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_notifications_user_id "
+                    "ON notifications(user_id, created_at DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_notifications_unread "
+                    "ON notifications(user_id, read_at) WHERE read_at IS NULL"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS notification_preferences (
+                        user_id TEXT PRIMARY KEY REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        email_enabled INTEGER NOT NULL DEFAULT 0
+                            CHECK (email_enabled IN (0, 1)),
+                        in_app_enabled INTEGER NOT NULL DEFAULT 1
+                            CHECK (in_app_enabled IN (0, 1)),
+                        announcement_enabled INTEGER NOT NULL DEFAULT 1
+                            CHECK (announcement_enabled IN (0, 1)),
+                        assignment_enabled INTEGER NOT NULL DEFAULT 1
+                            CHECK (assignment_enabled IN (0, 1)),
+                        feedback_enabled INTEGER NOT NULL DEFAULT 1
+                            CHECK (feedback_enabled IN (0, 1)),
+                        assessment_enabled INTEGER NOT NULL DEFAULT 1
+                            CHECK (assessment_enabled IN (0, 1)),
+                        progress_update_enabled INTEGER NOT NULL DEFAULT 1
+                            CHECK (progress_update_enabled IN (0, 1)),
+                        updated_at TEXT NOT NULL
+                    )
+                    """
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -18176,5 +18278,489 @@ def list_topic_reviews_for_user(
     ]
 
 
-# Course module functions.
+# ---------------------------------------------------------------------------
+# M72: Communication & Learning Progress Portal functions.
+# Classroom messages, read status, notifications, preferences.
+# ---------------------------------------------------------------------------
+
+
+def _check_classroom_access(
+    database_path: Path, session_id: str, user_id: str
+) -> dict[str, Any] | None:
+    """Return the classroom session if the user is the educator or a
+    participant, otherwise None."""
+    return get_classroom_session(
+        database_path, session_id=session_id, user_id=user_id
+    )
+
+
+def send_classroom_message(
+    database_path: Path,
+    *,
+    session_id: str,
+    sender_id: str,
+    content: str,
+    message_type: str = "classroom",
+    recipient_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Send a classroom message. Sender must be a participant or educator."""
+    if message_type not in {"classroom", "direct", "feedback", "progress_update"}:
+        return None
+    content = content.strip()
+    if not content:
+        return None
+    session = _check_classroom_access(database_path, session_id, sender_id)
+    if session is None:
+        return None
+    if message_type == "direct" and recipient_id is not None:
+        recipient = get_user_by_id(database_path, recipient_id)
+        if recipient is None:
+            return None
+        with closing(connect_database(database_path)) as connection:
+            recipient_participant = connection.execute(
+                """
+                SELECT 1 FROM classroom_participants
+                WHERE session_id = ? AND user_id = ?
+                """,
+                (session_id, recipient_id),
+            ).fetchone()
+        if recipient_participant is None:
+            return None
+    message_id = f"msg_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO classroom_messages(
+                    message_id, session_id, sender_id, recipient_id,
+                    message_type, content, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    message_id,
+                    session_id,
+                    sender_id,
+                    recipient_id,
+                    message_type,
+                    content,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO message_read_status(message_id, user_id, read_at)
+                VALUES (?, ?, ?)
+                """,
+                (message_id, sender_id, now),
+            )
+            if message_type == "direct" and recipient_id is not None:
+                connection.execute(
+                    """
+                    INSERT INTO message_read_status(message_id, user_id, read_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (message_id, recipient_id, None),
+                )
+            else:
+                participants = connection.execute(
+                    """
+                    SELECT user_id FROM classroom_participants
+                    WHERE session_id = ? AND user_id != ?
+                    """,
+                    (session_id, sender_id),
+                ).fetchall()
+                for p in participants:
+                    connection.execute(
+                        """
+                        INSERT INTO message_read_status(message_id, user_id, read_at)
+                        VALUES (?, ?, ?)
+                        """,
+                        (message_id, p["user_id"], None),
+                    )
+    return {
+        "messageId": message_id,
+        "sessionId": session_id,
+        "senderId": sender_id,
+        "recipientId": recipient_id,
+        "messageType": message_type,
+        "content": content,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_classroom_messages(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]] | None:
+    """List classroom messages for a session. User must be a participant."""
+    session = _check_classroom_access(database_path, session_id, user_id)
+    if session is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.message_id, m.session_id, m.sender_id, m.recipient_id,
+                   m.message_type, m.content, m.created_at, m.updated_at,
+                   r.read_at
+            FROM classroom_messages AS m
+            LEFT JOIN message_read_status AS r
+              ON r.message_id = m.message_id AND r.user_id = ?
+            WHERE m.session_id = ?
+            ORDER BY m.created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (user_id, session_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "messageId": row["message_id"],
+            "sessionId": row["session_id"],
+            "senderId": row["sender_id"],
+            "recipientId": row["recipient_id"],
+            "messageType": row["message_type"],
+            "content": row["content"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "isRead": row["read_at"] is not None,
+            "readAt": row["read_at"],
+        }
+        for row in rows
+    ]
+
+
+def mark_message_read(
+    database_path: Path,
+    *,
+    message_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Mark a classroom message as read for a user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT m.message_id, m.session_id
+            FROM classroom_messages AS m
+            JOIN message_read_status AS rs
+              ON rs.message_id = m.message_id AND rs.user_id = ?
+            WHERE m.message_id = ?
+            """,
+            (user_id, message_id),
+        ).fetchone()
+        if row is None:
+            return None
+        session = _check_classroom_access(
+            database_path, row["session_id"], user_id
+        )
+        if session is None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                UPDATE message_read_status
+                SET read_at = ?
+                WHERE message_id = ? AND user_id = ? AND read_at IS NULL
+                """,
+                (now, message_id, user_id),
+            )
+    return {
+        "messageId": message_id,
+        "userId": user_id,
+        "readAt": now,
+    }
+
+
+def list_unread_message_counts(
+    database_path: Path, *, user_id: str
+) -> list[dict[str, Any]]:
+    """List unread message counts per session for a user."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.session_id, COUNT(*) AS unread_count
+            FROM message_read_status AS rs
+            JOIN classroom_messages AS m ON m.message_id = rs.message_id
+            WHERE rs.user_id = ? AND rs.read_at IS NULL
+            GROUP BY m.session_id
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {"sessionId": row["session_id"], "unreadCount": row["unread_count"]}
+        for row in rows
+    ]
+
+
+def create_notification(
+    database_path: Path,
+    *,
+    user_id: str,
+    type: str,
+    title: str,
+    body: str,
+    related_id: str | None = None,
+    related_type: str | None = None,
+    expires_in_days: int | None = None,
+) -> dict[str, Any] | None:
+    """Create an in-app notification for a user."""
+    valid_types = {
+        "announcement", "assignment", "feedback", "assessment_result",
+        "scheduled_activity", "progress_update",
+    }
+    if type not in valid_types:
+        return None
+    title = title.strip()
+    body = body.strip()
+    if not title or not body:
+        return None
+    user = get_user_by_id(database_path, user_id)
+    if user is None:
+        return None
+    notification_id = f"notif_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    expires_at = None
+    if expires_in_days is not None:
+        from datetime import timedelta
+
+        expires_at = (
+            datetime.now(UTC) + timedelta(days=expires_in_days)
+        ).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO notifications(
+                    notification_id, user_id, type, title, body,
+                    related_id, related_type, read_at, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                """,
+                (
+                    notification_id,
+                    user_id,
+                    type,
+                    title,
+                    body,
+                    related_id,
+                    related_type,
+                    now,
+                    expires_at,
+                ),
+            )
+    return {
+        "notificationId": notification_id,
+        "userId": user_id,
+        "type": type,
+        "title": title,
+        "body": body,
+        "relatedId": related_id,
+        "relatedType": related_type,
+        "isRead": False,
+        "createdAt": now,
+        "expiresAt": expires_at,
+    }
+
+
+def list_notifications(
+    database_path: Path,
+    *,
+    user_id: str,
+    unread_only: bool = False,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List notifications for a user."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT notification_id, user_id, type, title, body,
+                   related_id, related_type, read_at, created_at, expires_at
+            FROM notifications
+            WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if unread_only:
+            query += " AND read_at IS NULL"
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "notificationId": row["notification_id"],
+            "userId": row["user_id"],
+            "type": row["type"],
+            "title": row["title"],
+            "body": row["body"],
+            "relatedId": row["related_id"],
+            "relatedType": row["related_type"],
+            "isRead": row["read_at"] is not None,
+            "readAt": row["read_at"],
+            "createdAt": row["created_at"],
+            "expiresAt": row["expires_at"],
+        }
+        for row in rows
+    ]
+
+
+def mark_notification_read(
+    database_path: Path,
+    *,
+    notification_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Mark a notification as read. User must own the notification."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT notification_id FROM notifications
+            WHERE notification_id = ? AND user_id = ?
+            """,
+            (notification_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            connection.execute(
+                """
+                UPDATE notifications
+                SET read_at = ?
+                WHERE notification_id = ? AND user_id = ? AND read_at IS NULL
+                """,
+                (now, notification_id, user_id),
+            )
+    return {
+        "notificationId": notification_id,
+        "userId": user_id,
+        "readAt": now,
+    }
+
+
+def get_notification_preferences(
+    database_path: Path, *, user_id: str
+) -> dict[str, Any] | None:
+    """Get notification preferences for a user, creating defaults if absent."""
+    user = get_user_by_id(database_path, user_id)
+    if user is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT user_id, email_enabled, in_app_enabled,
+                   announcement_enabled, assignment_enabled, feedback_enabled,
+                   assessment_enabled, progress_update_enabled, updated_at
+            FROM notification_preferences
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            now = datetime.now(UTC).isoformat()
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO notification_preferences(
+                        user_id, email_enabled, in_app_enabled,
+                        announcement_enabled, assignment_enabled, feedback_enabled,
+                        assessment_enabled, progress_update_enabled, updated_at
+                    ) VALUES (?, 0, 1, 1, 1, 1, 1, 1, ?)
+                    """,
+                    (user_id, now),
+                )
+            return {
+                "userId": user_id,
+                "emailEnabled": False,
+                "inAppEnabled": True,
+                "announcementEnabled": True,
+                "assignmentEnabled": True,
+                "feedbackEnabled": True,
+                "assessmentEnabled": True,
+                "progressUpdateEnabled": True,
+                "updatedAt": now,
+            }
+        return {
+            "userId": row["user_id"],
+            "emailEnabled": bool(row["email_enabled"]),
+            "inAppEnabled": bool(row["in_app_enabled"]),
+            "announcementEnabled": bool(row["announcement_enabled"]),
+            "assignmentEnabled": bool(row["assignment_enabled"]),
+            "feedbackEnabled": bool(row["feedback_enabled"]),
+            "assessmentEnabled": bool(row["assessment_enabled"]),
+            "progressUpdateEnabled": bool(row["progress_update_enabled"]),
+            "updatedAt": row["updated_at"],
+        }
+
+
+def update_notification_preferences(
+    database_path: Path,
+    *,
+    user_id: str,
+    email_enabled: bool | None = None,
+    in_app_enabled: bool | None = None,
+    announcement_enabled: bool | None = None,
+    assignment_enabled: bool | None = None,
+    feedback_enabled: bool | None = None,
+    assessment_enabled: bool | None = None,
+    progress_update_enabled: bool | None = None,
+) -> dict[str, Any] | None:
+    """Update notification preferences for a user."""
+    user = get_user_by_id(database_path, user_id)
+    if user is None:
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        connection.execute(
+            """
+            INSERT INTO notification_preferences(
+                user_id, email_enabled, in_app_enabled,
+                announcement_enabled, assignment_enabled, feedback_enabled,
+                assessment_enabled, progress_update_enabled, updated_at
+            ) VALUES (?, 0, 1, 1, 1, 1, 1, 1, ?)
+            ON CONFLICT(user_id) DO NOTHING
+            """,
+            (user_id, now),
+        )
+        updates = []
+        params: list[Any] = []
+        if email_enabled is not None:
+            updates.append("email_enabled = ?")
+            params.append(int(email_enabled))
+        if in_app_enabled is not None:
+            updates.append("in_app_enabled = ?")
+            params.append(int(in_app_enabled))
+        if announcement_enabled is not None:
+            updates.append("announcement_enabled = ?")
+            params.append(int(announcement_enabled))
+        if assignment_enabled is not None:
+            updates.append("assignment_enabled = ?")
+            params.append(int(assignment_enabled))
+        if feedback_enabled is not None:
+            updates.append("feedback_enabled = ?")
+            params.append(int(feedback_enabled))
+        if assessment_enabled is not None:
+            updates.append("assessment_enabled = ?")
+            params.append(int(assessment_enabled))
+        if progress_update_enabled is not None:
+            updates.append("progress_update_enabled = ?")
+            params.append(int(progress_update_enabled))
+        if not updates:
+            return get_notification_preferences(database_path, user_id=user_id)
+        updates.append("updated_at = ?")
+        params.append(now)
+        params.append(user_id)
+        with connection:
+            connection.execute(
+                f"""
+                UPDATE notification_preferences
+                SET {', '.join(updates)}
+                WHERE user_id = ?
+                """,
+                params,
+            )
+    return get_notification_preferences(database_path, user_id=user_id)
 

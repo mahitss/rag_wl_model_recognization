@@ -3583,3 +3583,119 @@ class ClassroomIntelligenceDashboardResponse(ApiModel):
     recommendations: list[ClassroomRecommendationResponse]
     dataLimitations: list[str]
 
+
+# ---------------------------------------------------------------------------
+# M72: Communication & Learning Progress Portal schemas.
+# ---------------------------------------------------------------------------
+
+
+class ClassroomMessageCreateRequest(ApiModel):
+    sessionId: str
+    senderId: str
+    content: str = Field(min_length=1, max_length=4000)
+    messageType: str = Field(default="classroom")
+    recipientId: str | None = None
+
+
+class ClassroomMessageResponse(ApiModel):
+    messageId: str
+    sessionId: str
+    senderId: str
+    recipientId: str | None
+    messageType: str
+    content: str
+    createdAt: str
+    updatedAt: str
+    isRead: bool = False
+    readAt: str | None = None
+
+
+class ClassroomMessageListResponse(ApiModel):
+    messages: list[ClassroomMessageResponse]
+
+
+class MarkMessageReadRequest(ApiModel):
+    messageId: str
+
+
+class UnreadMessageCount(ApiModel):
+    sessionId: str
+    unreadCount: int
+
+
+class NotificationResponse(ApiModel):
+    notificationId: str
+    userId: str
+    type: str
+    title: str
+    body: str
+    relatedId: str | None
+    relatedType: str | None
+    isRead: bool
+    readAt: str | None
+    createdAt: str
+    expiresAt: str | None
+
+
+class NotificationListResponse(ApiModel):
+    notifications: list[NotificationResponse]
+
+
+class NotificationPreferencesResponse(ApiModel):
+    userId: str
+    emailEnabled: bool
+    inAppEnabled: bool
+    announcementEnabled: bool
+    assignmentEnabled: bool
+    feedbackEnabled: bool
+    assessmentEnabled: bool
+    progressUpdateEnabled: bool
+    updatedAt: str
+
+
+class NotificationPreferencesUpdateRequest(ApiModel):
+    emailEnabled: bool | None = None
+    inAppEnabled: bool | None = None
+    announcementEnabled: bool | None = None
+    assignmentEnabled: bool | None = None
+    feedbackEnabled: bool | None = None
+    assessmentEnabled: bool | None = None
+    progressUpdateEnabled: bool | None = None
+
+
+# Learner progress portal - observed data only, no estimates.
+class ProgressAssessmentSummary(ApiModel):
+    topicId: str
+    topic: str
+    totalAttempts: int
+    correctAttempts: int
+    accuracy: float | None
+    lastUpdated: str | None
+
+
+class ProgressRevisionSummary(ApiModel):
+    topicId: str
+    topic: str
+    lastOutcome: str
+    attemptedAt: str | None
+    dueAt: str | None
+
+
+class ProgressStudySessionSummary(ApiModel):
+    sessionId: str
+    topicId: str
+    topic: str
+    startedAt: str
+    completedAt: str | None
+
+
+class ProgressPortalResponse(ApiModel):
+    userId: str
+    assignments: list[dict[str, Any]]
+    assessments: list[ProgressAssessmentSummary]
+    revisions: list[ProgressRevisionSummary]
+    studySessions: list[ProgressStudySessionSummary]
+    messageCount: int
+    unreadNotificationCount: int
+    dataSources: list[str]
+

@@ -21,6 +21,7 @@ from app.api.v1.groups_routes import router as groups_router
 from app.api.v1.groups_ai_routes import router as groups_ai_router
 from app.api.v1.courses_routes import router as courses_router
 from app.api.v1.assessment_routes import router as assessment_router
+from app.api.v1.analytics_routes import router as analytics_router
 from app.api.v1.exam_routes import router as exam_router
 from app.api.v1.gap_routes import router as gap_router
 from app.api.v1.workspaces import router as workspaces_router
@@ -142,6 +143,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(gap_router)
     # AI Examination Simulator & Exam Preparation Engine (M66)
     application.include_router(exam_router)
+    # Predictive Learning Analytics & Student Performance Intelligence (M67)
+    application.include_router(analytics_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

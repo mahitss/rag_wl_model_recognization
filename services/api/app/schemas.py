@@ -2913,3 +2913,156 @@ class ExamReadinessResponse(ApiModel):
     recommendedActions: list[str]
     calculatedAt: str
 
+
+# ---------------------------------------------------------------------------
+# M67: Predictive Learning Analytics & Student Performance Intelligence schemas.
+# Performance aggregation, trend intelligence, predictions, recommendations.
+# ---------------------------------------------------------------------------
+
+
+class AnalyticsSnapshotResponse(ApiModel):
+    snapshotId: str
+    userId: str
+    snapshotDate: str
+    topicId: str | None
+    topic: str | None
+    masteryScore: float | None
+    accuracy: float | None
+    attemptCount: int
+    correctCount: int
+    incorrectCount: int
+    ambiguousCount: int
+    reviewCount: int
+    overdueReviewCount: int
+    timeSpentMs: int | None
+    createdAt: str
+
+
+class AnalyticsSnapshotListResponse(ApiModel):
+    snapshots: list[AnalyticsSnapshotResponse]
+
+
+class PerformancePredictionResponse(ApiModel):
+    predictionId: str
+    userId: str
+    predictionType: str
+    targetId: str | None
+    targetName: str | None
+    predictedValue: float | None
+    confidence: float
+    uncertainty: str
+    evidence: dict[str, Any]
+    limitations: dict[str, Any]
+    isGuaranteed: bool
+    createdAt: str
+    expiresAt: str | None
+
+
+class PerformancePredictionListResponse(ApiModel):
+    predictions: list[PerformancePredictionResponse]
+
+
+class PredictionModelVersionResponse(ApiModel):
+    modelVersionId: str
+    modelName: str
+    version: str
+    description: str | None
+    createdAt: str
+    isActive: bool
+    validationMetrics: dict[str, Any]
+
+
+class PredictionModelVersionListResponse(ApiModel):
+    models: list[PredictionModelVersionResponse]
+
+
+class TopicTrendResponse(ApiModel):
+    trendId: str
+    userId: str
+    topicId: str
+    topic: str
+    measurementDate: str
+    masteryScore: float | None
+    accuracy: float | None
+    attemptCount: int
+    createdAt: str
+
+
+class TopicTrendListResponse(ApiModel):
+    trends: list[TopicTrendResponse]
+
+
+class PerformanceTrendPoint(ApiModel):
+    date: str
+    masteryScore: float | None
+    accuracy: float | None
+    attemptCount: int
+
+
+class TopicProgressTrend(ApiModel):
+    topicId: str
+    topic: str
+    trend: list[PerformanceTrendPoint]
+    improvement: float | None
+    direction: str  # improving, declining, stable, insufficient_data
+
+
+class CompetencyTrend(ApiModel):
+    competencyId: str
+    competencyName: str
+    currentMastery: float | None
+    masteryHistory: list[PerformanceTrendPoint]
+    trendDirection: str
+
+
+class ExamPerformanceHistory(ApiModel):
+    examId: str
+    examTitle: str
+    subject: str
+    topic: str
+    percentage: float
+    passed: bool
+    takenAt: str
+    durationMinutes: int | None
+
+
+class PerformanceDashboardResponse(ApiModel):
+    userId: str
+    overallMastery: float | None
+    overallAccuracy: float | None
+    totalAttempts: int
+    totalExamsTaken: int
+    averageExamScore: float | None
+    weakTopics: list[str]
+    strongTopics: list[str]
+    topicProgress: list[TopicProgressTrend]
+    competencyTrends: list[CompetencyTrend]
+    examHistory: list[ExamPerformanceHistory]
+    activePredictions: list[PerformancePredictionResponse]
+    recommendations: list[dict[str, Any]]
+    generatedAt: str
+
+
+class PerformancePredictionRequest(ApiModel):
+    predictionType: str
+    targetId: str | None = None
+    targetName: str | None = None
+
+
+class RecommendationItem(ApiModel):
+    recommendationId: str
+    type: str  # revise_topic, practice_competency, retake_exam, review_prerequisite, adjust_schedule, focus_gap
+    title: str
+    description: str
+    evidence: dict[str, Any]
+    reason: str
+    priority: float
+    targetId: str | None
+    targetName: str | None
+
+
+class RecommendationsResponse(ApiModel):
+    userId: str
+    recommendations: list[RecommendationItem]
+    generatedAt: str
+

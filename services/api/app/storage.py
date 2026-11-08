@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 27
+SCHEMA_VERSION = 28
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -3531,6 +3531,115 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_exam_results_exam_id "
                     "ON exam_results(exam_id)"
+                )
+
+                # M67: Predictive Learning Analytics & Student Performance Intelligence.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_analytics_snapshots (
+                        snapshot_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        snapshot_date TEXT NOT NULL,
+                        topic_id TEXT,
+                        topic TEXT,
+                        mastery_score REAL CHECK (mastery_score >= 0.0 AND mastery_score <= 1.0),
+                        accuracy REAL CHECK (accuracy >= 0.0 AND accuracy <= 1.0),
+                        attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+                        correct_count INTEGER NOT NULL CHECK (correct_count >= 0),
+                        incorrect_count INTEGER NOT NULL CHECK (incorrect_count >= 0),
+                        ambiguous_count INTEGER NOT NULL CHECK (ambiguous_count >= 0),
+                        review_count INTEGER NOT NULL CHECK (review_count >= 0),
+                        overdue_review_count INTEGER NOT NULL CHECK (overdue_review_count >= 0),
+                        time_spent_ms INTEGER CHECK (time_spent_ms >= 0),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_user_id "
+                    "ON learning_analytics_snapshots(user_id, snapshot_date)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_analytics_snapshots_topic_id "
+                    "ON learning_analytics_snapshots(topic_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS performance_predictions (
+                        prediction_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        prediction_type TEXT NOT NULL CHECK (prediction_type IN (
+                            'exam_readiness', 'topic_risk', 'workload_estimate',
+                            'knowledge_gap', 'performance_trend'
+                        )),
+                        target_id TEXT,
+                        target_name TEXT,
+                        predicted_value REAL,
+                        confidence REAL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                        uncertainty TEXT CHECK (uncertainty IN ('low', 'medium', 'high')),
+                        evidence_json TEXT NOT NULL DEFAULT '{}',
+                        limitations_json TEXT NOT NULL DEFAULT '{}',
+                        is_guaranteed INTEGER NOT NULL DEFAULT 0
+                            CHECK (is_guaranteed IN (0, 1)),
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_predictions_user_id "
+                    "ON performance_predictions(user_id, prediction_type)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_predictions_target_id "
+                    "ON performance_predictions(target_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS prediction_model_versions (
+                        model_version_id TEXT PRIMARY KEY,
+                        model_name TEXT NOT NULL,
+                        version TEXT NOT NULL,
+                        description TEXT,
+                        created_at TEXT NOT NULL,
+                        is_active INTEGER NOT NULL DEFAULT 0
+                            CHECK (is_active IN (0, 1)),
+                        validation_metrics_json TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_versions_name_version "
+                    "ON prediction_model_versions(model_name, version)"
+                )
+                connection.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_model_versions_active "
+                    "ON prediction_model_versions(is_active) WHERE is_active = 1"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS topic_trends (
+                        trend_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        topic_id TEXT NOT NULL,
+                        topic TEXT NOT NULL,
+                        measurement_date TEXT NOT NULL,
+                        mastery_score REAL CHECK (mastery_score >= 0.0 AND mastery_score <= 1.0),
+                        accuracy REAL CHECK (accuracy >= 0.0 AND accuracy <= 1.0),
+                        attempt_count INTEGER NOT NULL CHECK (attempt_count >= 0),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_topic_trends_user_id "
+                    "ON topic_trends(user_id, topic_id, measurement_date)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -14166,6 +14275,397 @@ def list_exam_results(
             "topicWise": json.loads(row["topic_wise_json"] or "{}"),
             "competencyWise": json.loads(row["competency_wise_json"] or "{}"),
             "difficultyWise": json.loads(row["difficulty_wise_json"] or "{}"),
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# M67: Predictive Learning Analytics & Student Performance Intelligence functions.
+# Historical snapshots, performance predictions, topic trends, model versions.
+# ---------------------------------------------------------------------------
+
+
+def create_analytics_snapshot(
+    database_path: Path,
+    *,
+    user_id: str,
+    snapshot_date: str,
+    topic_id: str | None,
+    topic: str | None,
+    mastery_score: float | None,
+    accuracy: float | None,
+    attempt_count: int,
+    correct_count: int,
+    incorrect_count: int,
+    ambiguous_count: int,
+    review_count: int,
+    overdue_review_count: int,
+    time_spent_ms: int | None,
+) -> dict[str, Any] | None:
+    """Create a historical analytics snapshot for trend analysis."""
+    if attempt_count < 0 or correct_count < 0 or incorrect_count < 0 or ambiguous_count < 0:
+        return None
+    if review_count < 0 or overdue_review_count < 0:
+        return None
+    if time_spent_ms is not None and time_spent_ms < 0:
+        return None
+    if mastery_score is not None and not (0.0 <= mastery_score <= 1.0):
+        return None
+    if accuracy is not None and not (0.0 <= accuracy <= 1.0):
+        return None
+    snapshot_id = f"snap_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO learning_analytics_snapshots(
+                    snapshot_id, user_id, snapshot_date, topic_id, topic,
+                    mastery_score, accuracy, attempt_count, correct_count,
+                    incorrect_count, ambiguous_count, review_count,
+                    overdue_review_count, time_spent_ms, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot_id, user_id, snapshot_date, topic_id, topic,
+                    mastery_score, accuracy, attempt_count, correct_count,
+                    incorrect_count, ambiguous_count, review_count,
+                    overdue_review_count, time_spent_ms, now,
+                ),
+            )
+    return {
+        "snapshotId": snapshot_id,
+        "userId": user_id,
+        "snapshotDate": snapshot_date,
+        "topicId": topic_id,
+        "topic": topic,
+        "masteryScore": mastery_score,
+        "accuracy": accuracy,
+        "attemptCount": attempt_count,
+        "correctCount": correct_count,
+        "incorrectCount": incorrect_count,
+        "ambiguousCount": ambiguous_count,
+        "reviewCount": review_count,
+        "overdueReviewCount": overdue_review_count,
+        "timeSpentMs": time_spent_ms,
+        "createdAt": now,
+    }
+
+
+def list_analytics_snapshots(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """List analytics snapshots for a user, optionally filtered."""
+    query = """
+        SELECT snapshot_id, user_id, snapshot_date, topic_id, topic,
+               mastery_score, accuracy, attempt_count, correct_count,
+               incorrect_count, ambiguous_count, review_count,
+               overdue_review_count, time_spent_ms, created_at
+        FROM learning_analytics_snapshots
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if topic_id is not None:
+        query += " AND topic_id = ?"
+        params.append(topic_id)
+    if start_date is not None:
+        query += " AND snapshot_date >= ?"
+        params.append(start_date)
+    if end_date is not None:
+        query += " AND snapshot_date <= ?"
+        params.append(end_date)
+    query += " ORDER BY snapshot_date ASC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "snapshotId": row["snapshot_id"],
+            "userId": row["user_id"],
+            "snapshotDate": row["snapshot_date"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "masteryScore": row["mastery_score"],
+            "accuracy": row["accuracy"],
+            "attemptCount": row["attempt_count"],
+            "correctCount": row["correct_count"],
+            "incorrectCount": row["incorrect_count"],
+            "ambiguousCount": row["ambiguous_count"],
+            "reviewCount": row["review_count"],
+            "overdueReviewCount": row["overdue_review_count"],
+            "timeSpentMs": row["time_spent_ms"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_performance_prediction(
+    database_path: Path,
+    *,
+    user_id: str,
+    prediction_type: str,
+    target_id: str | None,
+    target_name: str | None,
+    predicted_value: float | None,
+    confidence: float,
+    uncertainty: str,
+    evidence: dict[str, Any] | None,
+    limitations: dict[str, Any] | None,
+    is_guaranteed: bool = False,
+    expires_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Create a performance prediction with evidence and uncertainty."""
+    if prediction_type not in {
+        "exam_readiness", "topic_risk", "workload_estimate",
+        "knowledge_gap", "performance_trend",
+    }:
+        return None
+    if not (0.0 <= confidence <= 1.0):
+        return None
+    if uncertainty not in {"low", "medium", "high"}:
+        return None
+    if predicted_value is not None and not (0.0 <= predicted_value <= 1.0):
+        return None
+    prediction_id = f"pred_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO performance_predictions(
+                    prediction_id, user_id, prediction_type, target_id,
+                    target_name, predicted_value, confidence, uncertainty,
+                    evidence_json, limitations_json, is_guaranteed,
+                    created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    prediction_id, user_id, prediction_type, target_id,
+                    target_name, predicted_value, confidence, uncertainty,
+                    json.dumps(evidence or {}), json.dumps(limitations or {}),
+                    1 if is_guaranteed else 0, now, expires_at,
+                ),
+            )
+    return {
+        "predictionId": prediction_id,
+        "userId": user_id,
+        "predictionType": prediction_type,
+        "targetId": target_id,
+        "targetName": target_name,
+        "predictedValue": predicted_value,
+        "confidence": confidence,
+        "uncertainty": uncertainty,
+        "evidence": evidence or {},
+        "limitations": limitations or {},
+        "isGuaranteed": is_guaranteed,
+        "createdAt": now,
+        "expiresAt": expires_at,
+    }
+
+
+def list_performance_predictions(
+    database_path: Path,
+    *,
+    user_id: str,
+    prediction_type: str | None = None,
+) -> list[dict[str, Any]]:
+    """List performance predictions for a user."""
+    query = """
+        SELECT prediction_id, user_id, prediction_type, target_id,
+               target_name, predicted_value, confidence, uncertainty,
+               evidence_json, limitations_json, is_guaranteed,
+               created_at, expires_at
+        FROM performance_predictions
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if prediction_type is not None:
+        query += " AND prediction_type = ?"
+        params.append(prediction_type)
+    query += " ORDER BY created_at DESC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "predictionId": row["prediction_id"],
+            "userId": row["user_id"],
+            "predictionType": row["prediction_type"],
+            "targetId": row["target_id"],
+            "targetName": row["target_name"],
+            "predictedValue": row["predicted_value"],
+            "confidence": row["confidence"],
+            "uncertainty": row["uncertainty"],
+            "evidence": json.loads(row["evidence_json"] or "{}"),
+            "limitations": json.loads(row["limitations_json"] or "{}"),
+            "isGuaranteed": bool(row["is_guaranteed"]),
+            "createdAt": row["created_at"],
+            "expiresAt": row["expires_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_prediction_model_version(
+    database_path: Path,
+    *,
+    model_name: str,
+    version: str,
+    description: str | None,
+    is_active: bool = False,
+    validation_metrics: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Record a prediction model version. Tracks model lineage."""
+    model_version_id = f"model_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            if is_active:
+                connection.execute(
+                    "UPDATE prediction_model_versions SET is_active = 0 WHERE is_active = 1"
+                )
+            connection.execute(
+                """
+                INSERT INTO prediction_model_versions(
+                    model_version_id, model_name, version, description,
+                    created_at, is_active, validation_metrics_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    model_version_id, model_name, version, description,
+                    now, 1 if is_active else 0,
+                    json.dumps(validation_metrics or {}),
+                ),
+            )
+    return {
+        "modelVersionId": model_version_id,
+        "modelName": model_name,
+        "version": version,
+        "description": description,
+        "createdAt": now,
+        "isActive": is_active,
+        "validationMetrics": validation_metrics or {},
+    }
+
+
+def list_prediction_model_versions(
+    database_path: Path,
+) -> list[dict[str, Any]]:
+    """List all prediction model versions."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT model_version_id, model_name, version, description,
+                   created_at, is_active, validation_metrics_json
+            FROM prediction_model_versions
+            ORDER BY created_at DESC
+            """
+        ).fetchall()
+    return [
+        {
+            "modelVersionId": row["model_version_id"],
+            "modelName": row["model_name"],
+            "version": row["version"],
+            "description": row["description"],
+            "createdAt": row["created_at"],
+            "isActive": bool(row["is_active"]),
+            "validationMetrics": json.loads(row["validation_metrics_json"] or "{}"),
+        }
+        for row in rows
+    ]
+
+
+def create_topic_trend(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str,
+    topic: str,
+    measurement_date: str,
+    mastery_score: float | None,
+    accuracy: float | None,
+    attempt_count: int,
+) -> dict[str, Any] | None:
+    """Record a topic trend measurement."""
+    if attempt_count < 0:
+        return None
+    if mastery_score is not None and not (0.0 <= mastery_score <= 1.0):
+        return None
+    if accuracy is not None and not (0.0 <= accuracy <= 1.0):
+        return None
+    trend_id = f"trend_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO topic_trends(
+                    trend_id, user_id, topic_id, topic, measurement_date,
+                    mastery_score, accuracy, attempt_count, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trend_id, user_id, topic_id, topic, measurement_date,
+                    mastery_score, accuracy, attempt_count, now,
+                ),
+            )
+    return {
+        "trendId": trend_id,
+        "userId": user_id,
+        "topicId": topic_id,
+        "topic": topic,
+        "measurementDate": measurement_date,
+        "masteryScore": mastery_score,
+        "accuracy": accuracy,
+        "attemptCount": attempt_count,
+        "createdAt": now,
+    }
+
+
+def list_topic_trends(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict[str, Any]]:
+    """List topic trends for a user."""
+    query = """
+        SELECT trend_id, user_id, topic_id, topic, measurement_date,
+               mastery_score, accuracy, attempt_count, created_at
+        FROM topic_trends
+        WHERE user_id = ?
+    """
+    params: list[Any] = [user_id]
+    if topic_id is not None:
+        query += " AND topic_id = ?"
+        params.append(topic_id)
+    if start_date is not None:
+        query += " AND measurement_date >= ?"
+        params.append(start_date)
+    if end_date is not None:
+        query += " AND measurement_date <= ?"
+        params.append(end_date)
+    query += " ORDER BY measurement_date ASC"
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "trendId": row["trend_id"],
+            "userId": row["user_id"],
+            "topicId": row["topic_id"],
+            "topic": row["topic"],
+            "measurementDate": row["measurement_date"],
+            "masteryScore": row["mastery_score"],
+            "accuracy": row["accuracy"],
+            "attemptCount": row["attempt_count"],
             "createdAt": row["created_at"],
         }
         for row in rows

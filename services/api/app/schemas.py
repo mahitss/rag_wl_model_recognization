@@ -3872,3 +3872,129 @@ class DeleteInstitutionRequest(ApiModel):
 class RestoreInstitutionRequest(ApiModel):
     institutionId: str
 
+
+# ---------------------------------------------------------------------------
+# M74: API Platform & Third-Party Integration Ecosystem schemas.
+# ---------------------------------------------------------------------------
+
+
+class PaginatedResponse(ApiModel):
+    items: list[dict[str, Any]]
+    total: int
+    page: int
+    pageSize: int
+    totalPages: int
+
+
+class IntegrationCreateRequest(ApiModel):
+    provider: str = Field(min_length=1, max_length=100)
+    providerType: str = Field(
+        description="lms, sis, content_repository, identity_provider, calendar_service, educational_tool"
+    )
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    baseUrl: str | None = Field(default=None, max_length=500)
+    config: dict[str, Any] | None = None
+
+
+class IntegrationUpdateRequest(ApiModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
+    baseUrl: str | None = Field(default=None, max_length=500)
+    config: dict[str, Any] | None = None
+    status: str | None = None
+
+
+class IntegrationResponse(ApiModel):
+    integrationId: str
+    institutionId: str
+    provider: str
+    providerType: str
+    name: str
+    description: str
+    baseUrl: str | None
+    config: dict[str, Any]
+    status: str
+    createdBy: str
+    createdAt: str
+    updatedAt: str
+
+
+class IntegrationCredentialCreateRequest(ApiModel):
+    secretName: str = Field(min_length=1, max_length=100)
+    secretValue: str = Field(min_length=1)
+
+
+class IntegrationCredentialResponse(ApiModel):
+    credentialId: str
+    integrationId: str
+    secretName: str
+    createdAt: str
+    updatedAt: str
+
+
+class WebhookEndpointCreateRequest(ApiModel):
+    url: str = Field(min_length=1, max_length=500)
+    secret: str = Field(min_length=1, max_length=200)
+    eventTypes: list[str] = Field(default_factory=list)
+
+
+class WebhookEndpointUpdateRequest(ApiModel):
+    url: str | None = Field(default=None, min_length=1, max_length=500)
+    secret: str | None = Field(default=None, min_length=1, max_length=200)
+    active: bool | None = None
+    eventTypes: list[str] | None = None
+
+
+class WebhookEndpointResponse(ApiModel):
+    endpointId: str
+    institutionId: str
+    url: str
+    secret: str
+    active: bool
+    eventTypes: list[str]
+    failureCount: int
+    lastFailureAt: str | None
+    createdAt: str
+    updatedAt: str
+
+
+class WebhookSecretRotateRequest(ApiModel):
+    newSecret: str = Field(min_length=1, max_length=200)
+
+
+class WebhookEventResponse(ApiModel):
+    eventId: str
+    institutionId: str
+    eventType: str
+    payload: dict[str, Any]
+    createdAt: str
+
+
+class WebhookDeliveryResponse(ApiModel):
+    deliveryId: str
+    endpointId: str
+    eventType: str
+    eventId: str
+    httpStatus: int | None
+    attempt: int
+    deliveredAt: str | None
+    createdAt: str
+
+
+class IdempotencyKeyResponse(ApiModel):
+    responseStatus: int
+    responseBody: dict[str, Any] | None
+
+
+class VersionInfoResponse(ApiModel):
+    apiVersion: str
+    supportedVersions: list[str]
+    documentationUrl: str
+
+
+class HealthResponse(ApiModel):
+    status: str
+    version: str
+    database: str
+

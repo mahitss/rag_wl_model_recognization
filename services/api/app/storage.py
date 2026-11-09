@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 33
+SCHEMA_VERSION = 34
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -4476,6 +4476,160 @@ def initialize_storage(database_path: Path) -> None:
                         updated_at TEXT NOT NULL
                     )
                     """
+                )
+
+                # ------------------------------------------------------------------
+                # M74: API Platform & Third-Party Integration Ecosystem.
+                # Integration configuration, credentials, webhooks, idempotency.
+                # ------------------------------------------------------------------
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS api_integrations (
+                        integration_id TEXT PRIMARY KEY,
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        provider TEXT NOT NULL CHECK (length(provider) BETWEEN 1 AND 100),
+                        provider_type TEXT NOT NULL CHECK (provider_type IN (
+                            'lms', 'sis', 'content_repository', 'identity_provider',
+                            'calendar_service', 'educational_tool'
+                        )),
+                        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 1000),
+                        base_url TEXT CHECK (length(base_url) BETWEEN 1 AND 500),
+                        config_json TEXT NOT NULL DEFAULT '{}',
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'inactive', 'pending', 'error'
+                        )) DEFAULT 'pending',
+                        created_by TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE SET NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_api_integrations_institution_id "
+                    "ON api_integrations(institution_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_api_integrations_provider_type "
+                    "ON api_integrations(provider_type)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS integration_credentials (
+                        credential_id TEXT PRIMARY KEY,
+                        integration_id TEXT NOT NULL REFERENCES api_integrations(integration_id)
+                            ON DELETE CASCADE,
+                        secret_name TEXT NOT NULL CHECK (length(secret_name) BETWEEN 1 AND 100),
+                        secret_value_encrypted TEXT NOT NULL CHECK (length(secret_value_encrypted) BETWEEN 1 AND 5000),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (integration_id, secret_name)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_integration_credentials_integration_id "
+                    "ON integration_credentials(integration_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_endpoints (
+                        endpoint_id TEXT PRIMARY KEY,
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        url TEXT NOT NULL CHECK (length(url) BETWEEN 1 AND 500),
+                        secret TEXT NOT NULL CHECK (length(secret) BETWEEN 1 AND 200),
+                        active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),
+                        event_types_json TEXT NOT NULL DEFAULT '[]',
+                        failure_count INTEGER NOT NULL DEFAULT 0 CHECK (failure_count >= 0),
+                        last_failure_at TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhook_endpoints_institution_id "
+                    "ON webhook_endpoints(institution_id, active)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_deliveries (
+                        delivery_id TEXT PRIMARY KEY,
+                        endpoint_id TEXT NOT NULL REFERENCES webhook_endpoints(endpoint_id)
+                            ON DELETE CASCADE,
+                        event_type TEXT NOT NULL CHECK (length(event_type) BETWEEN 1 AND 100),
+                        event_id TEXT NOT NULL CHECK (length(event_id) BETWEEN 1 AND 200),
+                        payload_json TEXT NOT NULL,
+                        signature TEXT NOT NULL,
+                        http_status INTEGER,
+                        response_body TEXT,
+                        attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
+                        delivered_at TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_endpoint_id "
+                    "ON webhook_deliveries(endpoint_id, created_at DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_event_id "
+                    "ON webhook_deliveries(event_id, endpoint_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS webhook_events (
+                        event_id TEXT PRIMARY KEY,
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        event_type TEXT NOT NULL CHECK (length(event_type) BETWEEN 1 AND 100),
+                        payload_json TEXT NOT NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhook_events_institution_id "
+                    "ON webhook_events(institution_id, created_at DESC)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_webhook_events_event_type "
+                    "ON webhook_events(event_type)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS idempotency_keys (
+                        key_id TEXT PRIMARY KEY,
+                        idempotency_key TEXT NOT NULL UNIQUE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        method TEXT NOT NULL CHECK (length(method) BETWEEN 1 AND 10),
+                        path TEXT NOT NULL CHECK (length(path) BETWEEN 1 AND 500),
+                        request_hash TEXT NOT NULL CHECK (length(request_hash) BETWEEN 1 AND 128),
+                        response_status INTEGER NOT NULL,
+                        response_body TEXT,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_idempotency_keys_key "
+                    "ON idempotency_keys(idempotency_key)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_idempotency_keys_user_id "
+                    "ON idempotency_keys(user_id, expires_at)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -19959,4 +20113,859 @@ def restore_institution(
         "status": "active",
         "restoredAt": now,
     }
+
+
+# ---------------------------------------------------------------------------
+# M74: API Platform & Third-Party Integration Ecosystem storage functions.
+# Integrations, credentials, webhooks, idempotency keys.
+# ---------------------------------------------------------------------------
+
+
+def create_api_integration(
+    database_path: Path,
+    *,
+    institution_id: str,
+    provider: str,
+    provider_type: str,
+    name: str,
+    description: str,
+    base_url: str | None,
+    config: dict[str, Any] | None,
+    created_by: str,
+) -> dict[str, Any] | None:
+    """Create an API integration configuration for an institution."""
+    valid_types = {
+        "lms", "sis", "content_repository", "identity_provider",
+        "calendar_service", "educational_tool",
+    }
+    if provider_type not in valid_types:
+        return None
+    name = name.strip()
+    if not name:
+        return None
+    if description:
+        description = description.strip()
+    integration_id = f"int_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    config_json = json.dumps(config or {})
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO api_integrations(
+                    integration_id, institution_id, provider, provider_type,
+                    name, description, base_url, config_json, status,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    integration_id,
+                    institution_id,
+                    provider,
+                    provider_type,
+                    name,
+                    description,
+                    base_url,
+                    config_json,
+                    "pending",
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "integrationId": integration_id,
+        "institutionId": institution_id,
+        "provider": provider,
+        "providerType": provider_type,
+        "name": name,
+        "description": description,
+        "baseUrl": base_url,
+        "config": config or {},
+        "status": "pending",
+        "createdBy": created_by,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_api_integration(
+    database_path: Path, *, integration_id: str, viewer_id: str
+) -> dict[str, Any] | None:
+    """Get an integration. Viewer must be a member of the institution."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT i.integration_id, i.institution_id, i.provider,
+                   i.provider_type, i.name, i.description, i.base_url,
+                   i.config_json, i.status, i.created_by, i.created_at,
+                   i.updated_at
+            FROM api_integrations AS i
+            WHERE i.integration_id = ?
+            """,
+            (integration_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    # Verify viewer is a member of the institution.
+    if not _is_institution_member(database_path, row["institution_id"], viewer_id):
+        return None
+    return {
+        "integrationId": row["integration_id"],
+        "institutionId": row["institution_id"],
+        "provider": row["provider"],
+        "providerType": row["provider_type"],
+        "name": row["name"],
+        "description": row["description"],
+        "baseUrl": row["base_url"],
+        "config": json.loads(row["config_json"] or "{}"),
+        "status": row["status"],
+        "createdBy": row["created_by"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_api_integrations(
+    database_path: Path, *, institution_id: str, viewer_id: str
+) -> list[dict[str, Any]] | None:
+    """List integrations for an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT integration_id, institution_id, provider, provider_type,
+                   name, description, base_url, config_json, status,
+                   created_by, created_at, updated_at
+            FROM api_integrations
+            WHERE institution_id = ?
+            ORDER BY name ASC
+            """,
+            (institution_id,),
+        ).fetchall()
+    return [
+        {
+            "integrationId": row["integration_id"],
+            "institutionId": row["institution_id"],
+            "provider": row["provider"],
+            "providerType": row["provider_type"],
+            "name": row["name"],
+            "description": row["description"],
+            "baseUrl": row["base_url"],
+            "config": json.loads(row["config_json"] or "{}"),
+            "status": row["status"],
+            "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_api_integration(
+    database_path: Path,
+    *,
+    integration_id: str,
+    editor_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    base_url: str | None = None,
+    config: dict[str, Any] | None = None,
+    status: str | None = None,
+) -> dict[str, Any] | None:
+    """Update an integration. Editor must be an active institution_admin."""
+    valid_statuses = {"active", "inactive", "pending", "error"}
+    if status is not None and status not in valid_statuses:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT i.institution_id, i.status
+            FROM api_integrations AS i
+            WHERE i.integration_id = ?
+            """,
+            (integration_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    updates = []
+    params: list[Any] = []
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return None
+        updates.append("name = ?")
+        params.append(name)
+    if description is not None:
+        updates.append("description = ?")
+        params.append(description.strip())
+    if base_url is not None:
+        updates.append("base_url = ?")
+        params.append(base_url.strip() or None)
+    if config is not None:
+        updates.append("config_json = ?")
+        params.append(json.dumps(config))
+    if status is not None:
+        updates.append("status = ?")
+        params.append(status)
+    if not updates:
+        return get_api_integration(
+            database_path, integration_id=integration_id, viewer_id=editor_id
+        )
+    updates.append("updated_at = ?")
+    params.append(_iso_now())
+    params.append(integration_id)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                f"""
+                UPDATE api_integrations
+                SET {', '.join(updates)}
+                WHERE integration_id = ?
+                """,
+                params,
+            )
+    return get_api_integration(
+        database_path, integration_id=integration_id, viewer_id=editor_id
+    )
+
+
+def delete_api_integration(
+    database_path: Path, *, integration_id: str, editor_id: str
+) -> dict[str, Any] | None:
+    """Delete an integration. Editor must be an active institution_admin."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT institution_id FROM api_integrations
+            WHERE integration_id = ?
+            """,
+            (integration_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "DELETE FROM api_integrations WHERE integration_id = ?",
+                (integration_id,),
+            )
+    return {
+        "integrationId": integration_id,
+        "status": "deleted",
+    }
+
+
+def create_integration_credential(
+    database_path: Path,
+    *,
+    integration_id: str,
+    secret_name: str,
+    secret_value_encrypted: str,
+    editor_id: str,
+) -> dict[str, Any] | None:
+    """Create or rotate a credential for an integration. Editor must be an
+    active institution_admin. The secret value is stored encrypted and is
+    never returned by read operations."""
+    secret_name = secret_name.strip()
+    if not secret_name:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT i.institution_id
+            FROM api_integrations AS i
+            WHERE i.integration_id = ?
+            """,
+            (integration_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    credential_id = f"cred_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO integration_credentials(
+                    credential_id, integration_id, secret_name,
+                    secret_value_encrypted, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(integration_id, secret_name) DO UPDATE SET
+                    secret_value_encrypted = excluded.secret_value_encrypted,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    credential_id,
+                    integration_id,
+                    secret_name,
+                    secret_value_encrypted,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "credentialId": credential_id,
+        "integrationId": integration_id,
+        "secretName": secret_name,
+        "updatedAt": now,
+    }
+
+
+def list_integration_credentials(
+    database_path: Path,
+    *,
+    integration_id: str,
+    viewer_id: str,
+) -> list[dict[str, Any]] | None:
+    """List credential names (without values) for an integration. Viewer must
+    be a member of the institution."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT i.institution_id
+            FROM api_integrations AS i
+            WHERE i.integration_id = ?
+            """,
+            (integration_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT credential_id, secret_name, created_at, updated_at
+            FROM integration_credentials
+            WHERE integration_id = ?
+            ORDER BY secret_name ASC
+            """,
+            (integration_id,),
+        ).fetchall()
+    return [
+        {
+            "credentialId": row["credential_id"],
+            "integrationId": integration_id,
+            "secretName": row["secret_name"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_webhook_endpoint(
+    database_path: Path,
+    *,
+    institution_id: str,
+    url: str,
+    secret: str,
+    event_types: list[str],
+    creator_id: str,
+) -> dict[str, Any] | None:
+    """Register a webhook endpoint for an institution."""
+    url = url.strip()
+    if not url:
+        return None
+    secret = secret.strip()
+    if not secret:
+        return None
+    if not event_types:
+        event_types = []
+    event_types_json = json.dumps(event_types)
+    endpoint_id = f"wh_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO webhook_endpoints(
+                    endpoint_id, institution_id, url, secret, active,
+                    event_types_json, failure_count, last_failure_at,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                """,
+                (
+                    endpoint_id,
+                    institution_id,
+                    url,
+                    secret,
+                    1,
+                    event_types_json,
+                    0,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "endpointId": endpoint_id,
+        "institutionId": institution_id,
+        "url": url,
+        "secret": secret,
+        "active": True,
+        "eventTypes": event_types,
+        "failureCount": 0,
+        "lastFailureAt": None,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_webhook_endpoints(
+    database_path: Path,
+    *,
+    institution_id: str,
+    viewer_id: str,
+) -> list[dict[str, Any]] | None:
+    """List webhook endpoints for an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT endpoint_id, institution_id, url, secret, active,
+                   event_types_json, failure_count, last_failure_at,
+                   created_at, updated_at
+            FROM webhook_endpoints
+            WHERE institution_id = ?
+            ORDER BY created_at DESC
+            """,
+            (institution_id,),
+        ).fetchall()
+    return [
+        {
+            "endpointId": row["endpoint_id"],
+            "institutionId": row["institution_id"],
+            "url": row["url"],
+            "secret": row["secret"],
+            "active": bool(row["active"]),
+            "eventTypes": json.loads(row["event_types_json"] or "[]"),
+            "failureCount": row["failure_count"],
+            "lastFailureAt": row["last_failure_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_webhook_endpoint(
+    database_path: Path,
+    *,
+    endpoint_id: str,
+    editor_id: str,
+    url: str | None = None,
+    secret: str | None = None,
+    active: bool | None = None,
+    event_types: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Update a webhook endpoint. Editor must be an active institution_admin."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT institution_id FROM webhook_endpoints
+            WHERE endpoint_id = ?
+            """,
+            (endpoint_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    updates = []
+    params: list[Any] = []
+    if url is not None:
+        url = url.strip()
+        if not url:
+            return None
+        updates.append("url = ?")
+        params.append(url)
+    if secret is not None:
+        secret = secret.strip()
+        if not secret:
+            return None
+        updates.append("secret = ?")
+        params.append(secret)
+    if active is not None:
+        updates.append("active = ?")
+        params.append(int(active))
+    if event_types is not None:
+        updates.append("event_types_json = ?")
+        params.append(json.dumps(event_types))
+    if not updates:
+        return get_webhook_endpoint(
+            database_path, endpoint_id=endpoint_id, viewer_id=editor_id
+        )
+    updates.append("updated_at = ?")
+    params.append(_iso_now())
+    params.append(endpoint_id)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                f"""
+                UPDATE webhook_endpoints
+                SET {', '.join(updates)}
+                WHERE endpoint_id = ?
+                """,
+                params,
+            )
+    return get_webhook_endpoint(
+        database_path, endpoint_id=endpoint_id, viewer_id=editor_id
+    )
+
+
+def delete_webhook_endpoint(
+    database_path: Path, *, endpoint_id: str, editor_id: str
+) -> dict[str, Any] | None:
+    """Delete a webhook endpoint. Editor must be an active institution_admin."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT institution_id FROM webhook_endpoints
+            WHERE endpoint_id = ?
+            """,
+            (endpoint_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                "DELETE FROM webhook_endpoints WHERE endpoint_id = ?",
+                (endpoint_id,),
+            )
+    return {
+        "endpointId": endpoint_id,
+        "status": "deleted",
+    }
+
+
+def get_webhook_endpoint(
+    database_path: Path, *, endpoint_id: str, viewer_id: str
+) -> dict[str, Any] | None:
+    """Get a webhook endpoint. Viewer must be a member of the institution."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT endpoint_id, institution_id, url, secret, active,
+                   event_types_json, failure_count, last_failure_at,
+                   created_at, updated_at
+            FROM webhook_endpoints WHERE endpoint_id = ?
+            """,
+            (endpoint_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    return {
+        "endpointId": row["endpoint_id"],
+        "institutionId": row["institution_id"],
+        "url": row["url"],
+        "secret": row["secret"],
+        "active": bool(row["active"]),
+        "eventTypes": json.loads(row["event_types_json"] or "[]"),
+        "failureCount": row["failure_count"],
+        "lastFailureAt": row["last_failure_at"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def rotate_webhook_secret(
+    database_path: Path,
+    *,
+    endpoint_id: str,
+    editor_id: str,
+    new_secret: str,
+) -> dict[str, Any] | None:
+    """Rotate the webhook signing secret. Editor must be an active
+    institution_admin."""
+    new_secret = new_secret.strip()
+    if not new_secret:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT institution_id FROM webhook_endpoints
+            WHERE endpoint_id = ?
+            """,
+            (endpoint_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                UPDATE webhook_endpoints
+                SET secret = ?, updated_at = ?
+                WHERE endpoint_id = ?
+                """,
+                (new_secret, now, endpoint_id),
+            )
+    return {
+        "endpointId": endpoint_id,
+        "secret": new_secret,
+        "rotatedAt": now,
+    }
+
+
+def record_webhook_event(
+    database_path: Path,
+    *,
+    institution_id: str,
+    event_type: str,
+    payload: dict[str, Any],
+) -> str:
+    """Record a webhook event for delivery to subscribed endpoints. Returns
+    the event ID."""
+    event_id = f"evt_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    payload_json = json.dumps(payload)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO webhook_events(
+                    event_id, institution_id, event_type, payload_json,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (event_id, institution_id, event_type, payload_json, now),
+            )
+    return event_id
+
+
+def list_webhook_events(
+    database_path: Path,
+    *,
+    institution_id: str,
+    viewer_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]] | None:
+    """List webhook events for an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT event_id, institution_id, event_type, payload_json,
+                   created_at
+            FROM webhook_events
+            WHERE institution_id = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (institution_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "eventId": row["event_id"],
+            "institutionId": row["institution_id"],
+            "eventType": row["event_type"],
+            "payload": json.loads(row["payload_json"]),
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def record_webhook_delivery(
+    database_path: Path,
+    *,
+    endpoint_id: str,
+    event_type: str,
+    event_id: str,
+    payload: dict[str, Any],
+    signature: str,
+    http_status: int | None = None,
+    response_body: str | None = None,
+    attempt: int = 1,
+) -> str:
+    """Record a webhook delivery attempt. Returns the delivery ID."""
+    delivery_id = f"dlv_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    delivered_at = now if http_status and 200 <= http_status < 300 else None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO webhook_deliveries(
+                    delivery_id, endpoint_id, event_type, event_id,
+                    payload_json, signature, http_status, response_body,
+                    attempt, delivered_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    delivery_id,
+                    endpoint_id,
+                    event_type,
+                    event_id,
+                    json.dumps(payload),
+                    signature,
+                    http_status,
+                    response_body,
+                    attempt,
+                    delivered_at,
+                    now,
+                ),
+            )
+    return delivery_id
+
+
+def list_webhook_deliveries(
+    database_path: Path,
+    *,
+    endpoint_id: str,
+    viewer_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]] | None:
+    """List webhook deliveries for an endpoint. Viewer must be a member of
+    the institution that owns the endpoint."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT institution_id FROM webhook_endpoints
+            WHERE endpoint_id = ?
+            """,
+            (endpoint_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    institution_id = row["institution_id"]
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT delivery_id, endpoint_id, event_type, event_id,
+                   http_status, attempt, delivered_at, created_at
+            FROM webhook_deliveries
+            WHERE endpoint_id = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (endpoint_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "deliveryId": row["delivery_id"],
+            "endpointId": row["endpoint_id"],
+            "eventType": row["event_type"],
+            "eventId": row["event_id"],
+            "httpStatus": row["http_status"],
+            "attempt": row["attempt"],
+            "deliveredAt": row["delivered_at"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def check_idempotency_key(
+    database_path: Path, *, idempotency_key: str, user_id: str
+) -> dict[str, Any] | None:
+    """Check if an idempotency key has been used. Returns the cached response
+    if found and not expired, otherwise None."""
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT response_status, response_body, expires_at
+            FROM idempotency_keys
+            WHERE idempotency_key = ? AND user_id = ?
+            """,
+            (idempotency_key, user_id),
+        ).fetchone()
+    if row is None:
+        return None
+    if datetime.fromisoformat(row["expires_at"]) <= datetime.now(UTC):
+        return None
+    return {
+        "responseStatus": row["response_status"],
+        "responseBody": json.loads(row["response_body"]) if row["response_body"] else None,
+    }
+
+
+def store_idempotency_key(
+    database_path: Path,
+    *,
+    idempotency_key: str,
+    user_id: str,
+    method: str,
+    path: str,
+    request_hash: str,
+    response_status: int,
+    response_body: str | None,
+    ttl_seconds: int = 86400,
+) -> None:
+    """Store an idempotency key with its response."""
+    now = _iso_now()
+    from datetime import timedelta
+
+    expires_at = (
+        datetime.now(UTC) + timedelta(seconds=ttl_seconds)
+    ).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO idempotency_keys(
+                    idempotency_key, user_id, method, path, request_hash,
+                    response_status, response_body, created_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(idempotency_key) DO UPDATE SET
+                    response_status = excluded.response_status,
+                    response_body = excluded.response_body,
+                    created_at = excluded.created_at,
+                    expires_at = excluded.expires_at
+                """,
+                (
+                    idempotency_key,
+                    user_id,
+                    method,
+                    path,
+                    request_hash,
+                    response_status,
+                    json.dumps(response_body) if response_body is not None else None,
+                    now,
+                    expires_at,
+                ),
+            )
+
+
+def cleanup_expired_idempotency_keys(database_path: Path) -> int:
+    """Delete expired idempotency keys and return the number removed."""
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            cursor = connection.execute(
+                "DELETE FROM idempotency_keys WHERE expires_at <= ?",
+                (now,),
+            )
+            return cursor.rowcount
 

@@ -61,6 +61,7 @@ from app.schemas import (
     ClassroomQuestionListResponse,
     ClassroomQuestionRecord,
     ClassroomQuestionResponse,
+    ClassroomQuestionAnswerRequest,
     ClassroomSessionCreateRequest,
     ClassroomSessionListResponse,
     ClassroomSessionRecoveryResponse,

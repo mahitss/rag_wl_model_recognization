@@ -3998,3 +3998,79 @@ class HealthResponse(ApiModel):
     version: str
     database: str
 
+
+# ---------------------------------------------------------------------------
+# M75: Platform Observability & SRE schemas.
+# ---------------------------------------------------------------------------
+
+
+class DependencyHealthResponse(ApiModel):
+    name: str
+    healthy: bool
+    lastCheck: float | None
+    lastError: str | None
+
+
+class DependencyHealthListResponse(ApiModel):
+    dependencies: list[DependencyHealthResponse]
+
+
+class CircuitBreakerStateResponse(ApiModel):
+    name: str
+    state: str
+    failureCount: int
+    openedAt: float | None
+
+
+class CircuitBreakerListResponse(ApiModel):
+    circuitBreakers: list[CircuitBreakerStateResponse]
+
+
+class SLISnapshotResponse(ApiModel):
+    category: str
+    availabilityPercent: float
+    errorRatePercent: float
+    totalRequests: int
+    latencyMs: dict[str, Any]
+
+
+class SnapshotAllResponse(ApiModel):
+    status: str
+    uptimeSeconds: float
+    requestsTotal: int
+    requestsByRoute: dict[str, int]
+    statusCodes: dict[str, int]
+    errorCounts: dict[str, int]
+    latencyMs: dict[str, Any]
+    recentFailures: list[dict[str, Any]]
+    sli: dict[str, SLISnapshotResponse]
+    dependencies: dict[str, DependencyHealthResponse]
+
+
+class ObservabilityDashboardResponse(ApiModel):
+    service: str
+    version: str
+    environment: str
+    status: str
+    uptimeSeconds: float
+    requestsTotal: int
+    errorRatePercent: float
+    p95LatencyMs: float
+    recentFailures: list[dict[str, Any]]
+    dependencies: dict[str, DependencyHealthResponse]
+    sli: dict[str, SLISnapshotResponse]
+
+
+class IncidentRecord(ApiModel):
+    incidentId: str
+    severity: str
+    title: str
+    description: str
+    detectedAt: str
+    resolvedAt: str | None
+    status: str
+
+
+class IncidentListResponse(ApiModel):
+    incidents: list[IncidentRecord]
+

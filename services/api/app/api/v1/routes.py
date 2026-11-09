@@ -92,6 +92,8 @@ from app.schemas import (
     RetrievalRequest,
     RetrievalResponse,
     RevisionQueueResponse,
+    SLISnapshotResponse,
+    SnapshotAllResponse,
     StudyCoachActionRequest,
     StudyCoachExplanationResponse,
     StudyCoachPlanResponse,
@@ -103,6 +105,13 @@ from app.schemas import (
     TutorStatusResponse,
     UnifiedSearchRequest,
     UnifiedSearchResponse,
+    DependencyHealthResponse,
+    CircuitBreakerStateResponse,
+    DependencyHealthListResponse,
+    CircuitBreakerListResponse,
+    ObservabilityDashboardResponse,
+    IncidentRecord,
+    IncidentListResponse,
 )
 from app.storage import (
     complete_study_session,
@@ -313,7 +322,7 @@ async def _grounded_tutor_response(
     }
 
 
-@router.get("/health", response_model=HealthResponse, tags=["system"])
+@router.get("/health", tags=["system"])
 def health(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
     settings = _settings(request)
     return {
@@ -2681,6 +2690,112 @@ def rebuild_embeddings(
         raise ApiError(
             503, "EMBEDDING_FAILED", "The embedding index could not be rebuilt."
         ) from exc
+
+
+# ---------------------------------------------------------------------------
+# M75: Platform Observability & SRE routes.
+# These expose operational telemetry and health for administrators and
+# authenticated users.  All telemetry is privacy-safe: no user IDs, document
+# IDs, prompts, credentials, or private learning content are recorded in
+# metrics or labels.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/observability/snapshot",
+    response_model=SnapshotAllResponse,
+    tags=["observability"],
+)
+def observability_snapshot(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
+    """Return the full operational metrics snapshot including SLIs and dependency health."""
+    metrics: OperationalMetrics = request.app.state.metrics
+    return metrics.snapshot()
+
+
+@router.get(
+    "/observability/sli",
+    response_model=dict[str, SLISnapshotResponse],
+    tags=["observability"],
+)
+def observability_sli(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
+    """Return SLI snapshots for all operation categories."""
+    metrics: OperationalMetrics = request.app.state.metrics
+    return metrics.sli_snapshot()
+
+
+@router.get(
+    "/observability/sli/{category}",
+    response_model=SLISnapshotResponse,
+    tags=["observability"],
+)
+def observability_sli_category(request: Request, category: str, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
+    """Return the SLI snapshot for a single operation category."""
+    metrics: OperationalMetrics = request.app.state.metrics
+    return metrics.sli_snapshot(category)
+
+
+@router.get(
+    "/observability/dependencies",
+    response_model=list[DependencyHealthResponse],
+    tags=["observability"],
+)
+def observability_dependencies(request: Request, current_user: AuthUser = Depends(require_auth)) -> list[dict[str, Any]]:
+    """Return dependency health for database, model provider, embedding provider."""
+    metrics: OperationalMetrics = request.app.state.metrics
+    deps = metrics.all_dependency_health()
+    return list(deps.values())
+
+
+@router.get(
+    "/observability/circuit-breakers",
+    response_model=CircuitBreakerListResponse,
+    tags=["observability"],
+)
+def observability_circuit_breakers(request: Request, current_user: AuthUser = Depends(require_auth)) -> dict[str, Any]:
+    """Return the state of all registered circuit breakers."""
+    from app.reliability import circuit_breaker_registry_all_snapshots
+    breakers = circuit_breaker_registry_all_snapshots()
+    return {"circuitBreakers": breakers}
+
+
+@router.get(
+    "/observability/dashboard",
+    response_model=ObservabilityDashboardResponse,
+    tags=["observability"],
+)
+def observability_dashboard(request: Request, current_user: AuthUser = Depends(require_admin)) -> dict[str, Any]:
+    """Authorized operational dashboard. Requires administrator permissions."""
+    metrics: OperationalMetrics = request.app.state.metrics
+    snap = metrics.snapshot()
+    sli = snap.get("sli", {})
+    http_sli = sli.get("http_request", {})
+    latency = http_sli.get("latency_ms", {})
+    error_rate = http_sli.get("errorRatePercent", 0.0)
+    return {
+        "service": "wonderlearn-api",
+        "version": "0.1.0",
+        "environment": request.app.state.settings.environment,
+        "status": snap.get("status", "ok"),
+        "uptimeSeconds": snap.get("uptime_seconds", 0.0),
+        "requestsTotal": snap.get("requests_total", 0),
+        "errorRatePercent": error_rate,
+        "p95LatencyMs": latency.get("p95_ms", 0.0),
+        "recentFailures": snap.get("recent_failures", []),
+        "dependencies": snap.get("dependencies", {}),
+        "sli": sli,
+    }
+
+
+@router.get(
+    "/observability/incidents",
+    response_model=IncidentListResponse,
+    tags=["observability"],
+)
+def observability_incidents(request: Request, current_user: AuthUser = Depends(require_admin)) -> dict[str, Any]:
+    """Return recent operational incidents (admin only)."""
+    from app.reliability import incident_registry
+    incidents = incident_registry.all()
+    return {"incidents": incidents}
 
 
 def make_error_response(

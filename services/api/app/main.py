@@ -28,6 +28,7 @@ from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.classroom_routes import router as classroom_router
 from app.api.v1.classroom_intelligence_routes import router as classroom_intelligence_router
 from app.api.v1.communication_routes import router as communication_router
+from app.api.v1.institutions_routes import router as institutions_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.config import Settings, get_settings
 from app.embeddings.service import EmbeddingService
@@ -157,6 +158,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(classroom_intelligence_router)
     # Communication & Learning Progress Portal (M72)
     application.include_router(communication_router)
+    # Institution Management & Multi-Tenant Platform (M73)
+    application.include_router(institutions_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")
     for r in application.router.routes:
         if hasattr(r, 'path'):

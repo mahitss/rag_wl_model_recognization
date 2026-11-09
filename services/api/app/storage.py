@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 32
+SCHEMA_VERSION = 33
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -4284,6 +4284,195 @@ def initialize_storage(database_path: Path) -> None:
                             CHECK (assessment_enabled IN (0, 1)),
                         progress_update_enabled INTEGER NOT NULL DEFAULT 1
                             CHECK (progress_update_enabled IN (0, 1)),
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+
+                # ------------------------------------------------------------------
+                # M73: Institution Management & Multi-Tenant Education Platform.
+                # Institutions, memberships, invitations, departments, programs,
+                # settings, and plan entitlements. Existing user-owned resources
+                # (classrooms, courses, documents) remain user-scoped; institutions
+                # are an overlay membership layer with explicit authorization.
+                # ------------------------------------------------------------------
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS institutions (
+                        institution_id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+                        domain TEXT CHECK (length(domain) BETWEEN 1 AND 200),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'suspended', 'deleted'
+                        )) DEFAULT 'active',
+                        settings_json TEXT NOT NULL DEFAULT '{}',
+                        created_by TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE SET NULL,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        deleted_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institutions_status "
+                    "ON institutions(status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institutions_created_by "
+                    "ON institutions(created_by)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS institution_memberships (
+                        membership_id TEXT PRIMARY KEY,
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        role TEXT NOT NULL CHECK (role IN (
+                            'institution_admin', 'educator', 'learner'
+                        )) DEFAULT 'learner',
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'invited', 'suspended', 'revoked'
+                        )) DEFAULT 'active',
+                        invited_by TEXT REFERENCES users(user_id)
+                            ON DELETE SET NULL,
+                        joined_at TEXT,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (institution_id, user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_memberships_institution_id "
+                    "ON institution_memberships(institution_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_memberships_user_id "
+                    "ON institution_memberships(user_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_memberships_role "
+                    "ON institution_memberships(institution_id, role, status)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS institution_invitations (
+                        invitation_id TEXT PRIMARY KEY,
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        email TEXT NOT NULL CHECK (length(email) BETWEEN 1 AND 200),
+                        role TEXT NOT NULL CHECK (role IN (
+                            'institution_admin', 'educator', 'learner'
+                        )),
+                        token TEXT NOT NULL UNIQUE,
+                        inviter_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        expires_at TEXT NOT NULL,
+                        accepted_at TEXT,
+                        accepted_by TEXT REFERENCES users(user_id)
+                            ON DELETE SET NULL,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_invitations_token "
+                    "ON institution_invitations(token)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_invitations_institution_id "
+                    "ON institution_invitations(institution_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_invitations_email "
+                    "ON institution_invitations(email)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS institution_departments (
+                        department_id TEXT PRIMARY KEY,
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 1000),
+                        head_user_id TEXT REFERENCES users(user_id)
+                            ON DELETE SET NULL,
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'archived'
+                        )) DEFAULT 'active',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_departments_institution_id "
+                    "ON institution_departments(institution_id, status)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS institution_programs (
+                        program_id TEXT PRIMARY KEY,
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        department_id TEXT REFERENCES institution_departments(department_id)
+                            ON DELETE SET NULL,
+                        name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 0 AND 1000),
+                        academic_year TEXT CHECK (length(academic_year) BETWEEN 1 AND 20),
+                        term TEXT CHECK (length(term) BETWEEN 1 AND 50),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'archived'
+                        )) DEFAULT 'active',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_programs_institution_id "
+                    "ON institution_programs(institution_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_programs_department_id "
+                    "ON institution_programs(department_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS institution_settings (
+                        institution_id TEXT NOT NULL REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        setting_key TEXT NOT NULL CHECK (length(setting_key) BETWEEN 1 AND 100),
+                        setting_value TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY (institution_id, setting_key)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_institution_settings_institution_id "
+                    "ON institution_settings(institution_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS institution_plan_entitlements (
+                        institution_id TEXT PRIMARY KEY REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        plan TEXT NOT NULL CHECK (length(plan) BETWEEN 1 AND 100) DEFAULT 'free',
+                        max_users INTEGER CHECK (max_users > 0),
+                        max_classrooms INTEGER CHECK (max_classrooms > 0),
+                        max_courses INTEGER CHECK (max_courses > 0),
+                        max_storage_mb INTEGER CHECK (max_storage_mb > 0),
+                        features_json TEXT NOT NULL DEFAULT '{}',
                         updated_at TEXT NOT NULL
                     )
                     """
@@ -18763,4 +18952,1011 @@ def update_notification_preferences(
                 params,
             )
     return get_notification_preferences(database_path, user_id=user_id)
+
+
+# ---------------------------------------------------------------------------
+# M73: Institution Management & Multi-Tenant Education Platform functions.
+# Institutions, memberships, invitations, departments, programs, settings,
+# plan entitlements.
+# ---------------------------------------------------------------------------
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _check_institution_admin(
+    database_path: Path, institution_id: str, user_id: str
+) -> bool:
+    """Return True if the user is an active institution_admin of the
+    institution, otherwise False."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT 1 FROM institution_memberships
+            WHERE institution_id = ? AND user_id = ?
+              AND role = 'institution_admin' AND status = 'active'
+            LIMIT 1
+            """,
+            (institution_id, user_id),
+        ).fetchone()
+    return row is not None
+
+
+def create_institution(
+    database_path: Path,
+    *,
+    name: str,
+    domain: str | None = None,
+    created_by: str,
+    settings: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Create a new institution. The creator becomes the institution_admin."""
+    name = name.strip()
+    if not name:
+        return None
+    if domain is not None:
+        domain = domain.strip() or None
+    institution_id = f"inst_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    settings_json = json.dumps(settings or {})
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO institutions(
+                    institution_id, name, domain, status, settings_json,
+                    created_by, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    institution_id,
+                    name,
+                    domain,
+                    "active",
+                    settings_json,
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO institution_memberships(
+                    membership_id, institution_id, user_id, role, status,
+                    invited_by, joined_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    f"memb_{secrets.token_urlsafe(12)}",
+                    institution_id,
+                    created_by,
+                    "institution_admin",
+                    "active",
+                    created_by,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "institutionId": institution_id,
+        "name": name,
+        "domain": domain,
+        "status": "active",
+        "settings": settings or {},
+        "createdBy": created_by,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_institution(
+    database_path: Path, *, institution_id: str
+) -> dict[str, Any] | None:
+    """Return an institution by ID, or None."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT institution_id, name, domain, status, settings_json,
+                   created_by, created_at, updated_at, deleted_at
+            FROM institutions WHERE institution_id = ?
+            """,
+            (institution_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "institutionId": row["institution_id"],
+        "name": row["name"],
+        "domain": row["domain"],
+        "status": row["status"],
+        "settings": json.loads(row["settings_json"] or "{}"),
+        "createdBy": row["created_by"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+        "deletedAt": row["deleted_at"],
+    }
+
+
+def list_institutions(
+    database_path: Path, *, user_id: str | None = None
+) -> list[dict[str, Any]]:
+    """List institutions. If user_id is given, only institutions where the
+    user is an active member are returned."""
+    with closing(connect_database(database_path)) as connection:
+        if user_id is not None:
+            rows = connection.execute(
+                """
+                SELECT i.institution_id, i.name, i.domain, i.status,
+                       i.settings_json, i.created_by, i.created_at,
+                       i.updated_at, i.deleted_at, m.role
+                FROM institutions AS i
+                JOIN institution_memberships AS m
+                  ON m.institution_id = i.institution_id
+                WHERE m.user_id = ? AND m.status = 'active'
+                  AND i.status = 'active'
+                ORDER BY i.name ASC
+                """,
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT institution_id, name, domain, status, settings_json,
+                       created_by, created_at, updated_at, deleted_at,
+                       NULL AS role
+                FROM institutions WHERE status = 'active'
+                ORDER BY name ASC
+                """
+            ).fetchall()
+    return [
+        {
+            "institutionId": row["institution_id"],
+            "name": row["name"],
+            "domain": row["domain"],
+            "status": row["status"],
+            "settings": json.loads(row["settings_json"] or "{}"),
+            "createdBy": row["created_by"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "deletedAt": row["deleted_at"],
+            "role": row["role"],
+        }
+        for row in rows
+    ]
+
+
+def update_institution(
+    database_path: Path,
+    *,
+    institution_id: str,
+    editor_id: str,
+    name: str | None = None,
+    domain: str | None = None,
+    settings: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Update institution metadata. Only institution_admin may edit."""
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] != "active":
+        return None
+    updates = []
+    params: list[Any] = []
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return None
+        updates.append("name = ?")
+        params.append(name)
+    if domain is not None:
+        updates.append("domain = ?")
+        params.append(domain.strip() or None)
+    if settings is not None:
+        updates.append("settings_json = ?")
+        params.append(json.dumps(settings))
+    if not updates:
+        return inst
+    updates.append("updated_at = ?")
+    params.append(_iso_now())
+    params.append(institution_id)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                f"""
+                UPDATE institutions
+                SET {', '.join(updates)}
+                WHERE institution_id = ?
+                """,
+                params,
+            )
+    return get_institution(database_path, institution_id=institution_id)
+
+
+def add_institution_member(
+    database_path: Path,
+    *,
+    institution_id: str,
+    user_id: str,
+    inviter_id: str,
+    role: str = "learner",
+) -> dict[str, Any] | None:
+    """Add a user to an institution. Inviter must be an active
+    institution_admin. Membership defaults to 'active'."""
+    if role not in {"institution_admin", "educator", "learner"}:
+        return None
+    if not _check_institution_admin(database_path, institution_id, inviter_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] != "active":
+        return None
+    user = get_user_by_id(database_path, user_id)
+    if user is None:
+        return None
+    membership_id = f"memb_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO institution_memberships(
+                    membership_id, institution_id, user_id, role, status,
+                    invited_by, joined_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(institution_id, user_id) DO UPDATE SET
+                    role = excluded.role,
+                    status = 'active',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    membership_id,
+                    institution_id,
+                    user_id,
+                    role,
+                    "active",
+                    inviter_id,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "membershipId": membership_id,
+        "institutionId": institution_id,
+        "userId": user_id,
+        "role": role,
+        "status": "active",
+        "joinedAt": now,
+    }
+
+
+def list_institution_members(
+    database_path: Path,
+    *,
+    institution_id: str,
+    viewer_id: str,
+) -> list[dict[str, Any]] | None:
+    """List active members of an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT m.membership_id, m.user_id, u.username, m.role, m.status,
+                   m.invited_by, m.joined_at, m.updated_at
+            FROM institution_memberships AS m
+            JOIN users AS u ON u.user_id = m.user_id
+            WHERE m.institution_id = ? AND m.status = 'active'
+            ORDER BY u.username ASC
+            """,
+            (institution_id,),
+        ).fetchall()
+    return [
+        {
+            "membershipId": row["membership_id"],
+            "userId": row["user_id"],
+            "username": row["username"],
+            "role": row["role"],
+            "status": row["status"],
+            "invitedBy": row["invited_by"],
+            "joinedAt": row["joined_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def _is_institution_member(
+    database_path: Path, institution_id: str, user_id: str
+) -> bool:
+    """Return True if the user is an active member of the institution."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT 1 FROM institution_memberships
+            WHERE institution_id = ? AND user_id = ? AND status = 'active'
+            LIMIT 1
+            """,
+            (institution_id, user_id),
+        ).fetchone()
+    return row is not None
+
+
+def suspend_institution_member(
+    database_path: Path,
+    *,
+    institution_id: str,
+    user_id: str,
+    actor_id: str,
+) -> dict[str, Any] | None:
+    """Suspend a member. Actor must be an active institution_admin."""
+    if not _check_institution_admin(database_path, institution_id, actor_id):
+        return None
+    if user_id == actor_id:
+        return None
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT membership_id FROM institution_memberships
+            WHERE institution_id = ? AND user_id = ? AND status = 'active'
+            LIMIT 1
+            """,
+            (institution_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                UPDATE institution_memberships
+                SET status = 'suspended', updated_at = ?
+                WHERE membership_id = ?
+                """,
+                (now, row["membership_id"]),
+            )
+    return {
+        "membershipId": row["membership_id"],
+        "userId": user_id,
+        "status": "suspended",
+    }
+
+
+def revoke_institution_member(
+    database_path: Path,
+    *,
+    institution_id: str,
+    user_id: str,
+    actor_id: str,
+) -> dict[str, Any] | None:
+    """Revoke (permanently remove) a member. Actor must be an active
+    institution_admin."""
+    if not _check_institution_admin(database_path, institution_id, actor_id):
+        return None
+    if user_id == actor_id:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT membership_id FROM institution_memberships
+            WHERE institution_id = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (institution_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                DELETE FROM institution_memberships
+                WHERE membership_id = ?
+                """,
+                (row["membership_id"],),
+            )
+    return {
+        "membershipId": row["membership_id"],
+        "userId": user_id,
+        "status": "revoked",
+    }
+
+
+def create_institution_invitation(
+    database_path: Path,
+    *,
+    institution_id: str,
+    email: str,
+    role: str,
+    inviter_id: str,
+    expires_in_days: int = 7,
+) -> dict[str, Any] | None:
+    """Create an invitation to join an institution. Inviter must be an
+    active institution_admin."""
+    if role not in {"institution_admin", "educator", "learner"}:
+        return None
+    if not _check_institution_admin(database_path, institution_id, inviter_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] != "active":
+        return None
+    email = email.strip().lower()
+    if not email or "@" not in email:
+        return None
+    invitation_id = f"inv_{secrets.token_urlsafe(12)}"
+    token = secrets.token_urlsafe(24)
+    now = _iso_now()
+    expires_at = (
+        datetime.now(UTC) + timedelta(days=expires_in_days)
+    ).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO institution_invitations(
+                    invitation_id, institution_id, email, role, token,
+                    inviter_id, expires_at, accepted_at, accepted_by, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+                """,
+                (
+                    invitation_id,
+                    institution_id,
+                    email,
+                    role,
+                    token,
+                    inviter_id,
+                    expires_at,
+                    now,
+                ),
+            )
+    return {
+        "invitationId": invitation_id,
+        "institutionId": institution_id,
+        "email": email,
+        "role": role,
+        "token": token,
+        "inviterId": inviter_id,
+        "expiresAt": expires_at,
+        "createdAt": now,
+    }
+
+
+def accept_institution_invitation(
+    database_path: Path,
+    *,
+    token: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Accept an invitation and add the user to the institution."""
+    user = get_user_by_id(database_path, user_id)
+    if user is None:
+        return None
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT invitation_id, institution_id, email, role, expires_at,
+                   accepted_at, inviter_id
+            FROM institution_invitations
+            WHERE token = ?
+            """,
+            (token,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["accepted_at"] is not None:
+            return None
+        if datetime.fromisoformat(row["expires_at"]) <= datetime.now(UTC):
+            return None
+        if row["email"] != user["email"]:
+            return None
+        institution_id = row["institution_id"]
+        role = row["role"]
+        with connection:
+            connection.execute(
+                """
+                UPDATE institution_invitations
+                SET accepted_at = ?, accepted_by = ?
+                WHERE invitation_id = ?
+                """,
+                (now, user_id, row["invitation_id"]),
+            )
+            connection.execute(
+                """
+                INSERT INTO institution_memberships(
+                    membership_id, institution_id, user_id, role, status,
+                    invited_by, joined_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(institution_id, user_id) DO UPDATE SET
+                    role = excluded.role,
+                    status = 'active',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    f"memb_{secrets.token_urlsafe(12)}",
+                    institution_id,
+                    user_id,
+                    role,
+                    "active",
+                    row["inviter_id"],
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "invitationId": row["invitation_id"],
+        "institutionId": institution_id,
+        "userId": user_id,
+        "role": role,
+        "status": "active",
+        "joinedAt": now,
+    }
+
+
+def list_institution_invitations(
+    database_path: Path,
+    *,
+    institution_id: str,
+    viewer_id: str,
+) -> list[dict[str, Any]] | None:
+    """List invitations for an institution. Viewer must be an active
+    institution_admin."""
+    if not _check_institution_admin(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT invitation_id, institution_id, email, role, token,
+                   inviter_id, expires_at, accepted_at, accepted_by,
+                   created_at
+            FROM institution_invitations
+            WHERE institution_id = ?
+            ORDER BY created_at DESC
+            """,
+            (institution_id,),
+        ).fetchall()
+    return [
+        {
+            "invitationId": row["invitation_id"],
+            "institutionId": row["institution_id"],
+            "email": row["email"],
+            "role": row["role"],
+            "token": row["token"],
+            "inviterId": row["inviter_id"],
+            "expiresAt": row["expires_at"],
+            "acceptedAt": row["accepted_at"],
+            "acceptedBy": row["accepted_by"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_institution_department(
+    database_path: Path,
+    *,
+    institution_id: str,
+    name: str,
+    description: str,
+    head_user_id: str | None = None,
+    creator_id: str,
+) -> dict[str, Any] | None:
+    """Create a department within an institution. Creator must be an active
+    institution_admin."""
+    if not _check_institution_admin(database_path, institution_id, creator_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] != "active":
+        return None
+    name = name.strip()
+    if not name:
+        return None
+    department_id = f"dept_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    if head_user_id is not None and not _is_institution_member(
+        database_path, institution_id, head_user_id
+    ):
+        head_user_id = None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO institution_departments(
+                    department_id, institution_id, name, description,
+                    head_user_id, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    department_id,
+                    institution_id,
+                    name,
+                    description,
+                    head_user_id,
+                    "active",
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "departmentId": department_id,
+        "institutionId": institution_id,
+        "name": name,
+        "description": description,
+        "headUserId": head_user_id,
+        "status": "active",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_institution_departments(
+    database_path: Path,
+    *,
+    institution_id: str,
+    viewer_id: str,
+) -> list[dict[str, Any]] | None:
+    """List departments of an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT department_id, institution_id, name, description,
+                   head_user_id, status, created_at, updated_at
+            FROM institution_departments
+            WHERE institution_id = ? AND status = 'active'
+            ORDER BY name ASC
+            """,
+            (institution_id,),
+        ).fetchall()
+    return [
+        {
+            "departmentId": row["department_id"],
+            "institutionId": row["institution_id"],
+            "name": row["name"],
+            "description": row["description"],
+            "headUserId": row["head_user_id"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_institution_program(
+    database_path: Path,
+    *,
+    institution_id: str,
+    department_id: str | None,
+    name: str,
+    description: str,
+    academic_year: str | None = None,
+    term: str | None = None,
+    creator_id: str,
+) -> dict[str, Any] | None:
+    """Create a program within an institution (optionally under a
+    department). Creator must be an active institution_admin."""
+    if not _check_institution_admin(database_path, institution_id, creator_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] != "active":
+        return None
+    name = name.strip()
+    if not name:
+        return None
+    if department_id is not None and not _is_valid_department(
+        database_path, department_id, institution_id
+    ):
+        department_id = None
+    program_id = f"prog_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO institution_programs(
+                    program_id, institution_id, department_id, name,
+                    description, academic_year, term, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    program_id,
+                    institution_id,
+                    department_id,
+                    name,
+                    description,
+                    academic_year,
+                    term,
+                    "active",
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "programId": program_id,
+        "institutionId": institution_id,
+        "departmentId": department_id,
+        "name": name,
+        "description": description,
+        "academicYear": academic_year,
+        "term": term,
+        "status": "active",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def _is_valid_department(
+    database_path: Path, department_id: str, institution_id: str
+) -> bool:
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT 1 FROM institution_departments
+            WHERE department_id = ? AND institution_id = ? AND status = 'active'
+            LIMIT 1
+            """,
+            (department_id, institution_id),
+        ).fetchone()
+    return row is not None
+
+
+def list_institution_programs(
+    database_path: Path,
+    *,
+    institution_id: str,
+    viewer_id: str,
+) -> list[dict[str, Any]] | None:
+    """List programs of an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT program_id, institution_id, department_id, name,
+                   description, academic_year, term, status,
+                   created_at, updated_at
+            FROM institution_programs
+            WHERE institution_id = ? AND status = 'active'
+            ORDER BY name ASC
+            """,
+            (institution_id,),
+        ).fetchall()
+    return [
+        {
+            "programId": row["program_id"],
+            "institutionId": row["institution_id"],
+            "departmentId": row["department_id"],
+            "name": row["name"],
+            "description": row["description"],
+            "academicYear": row["academic_year"],
+            "term": row["term"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_institution_settings(
+    database_path: Path, *, institution_id: str, viewer_id: str
+) -> dict[str, Any] | None:
+    """Get all settings for an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT setting_key, setting_value
+            FROM institution_settings
+            WHERE institution_id = ?
+            """,
+            (institution_id,),
+        ).fetchall()
+    return {row["setting_key"]: row["setting_value"] for row in rows}
+
+
+def update_institution_setting(
+    database_path: Path,
+    *,
+    institution_id: str,
+    setting_key: str,
+    setting_value: str,
+    editor_id: str,
+) -> dict[str, Any] | None:
+    """Update a single institution setting. Editor must be an active
+    institution_admin."""
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] != "active":
+        return None
+    setting_key = setting_key.strip()
+    if not setting_key:
+        return None
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO institution_settings(
+                    institution_id, setting_key, setting_value, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(institution_id, setting_key) DO UPDATE SET
+                    setting_value = excluded.setting_value,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    institution_id,
+                    setting_key,
+                    setting_value,
+                    now,
+                ),
+            )
+    return {
+        "institutionId": institution_id,
+        "settingKey": setting_key,
+        "settingValue": setting_value,
+        "updatedAt": now,
+    }
+
+
+def get_institution_plan_entitlements(
+    database_path: Path, *, institution_id: str, viewer_id: str
+) -> dict[str, Any] | None:
+    """Get plan entitlements for an institution. Viewer must be a member."""
+    if not _is_institution_member(database_path, institution_id, viewer_id):
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT institution_id, plan, max_users, max_classrooms,
+                   max_courses, max_storage_mb, features_json, updated_at
+            FROM institution_plan_entitlements
+            WHERE institution_id = ?
+            """,
+            (institution_id,),
+        ).fetchone()
+    if row is None:
+        return {
+            "institutionId": institution_id,
+            "plan": "free",
+            "maxUsers": None,
+            "maxClassrooms": None,
+            "maxCourses": None,
+            "maxStorageMb": None,
+            "features": {},
+            "updatedAt": None,
+        }
+    return {
+        "institutionId": row["institution_id"],
+        "plan": row["plan"],
+        "maxUsers": row["max_users"],
+        "maxClassrooms": row["max_classrooms"],
+        "maxCourses": row["max_courses"],
+        "maxStorageMb": row["max_storage_mb"],
+        "features": json.loads(row["features_json"] or "{}"),
+        "updatedAt": row["updated_at"],
+    }
+
+
+def set_institution_plan_entitlements(
+    database_path: Path,
+    *,
+    institution_id: str,
+    editor_id: str,
+    plan: str,
+    max_users: int | None = None,
+    max_classrooms: int | None = None,
+    max_courses: int | None = None,
+    max_storage_mb: int | None = None,
+    features: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Set plan entitlements. Editor must be an active institution_admin."""
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] != "active":
+        return None
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO institution_plan_entitlements(
+                    institution_id, plan, max_users, max_classrooms,
+                    max_courses, max_storage_mb, features_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(institution_id) DO UPDATE SET
+                    plan = excluded.plan,
+                    max_users = excluded.max_users,
+                    max_classrooms = excluded.max_classrooms,
+                    max_courses = excluded.max_courses,
+                    max_storage_mb = excluded.max_storage_mb,
+                    features_json = excluded.features_json,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    institution_id,
+                    plan,
+                    max_users,
+                    max_classrooms,
+                    max_courses,
+                    max_storage_mb,
+                    json.dumps(features or {}),
+                    now,
+                ),
+            )
+    return get_institution_plan_entitlements(
+        database_path, institution_id=institution_id, viewer_id=editor_id
+    )
+
+
+def delete_institution(
+    database_path: Path,
+    *,
+    institution_id: str,
+    editor_id: str,
+) -> dict[str, Any] | None:
+    """Soft-delete an institution. Editor must be an active
+    institution_admin. Memberships and invitations remain but are
+    inaccessible while the institution is deleted."""
+    if not _check_institution_admin(database_path, institution_id, editor_id):
+        return None
+    inst = get_institution(database_path, institution_id=institution_id)
+    if inst is None or inst["status"] == "deleted":
+        return None
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                UPDATE institutions
+                SET status = 'deleted', deleted_at = ?, updated_at = ?
+                WHERE institution_id = ?
+                """,
+                (now, now, institution_id),
+            )
+    return {
+        "institutionId": institution_id,
+        "status": "deleted",
+        "deletedAt": now,
+    }
+
+
+def restore_institution(
+    database_path: Path,
+    *,
+    institution_id: str,
+    editor_id: str,
+) -> dict[str, Any] | None:
+    """Restore a soft-deleted institution. Editor must be an active
+    institution_admin of the (deleted) institution."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT status FROM institutions WHERE institution_id = ?
+            """,
+            (institution_id,),
+        ).fetchone()
+        if row is None or row["status"] != "deleted":
+            return None
+        if not _check_institution_admin(database_path, institution_id, editor_id):
+            return None
+        now = _iso_now()
+        with connection:
+            connection.execute(
+                """
+                UPDATE institutions
+                SET status = 'active', deleted_at = NULL, updated_at = ?
+                WHERE institution_id = ?
+                """,
+                (now, institution_id),
+            )
+    return {
+        "institutionId": institution_id,
+        "status": "active",
+        "restoredAt": now,
+    }
 

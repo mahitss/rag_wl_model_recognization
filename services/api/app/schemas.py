@@ -3699,3 +3699,176 @@ class ProgressPortalResponse(ApiModel):
     unreadNotificationCount: int
     dataSources: list[str]
 
+
+# ---------------------------------------------------------------------------
+# M73: Institution Management & Multi-Tenant Education Platform schemas.
+# ---------------------------------------------------------------------------
+
+
+class InstitutionCreateRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    domain: str | None = Field(default=None, max_length=200)
+
+
+class InstitutionResponse(ApiModel):
+    institutionId: str
+    name: str
+    domain: str | None
+    status: str
+    settings: dict[str, Any]
+    createdBy: str
+    createdAt: str
+    updatedAt: str
+    deletedAt: str | None
+
+
+class InstitutionListResponse(ApiModel):
+    institutions: list[InstitutionResponse]
+
+
+class InstitutionUpdateRequest(ApiModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    domain: str | None = Field(default=None, max_length=200)
+    settings: dict[str, Any] | None = None
+
+
+class InstitutionMemberResponse(ApiModel):
+    membershipId: str
+    userId: str
+    username: str
+    role: str
+    status: str
+    invitedBy: str | None
+    joinedAt: str | None
+    updatedAt: str
+
+
+class InstitutionMemberListResponse(ApiModel):
+    members: list[InstitutionMemberResponse]
+
+
+class AddInstitutionMemberRequest(ApiModel):
+    userId: str
+    role: str = Field(default="learner")
+
+
+class SuspendMemberRequest(ApiModel):
+    userId: str
+
+
+class RevokeMemberRequest(ApiModel):
+    userId: str
+
+
+class InstitutionInvitationResponse(ApiModel):
+    invitationId: str
+    institutionId: str
+    email: str
+    role: str
+    token: str
+    inviterId: str
+    expiresAt: str
+    acceptedAt: str | None
+    acceptedBy: str | None
+    createdAt: str
+
+
+class InstitutionInvitationListResponse(ApiModel):
+    invitations: list[InstitutionInvitationResponse]
+
+
+class CreateInvitationRequest(ApiModel):
+    email: str
+    role: str = Field(default="learner")
+    expiresInDays: int = Field(default=7, ge=1, le=90)
+
+
+class AcceptInvitationRequest(ApiModel):
+    token: str
+
+
+class InstitutionDepartmentResponse(ApiModel):
+    departmentId: str
+    institutionId: str
+    name: str
+    description: str
+    headUserId: str | None
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class InstitutionDepartmentListResponse(ApiModel):
+    departments: list[InstitutionDepartmentResponse]
+
+
+class CreateDepartmentRequest(ApiModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    headUserId: str | None = None
+
+
+class InstitutionProgramResponse(ApiModel):
+    programId: str
+    institutionId: str
+    departmentId: str | None
+    name: str
+    description: str
+    academicYear: str | None
+    term: str | None
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class InstitutionProgramListResponse(ApiModel):
+    programs: list[InstitutionProgramResponse]
+
+
+class CreateProgramRequest(ApiModel):
+    departmentId: str | None = None
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=1000)
+    academicYear: str | None = Field(default=None, max_length=20)
+    term: str | None = Field(default=None, max_length=50)
+
+
+class InstitutionSettingResponse(ApiModel):
+    institutionId: str
+    settingKey: str
+    settingValue: str
+    updatedAt: str
+
+
+class UpdateInstitutionSettingRequest(ApiModel):
+    settingKey: str = Field(min_length=1, max_length=100)
+    settingValue: str
+
+
+class InstitutionPlanEntitlementsResponse(ApiModel):
+    institutionId: str
+    plan: str
+    maxUsers: int | None
+    maxClassrooms: int | None
+    maxCourses: int | None
+    maxStorageMb: int | None
+    features: dict[str, Any]
+    updatedAt: str | None
+
+
+class SetPlanEntitlementsRequest(ApiModel):
+    plan: str = Field(min_length=1, max_length=100)
+    maxUsers: int | None = Field(default=None, ge=1)
+    maxClassrooms: int | None = Field(default=None, ge=1)
+    maxCourses: int | None = Field(default=None, ge=1)
+    maxStorageMb: int | None = Field(default=None, ge=1)
+    features: dict[str, Any] | None = None
+
+
+class DeleteInstitutionRequest(ApiModel):
+    institutionId: str
+
+
+class RestoreInstitutionRequest(ApiModel):
+    institutionId: str
+

@@ -10,6 +10,8 @@ import CommunicationInbox from "./CommunicationInbox";
 import NotificationCenter from "./NotificationCenter";
 import LearnerProgressPortal from "./LearnerProgressPortal";
 import ClassroomAnnouncementFeed from "./ClassroomAnnouncementFeed";
+import { LanguageProvider } from "./LanguageProvider";
+import { SkipLink } from "./A11yComponents";
 import "./style.css";
 
 type DiagramRegion = {
@@ -5325,7 +5327,10 @@ const rootElement = document.getElementById("root");
 if (rootElement) {
   createRoot(rootElement).render(
     <StrictMode>
-      <App />
+      <LanguageProvider>
+        <SkipLink href="#main-content" label="Skip to main content" />
+        <App />
+      </LanguageProvider>
     </StrictMode>,
   );
 }

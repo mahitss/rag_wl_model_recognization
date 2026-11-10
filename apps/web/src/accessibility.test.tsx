@@ -4,9 +4,10 @@
  * Runs in vitest/jsdom environment. No external accessibility tools required.
  */
 
-import { describe, expect, it, beforeEach } from "vitest";
+import { describe, expect, it } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { act } from "@testing-library/react";
 import {
   t,
   formatDate,
@@ -15,20 +16,17 @@ import {
   formatRelativeTime,
   pluralize,
   LANGUAGES,
-  getTranslation,
 } from "./i18n";
 import { LanguageProvider, useLanguage } from "./LanguageProvider";
 import {
   useRovingTabindex,
-  useLiveRegion,
-  useReducedMotion,
   getContrastRatio,
   meetsContrastRatio,
 } from "./a11y";
 import { SkipLink } from "./A11yComponents";
 
 // ---------------------------------------------------------------------------
-// Helper components using hooks
+// Helper component using LanguageProvider
 // ---------------------------------------------------------------------------
 
 function I18nTestComponent({ tKey, params }: { tKey: string; params?: Record<string, string | number> }) {
@@ -44,19 +42,6 @@ function I18nTestComponent({ tKey, params }: { tKey: string; params?: Record<str
       >
         Switch
       </button>
-    </div>
-  );
-}
-
-function RovingTabindexTest({ currentIndex = 0, itemCount = 3 }: { currentIndex?: number; itemCount?: number }) {
-  const { getItemProps } = useRovingTabindex({ currentIndex, itemCount, orientation: "horizontal" });
-  return (
-    <div role="tablist" aria-label="Roving tabindex test">
-      {[0, 1, 2].map((i) => (
-        <button key={`tab-${i}`} {...getItemProps(i)} data-testid={`tab-${i}`}>
-          Tab {i + 1}
-        </button>
-      ))}
     </div>
   );
 }
@@ -101,10 +86,6 @@ describe("i18n translation system", () => {
 });
 
 describe("LanguageProvider React context", () => {
-  beforeEach(() => {
-    localStorage.removeItem("wl_lang");
-  });
-
   it("provides language context and allows switching", async () => {
     const user = userEvent.setup();
     render(
@@ -126,18 +107,19 @@ describe("LanguageProvider React context", () => {
   });
 
   it("persists language preference in localStorage", () => {
+    localStorage.removeItem("wl_lang");
     const { container } = render(
       <LanguageProvider initialLang="hi">
         <I18nTestComponent tKey="common.save" />
       </LanguageProvider>,
     );
 
-    // Language persists via initialLang prop
     expect(container.querySelector('[data-testid="translated-text"]')!.textContent).toBe("सहेजें");
     expect(container.querySelector('[data-testid="current-lang"]')!.textContent).toBe("hi");
   });
 
   it("sets document dir and lang attributes", () => {
+    localStorage.removeItem("wl_lang");
     const { container } = render(
       <LanguageProvider initialLang="hi">
         <I18nTestComponent tKey="common.save" />
@@ -191,7 +173,7 @@ describe("Locale-aware formatting", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Keyboard navigation (hooks tested inside components)
+// Keyboard navigation (tested through component)
 // ---------------------------------------------------------------------------
 
 describe("Keyboard navigation", () => {
@@ -214,6 +196,37 @@ describe("Keyboard navigation", () => {
     expect(tabs[0].getAttribute("tabindex")).toBe("0");
     expect(tabs[1].getAttribute("tabindex")).toBe("-1");
     expect(tabs[2].getAttribute("tabindex")).toBe("-1");
+  });
+
+  it("roving tabindex updates currentIndex on arrow keys", () => {
+    function TestComponent({ currentIndex }: { currentIndex: number }) {
+      const { getItemProps } = useRovingTabindex({ currentIndex, itemCount: 3, orientation: "horizontal" });
+      return (
+        <div>
+          {[0, 1, 2].map((i) => (
+            <button key={`tab-${i}`} {...getItemProps(i)} />
+          ))}
+        </div>
+      );
+    }
+
+    const { container } = render(<RovingTabindexTest currentIndex={0} />);
+    const tabs = container.querySelectorAll("button");
+    expect(tabs[0].getAttribute("tabindex")).toBe("0");
+    expect(tabs[1].getAttribute("tabindex")).toBe("-1");
+    expect(tabs[2].getAttribute("tabindex")).toBe("-1");
+
+    const { container: container1 } = render(<RovingTabindexTest currentIndex={1} />);
+    const tabs1 = container1.querySelectorAll("button");
+    expect(tabs1[0].getAttribute("tabindex")).toBe("-1");
+    expect(tabs1[1].getAttribute("tabindex")).toBe("0");
+    expect(tabs1[2].getAttribute("tabindex")).toBe("-1");
+
+    const { container: container2 } = render(<RovingTabindexTest currentIndex={2} />);
+    const tabs2 = container2.querySelectorAll("button");
+    expect(tabs2[0].getAttribute("tabindex")).toBe("-1");
+    expect(tabs2[1].getAttribute("tabindex")).toBe("-1");
+    expect(tabs2[2].getAttribute("tabindex")).toBe("0");
   });
 });
 
@@ -259,10 +272,10 @@ describe("Screen-reader semantics", () => {
 describe("Color contrast", () => {
   it("calculates contrast ratio correctly", () => {
     const ratio = getContrastRatio("#FFFFFF", "#000000");
-    expect(Math.abs(ratio - 21)).toBeLessThan(1);
+    expect(Math.abs(ratio! - 21)).toBeLessThan(1);
 
     const sameRatio = getContrastRatio("#FF0000", "#FF0000");
-    expect(Math.abs(sameRatio - 1)).toBeLessThan(0.01);
+    expect(Math.abs(sameRatio! - 1)).toBeLessThan(0.01);
   });
 
   it("meetsContrastRatio identifies passing/failing combinations", () => {

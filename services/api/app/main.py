@@ -9,27 +9,28 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.v1.analytics_routes import router as analytics_router
+from app.api.v1.assessment_routes import router as assessment_router
 from app.api.v1.auth_routes import router as auth_router
+from app.api.v1.classroom_intelligence_routes import router as classroom_intelligence_router
+from app.api.v1.classroom_routes import router as classroom_router
+from app.api.v1.communication_routes import router as communication_router
 from app.api.v1.companion_routes import router as companion_router
 from app.api.v1.content import router as content_router
 from app.api.v1.content_validation import router as content_validation_router
-from app.api.v1.journey_routes import router as journey_router
-from app.api.v1.model_routes import router as model_routes_router
-from app.api.v1.routes import make_error_response, router
-from app.api.v1.verification_routes import router as verification_router
-from app.api.v1.groups_routes import router as groups_router
-from app.api.v1.groups_ai_routes import router as groups_ai_router
 from app.api.v1.courses_routes import router as courses_router
-from app.api.v1.assessment_routes import router as assessment_router
-from app.api.v1.analytics_routes import router as analytics_router
 from app.api.v1.exam_routes import router as exam_router
 from app.api.v1.gap_routes import router as gap_router
-from app.api.v1.lesson_routes import router as lesson_router
-from app.api.v1.classroom_routes import router as classroom_router
-from app.api.v1.classroom_intelligence_routes import router as classroom_intelligence_router
-from app.api.v1.communication_routes import router as communication_router
+from app.api.v1.groups_ai_routes import router as groups_ai_router
+from app.api.v1.groups_routes import router as groups_router
 from app.api.v1.institutions_routes import router as institutions_router
+from app.api.v1.journey_routes import router as journey_router
+from app.api.v1.lesson_routes import router as lesson_router
+from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.platform_routes import router as platform_router
+from app.api.v1.routes import make_error_response, router
+from app.api.v1.search_routes import router as search_router
+from app.api.v1.verification_routes import router as verification_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.api.v2.routes import router as v2_router
 from app.config import Settings, get_settings
@@ -164,6 +165,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(institutions_router)
     # API Platform & Third-Party Integration Ecosystem (M74)
     application.include_router(platform_router)
+    # Universal Search & Intelligent Knowledge Discovery (M78)
+    application.include_router(search_router)
     # API v2 (backward-compatible versioned router)
     application.include_router(v2_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")

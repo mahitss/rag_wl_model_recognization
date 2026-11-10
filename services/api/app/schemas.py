@@ -3993,12 +3993,6 @@ class VersionInfoResponse(ApiModel):
     documentationUrl: str
 
 
-class HealthResponse(ApiModel):
-    status: str
-    version: str
-    database: str
-
-
 # ---------------------------------------------------------------------------
 # M75: Platform Observability & SRE schemas.
 # ---------------------------------------------------------------------------
@@ -4073,4 +4067,137 @@ class IncidentRecord(ApiModel):
 
 class IncidentListResponse(ApiModel):
     incidents: list[IncidentRecord]
+
+
+# ---------------------------------------------------------------------------
+# M78: Universal Search & Intelligent Knowledge Discovery schemas.
+# ---------------------------------------------------------------------------
+
+
+class SearchIndexEntryResponse(ApiModel):
+    entryId: str
+    institutionId: str | None
+    userId: str | None
+    resourceType: str
+    resourceId: str
+    contentHash: str
+    indexedAt: str
+    updatedAt: str
+    fts5Indexed: bool
+    semanticIndexed: bool
+    indexStatus: str
+    errorMessage: str | None
+
+
+class SearchIndexJobResponse(ApiModel):
+    jobId: str
+    institutionId: str | None
+    jobType: str
+    status: str
+    totalItems: int
+    indexedItems: int
+    failedItems: int
+    createdAt: str
+    startedAt: str | None
+    completedAt: str | None
+    errorMessage: str | None
+
+
+class SearchQueryLogResponse(ApiModel):
+    logId: str
+    institutionId: str | None
+    userId: str | None
+    queryHash: str
+    queryLength: int
+    resultCount: int
+    resourceTypes: list[str]
+    mode: str
+    createdAt: str
+
+
+class SearchEvaluationCaseResponse(ApiModel):
+    caseId: str
+    institutionId: str | None
+    query: str
+    expectedResultIds: list[str]
+    expectedTopics: list[str]
+    metadata: dict[str, Any]
+    createdAt: str
+    updatedAt: str
+
+
+class SearchEvaluationResultResponse(ApiModel):
+    resultId: str
+    caseId: str
+    institutionId: str | None
+    recallAtK: float | None
+    precisionAtK: float | None
+    mrr: float | None
+    citationCorrectness: float | None
+    retrievalLatencyMs: float | None
+    totalResults: int
+    relevantResults: int
+    mode: str
+    createdAt: str
+
+
+class SearchIndexRequest(ApiModel):
+    resourceType: str = Field(min_length=1, max_length=50)
+    resourceId: str = Field(min_length=1, max_length=200)
+    contentHash: str = Field(min_length=1, max_length=128)
+    fts5Indexed: bool = False
+    semanticIndexed: bool = False
+
+class SearchQueryCreateRequest(ApiModel):
+    query: str = Field(min_length=1, max_length=2000)
+    resultCount: int = Field(default=0, ge=0)
+    resourceTypes: list[str] = Field(default_factory=list)
+    mode: str = Field(default="lexical", min_length=1, max_length=20)
+
+
+class SearchEvaluationCaseCreateRequest(ApiModel):
+    query: str = Field(min_length=1, max_length=2000)
+    expectedResultIds: list[str] = Field(min_length=1)
+    expectedTopics: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class SearchEvaluationResultCreateRequest(ApiModel):
+    caseId: str
+    recallAtK: float | None = Field(default=None, ge=0.0, le=1.0)
+    precisionAtK: float | None = Field(default=None, ge=0.0, le=1.0)
+    mrr: float | None = Field(default=None, ge=0.0, le=1.0)
+    citationCorrectness: float | None = Field(default=None, ge=0.0, le=1.0)
+    retrievalLatencyMs: float | None = Field(default=None, ge=0.0)
+    totalResults: int = Field(default=0, ge=0)
+    relevantResults: int = Field(default=0, ge=0)
+    mode: str = Field(default="lexical", min_length=1, max_length=20)
+
+
+class SearchExplainRequest(ApiModel):
+    query: str = Field(min_length=1, max_length=2000)
+    contextResults: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class SearchExplainResponse(ApiModel):
+    query: str
+    interpretedIntent: str
+    relatedTopics: list[str]
+    prerequisiteConcepts: list[str]
+    suggestedFollowUps: list[str]
+    groundedAnswer: str | None
+    confidence: float | None
+
+
+class SearchRelatedTopicsRequest(ApiModel):
+    query: str = Field(min_length=1, max_length=2000)
+    topicIds: list[str] = Field(default_factory=list)
+    maxResults: int = Field(default=10, ge=1, le=50)
+
+
+class SearchRelatedTopicsResponse(ApiModel):
+    query: str
+    relatedTopics: list[str]
+    prerequisiteConcepts: list[str]
+    suggestedFollowUps: list[str]
 

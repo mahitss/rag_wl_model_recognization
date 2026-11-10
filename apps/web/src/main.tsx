@@ -12,6 +12,7 @@ import LearnerProgressPortal from "./LearnerProgressPortal";
 import ClassroomAnnouncementFeed from "./ClassroomAnnouncementFeed";
 import { LanguageProvider } from "./LanguageProvider";
 import { SkipLink } from "./A11yComponents";
+import SearchPanel from "./SearchPanel";
 import "./style.css";
 
 type DiagramRegion = {
@@ -5318,6 +5319,15 @@ trailer<</Size 5/Root 1 0 R>>startxref 328 %%EOF`;
           </div>
         </section>
       )}
+      <section className="page">
+        <div className="page-header">
+          <h2 className="eyebrow">Search</h2>
+          <h1>Search across your learning materials</h1>
+        </div>
+        <div className="explorer-body">
+          <SearchPanel currentUserId={username} />
+        </div>
+      </section>
 
     </main>
   );

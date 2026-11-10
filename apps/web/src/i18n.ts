@@ -22,16 +22,8 @@ export const LANGUAGES: Record<LanguageCode, { name: string; nativeName: string;
 };
 
 export const DEFAULT_LANGUAGE: LanguageCode = "en";
-const LANG_STORAGE_KEY = "wl_lang";
 
-type TranslationDictionary = Record<string, string | TranslationDictionary>;
-
-type TranslationContextValue = {
-  lang: LanguageCode;
-  setLang: (lang: LanguageCode) => void;
-  t: (key: string, params?: Record<string, string | number>) => string;
-  dir: "ltr" | "rtl";
-};
+type TranslationDictionary = Record<string, string | Record<string, any> | ((params?: Record<string, string | number>) => string)>;
 
 // ---------------------------------------------------------------------------
 // Translation dictionaries.
@@ -365,5 +357,9 @@ export function getTranslation(
   const dict = translations[lang];
   const resolved = resolveKey(dict, key);
   const fallback = resolveKey(translations[DEFAULT_LANGUAGE], key);
-  return resolved ?? fallback;
+  const result = resolved ?? fallback;
+  if (typeof result === "function") {
+    return result({});
+  }
+  return result;
 }

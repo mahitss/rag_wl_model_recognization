@@ -6,11 +6,16 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
-import { LANGUAGES, DEFAULT_LANGUAGE, t, TranslationContextValue } from "./i18n";
+import { LANGUAGES, DEFAULT_LANGUAGE, t, type LanguageCode } from "./i18n";
 
 const LANG_STORAGE_KEY = "wl_lang";
 
-const TranslationContext = createContext<TranslationContextValue | undefined>(undefined);
+const TranslationContext = createContext<{
+  lang: LanguageCode;
+  setLang: (lang: LanguageCode) => void;
+  t: (key: string, params?: Record<string, string | number>) => string;
+  dir: "ltr" | "rtl";
+} | undefined>(undefined);
 
 export function useLanguage() {
   const ctx = useContext(TranslationContext);
@@ -67,7 +72,12 @@ export function LanguageProvider({
     [lang],
   );
 
-  const value: TranslationContextValue = {
+  const value: {
+    lang: LanguageCode;
+    setLang: (lang: LanguageCode) => void;
+    t: (key: string, params?: Record<string, string | number>) => string;
+    dir: "ltr" | "rtl";
+  } = {
     lang,
     setLang,
     t: tFunc,

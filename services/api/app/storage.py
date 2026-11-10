@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 34
+SCHEMA_VERSION = 35
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -4630,6 +4630,162 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_idempotency_keys_user_id "
                     "ON idempotency_keys(user_id, expires_at)"
+                )
+
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_idempotency_keys_user_id "
+                    "ON idempotency_keys(user_id, expires_at)"
+                )
+
+                # ------------------------------------------------------------------
+                # M78: Universal Search & Intelligent Knowledge Discovery.
+                # Search index tracking, evaluation datasets, query logging.
+                # ------------------------------------------------------------------
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS search_index_entries (
+                        entry_id TEXT PRIMARY KEY,
+                        institution_id TEXT REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        resource_type TEXT NOT NULL CHECK (length(resource_type) BETWEEN 1 AND 50),
+                        resource_id TEXT NOT NULL CHECK (length(resource_id) BETWEEN 1 AND 200),
+                        content_hash TEXT NOT NULL CHECK (length(content_hash) BETWEEN 1 AND 128),
+                        indexed_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        fts5_indexed INTEGER NOT NULL DEFAULT 0
+                            CHECK (fts5_indexed IN (0, 1)),
+                        semantic_indexed INTEGER NOT NULL DEFAULT 0
+                            CHECK (semantic_indexed IN (0, 1)),
+                        index_status TEXT NOT NULL CHECK (index_status IN (
+                            'pending', 'indexed', 'failed', 'stale'
+                        )) DEFAULT 'pending',
+                        error_message TEXT,
+                        UNIQUE (resource_type, resource_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_index_entries_resource "
+                    "ON search_index_entries(resource_type, resource_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_index_entries_institution "
+                    "ON search_index_entries(institution_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_index_entries_status "
+                    "ON search_index_entries(index_status)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS search_index_jobs (
+                        job_id TEXT PRIMARY KEY,
+                        institution_id TEXT REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        job_type TEXT NOT NULL CHECK (length(job_type) BETWEEN 1 AND 50),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'queued', 'running', 'completed', 'failed'
+                        )) DEFAULT 'queued',
+                        total_items INTEGER NOT NULL DEFAULT 0 CHECK (total_items >= 0),
+                        indexed_items INTEGER NOT NULL DEFAULT 0 CHECK (indexed_items >= 0),
+                        failed_items INTEGER NOT NULL DEFAULT 0 CHECK (failed_items >= 0),
+                        created_at TEXT NOT NULL,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        error_message TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_index_jobs_institution "
+                    "ON search_index_jobs(institution_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_index_jobs_status "
+                    "ON search_index_jobs(status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_index_jobs_created_at "
+                    "ON search_index_jobs(created_at)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS search_query_log (
+                        log_id TEXT PRIMARY KEY,
+                        institution_id TEXT REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        query_hash TEXT NOT NULL CHECK (length(query_hash) BETWEEN 1 AND 128),
+                        query_length INTEGER NOT NULL CHECK (query_length >= 0),
+                        result_count INTEGER NOT NULL DEFAULT 0 CHECK (result_count >= 0),
+                        resource_types_json TEXT NOT NULL DEFAULT '[]',
+                        mode TEXT NOT NULL CHECK (length(mode) BETWEEN 1 AND 20),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_query_log_institution "
+                    "ON search_query_log(institution_id, created_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_query_log_query_hash "
+                    "ON search_query_log(query_hash)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS search_evaluation_cases (
+                        case_id TEXT PRIMARY KEY,
+                        institution_id TEXT REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        query TEXT NOT NULL CHECK (length(query) BETWEEN 1 AND 2000),
+                        expected_result_ids TEXT NOT NULL CHECK (length(expected_result_ids) > 0),
+                        expected_topics_json TEXT NOT NULL DEFAULT '[]',
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_evaluation_cases_institution "
+                    "ON search_evaluation_cases(institution_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS search_evaluation_results (
+                        result_id TEXT PRIMARY KEY,
+                        case_id TEXT NOT NULL REFERENCES search_evaluation_cases(case_id)
+                            ON DELETE CASCADE,
+                        institution_id TEXT REFERENCES institutions(institution_id)
+                            ON DELETE CASCADE,
+                        recall_at_k REAL,
+                        precision_at_k REAL,
+                        mrr REAL,
+                        citation_correctness REAL,
+                        retrieval_latency_ms REAL,
+                        total_results INTEGER,
+                        relevant_results INTEGER,
+                        mode TEXT NOT NULL CHECK (length(mode) BETWEEN 1 AND 20),
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_evaluation_results_case_id "
+                    "ON search_evaluation_results(case_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_search_evaluation_results_institution "
+                    "ON search_evaluation_results(institution_id, created_at)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -20968,4 +21124,581 @@ def cleanup_expired_idempotency_keys(database_path: Path) -> int:
                 (now,),
             )
             return cursor.rowcount
+
+
+def create_search_evaluation_case(
+    database_path: Path,
+    *,
+    institution_id: str | None,
+    query: str,
+    expected_result_ids: list[str],
+    expected_topics: list[str],
+    metadata: dict[str, Any] | None,
+) -> str:
+    """Create a deterministic evaluation case for search quality measurement."""
+    case_id = f"sec_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO search_evaluation_cases(
+                    case_id, institution_id, query, expected_result_ids,
+                    expected_topics_json, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case_id,
+                    institution_id,
+                    query.strip(),
+                    json.dumps(expected_result_ids),
+                    json.dumps(expected_topics),
+                    json.dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+    return case_id
+
+
+# ---------------------------------------------------------------------------
+# M78: Universal Search & Intelligent Knowledge Discovery storage functions.
+# Search index tracking, evaluation datasets, query logging.
+# ---------------------------------------------------------------------------
+
+
+def _iso_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def record_search_index_entry(
+    database_path: Path,
+    *,
+    institution_id: str | None,
+    user_id: str | None,
+    resource_type: str,
+    resource_id: str,
+    content_hash: str,
+    fts5_indexed: bool = False,
+    semantic_indexed: bool = False,
+) -> dict[str, Any] | None:
+    """Record or update a search index entry for a resource.
+
+    Idempotent: if an entry already exists for (resource_type, resource_id),
+    it is updated in place. Returns the entry row.
+    """
+    resource_type = resource_type.strip()
+    resource_id = resource_id.strip()
+    content_hash = content_hash.strip()
+    if not resource_type or not resource_id or not content_hash:
+        return None
+    now = _iso_now()
+    entry_id = f"sidx_{secrets.token_urlsafe(12)}"
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT entry_id FROM search_index_entries "
+                "WHERE resource_type = ? AND resource_id = ?",
+                (resource_type, resource_id),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    """
+                    UPDATE search_index_entries
+                    SET content_hash = ?, indexed_at = ?, updated_at = ?,
+                        fts5_indexed = ?, semantic_indexed = ?,
+                        index_status = 'indexed', error_message = NULL
+                    WHERE entry_id = ?
+                    """,
+                    (
+                        content_hash,
+                        now,
+                        now,
+                        int(fts5_indexed),
+                        int(semantic_indexed),
+                        existing["entry_id"],
+                    ),
+                )
+                entry_id = existing["entry_id"]
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO search_index_entries(
+                        entry_id, institution_id, user_id, resource_type,
+                        resource_id, content_hash, indexed_at, updated_at,
+                        fts5_indexed, semantic_indexed, index_status
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry_id,
+                        institution_id,
+                        user_id,
+                        resource_type,
+                        resource_id,
+                        content_hash,
+                        now,
+                        now,
+                        int(fts5_indexed),
+                        int(semantic_indexed),
+                        "indexed",
+                    ),
+                )
+    return {
+        "entryId": entry_id,
+        "institutionId": institution_id,
+        "userId": user_id,
+        "resourceType": resource_type,
+        "resourceId": resource_id,
+        "contentHash": content_hash,
+        "indexedAt": now,
+        "fts5Indexed": bool(fts5_indexed),
+        "semanticIndexed": bool(semantic_indexed),
+        "indexStatus": "indexed",
+    }
+
+
+def get_indexing_status(
+    database_path: Path,
+    *,
+    resource_type: str,
+    resource_id: str,
+) -> dict[str, Any] | None:
+    """Get the indexing status for a specific resource."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT entry_id, institution_id, user_id, resource_type, resource_id,
+                   content_hash, indexed_at, updated_at, fts5_indexed,
+                   semantic_indexed, index_status, error_message
+            FROM search_index_entries
+            WHERE resource_type = ? AND resource_id = ?
+            """,
+            (resource_type, resource_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "entryId": row["entry_id"],
+        "institutionId": row["institution_id"],
+        "userId": row["user_id"],
+        "resourceType": row["resource_type"],
+        "resourceId": row["resource_id"],
+        "contentHash": row["content_hash"],
+        "indexedAt": row["indexed_at"],
+        "updatedAt": row["updated_at"],
+        "fts5Indexed": bool(row["fts5_indexed"]),
+        "semanticIndexed": bool(row["semantic_indexed"]),
+        "indexStatus": row["index_status"],
+        "errorMessage": row["error_message"],
+    }
+
+
+def mark_indexing_failed(
+    database_path: Path,
+    *,
+    resource_type: str,
+    resource_id: str,
+    error_message: str,
+) -> dict[str, Any] | None:
+    """Mark a resource's indexing as failed with an error message."""
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            UPDATE search_index_entries
+            SET index_status = 'failed', error_message = ?, updated_at = ?
+            WHERE resource_type = ? AND resource_id = ?
+            RETURNING entry_id
+            """,
+            (error_message, now, resource_type, resource_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "entryId": row["entry_id"],
+        "resourceType": resource_type,
+        "resourceId": resource_id,
+        "indexStatus": "failed",
+        "errorMessage": error_message,
+        "updatedAt": now,
+    }
+
+
+def create_search_index_job(
+    database_path: Path,
+    *,
+    institution_id: str | None,
+    job_type: str,
+) -> str:
+    """Create a new indexing job and return its job ID."""
+    job_type = job_type.strip()
+    if not job_type:
+        raise ValueError("job_type must not be empty")
+    job_id = f"sidx_job_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO search_index_jobs(
+                    job_id, institution_id, job_type, status,
+                    total_items, indexed_items, failed_items,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    institution_id,
+                    job_type,
+                    "queued",
+                    0,
+                    0,
+                    0,
+                    now,
+                ),
+            )
+    return job_id
+
+
+def update_search_index_job(
+    database_path: Path,
+    *,
+    job_id: str,
+    status: str | None = None,
+    total_items: int | None = None,
+    indexed_items: int | None = None,
+    failed_items: int | None = None,
+    error_message: str | None = None,
+) -> dict[str, Any] | None:
+    """Update a search index job's status and counters."""
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT job_id FROM search_index_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        updates = []
+        params: list[Any] = []
+        if status is not None:
+            updates.append("status = ?")
+            params.append(status)
+        if total_items is not None:
+            updates.append("total_items = ?")
+            params.append(total_items)
+        if indexed_items is not None:
+            updates.append("indexed_items = ?")
+            params.append(indexed_items)
+        if failed_items is not None:
+            updates.append("failed_items = ?")
+            params.append(failed_items)
+        if error_message is not None:
+            updates.append("error_message = ?")
+            params.append(error_message)
+        if not updates:
+            return get_search_index_job(database_path, job_id=job_id)
+        updates.append("updated_at = ?")
+        params.append(now)
+        params.append(job_id)
+        with connection:
+            connection.execute(
+                f"""
+                UPDATE search_index_jobs
+                SET {', '.join(updates)}
+                WHERE job_id = ?
+                """,
+                params,
+            )
+    return get_search_index_job(database_path, job_id=job_id)
+
+
+def get_search_index_job(
+    database_path: Path, *, job_id: str
+) -> dict[str, Any] | None:
+    """Get a search index job by ID."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT job_id, institution_id, job_type, status,
+                   total_items, indexed_items, failed_items,
+                   created_at, started_at, completed_at, error_message
+            FROM search_index_jobs WHERE job_id = ?
+            """,
+            (job_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "jobId": row["job_id"],
+        "institutionId": row["institution_id"],
+        "jobType": row["job_type"],
+        "status": row["status"],
+        "totalItems": row["total_items"],
+        "indexedItems": row["indexed_items"],
+        "failedItems": row["failed_items"],
+        "createdAt": row["created_at"],
+        "startedAt": row["started_at"],
+        "completedAt": row["completed_at"],
+        "errorMessage": row["error_message"],
+    }
+
+
+def list_search_index_jobs(
+    database_path: Path,
+    *,
+    institution_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List search index jobs, optionally filtered by institution and status."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT job_id, institution_id, job_type, status,
+                   total_items, indexed_items, failed_items,
+                   created_at, started_at, completed_at, error_message
+            FROM search_index_jobs
+        """
+        params: list[Any] = []
+        conditions = []
+        if institution_id is not None:
+            conditions.append("institution_id = ?")
+            params.append(institution_id)
+        if status is not None:
+            conditions.append("status = ?")
+            params.append(status)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "jobId": row["job_id"],
+            "institutionId": row["institution_id"],
+            "jobType": row["job_type"],
+            "status": row["status"],
+            "totalItems": row["total_items"],
+            "indexedItems": row["indexed_items"],
+            "failedItems": row["failed_items"],
+            "createdAt": row["created_at"],
+            "startedAt": row["started_at"],
+            "completedAt": row["completed_at"],
+            "errorMessage": row["error_message"],
+        }
+        for row in rows
+    ]
+
+
+def record_search_query(
+    database_path: Path,
+    *,
+    institution_id: str | None,
+    user_id: str | None,
+    query: str,
+    result_count: int,
+    resource_types: list[str],
+    mode: str,
+) -> str:
+    """Record an anonymized search query for analytics.
+
+    The query text itself is NOT stored; only a hash is kept to protect
+    learner privacy. Returns the log ID.
+    """
+    import hashlib
+
+    query_hash = hashlib.sha256(query.strip().lower().encode("utf-8")).hexdigest()
+    log_id = f"sq_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    resource_types_json = json.dumps(resource_types or [])
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO search_query_log(
+                    log_id, institution_id, user_id, query_hash,
+                    query_length, result_count, resource_types_json,
+                    mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    log_id,
+                    institution_id,
+                    user_id,
+                    query_hash,
+                    len(query),
+                    result_count,
+                    resource_types_json,
+                    mode,
+                    now,
+                ),
+            )
+    return log_id
+
+
+def record_search_evaluation_case(
+    database_path: Path,
+    *,
+    institution_id: str | None,
+    query: str,
+    expected_result_ids: list[str],
+    expected_topics: list[str],
+    metadata: dict[str, Any] | None,
+) -> str:
+    """Create a deterministic evaluation case for search quality measurement."""
+    case_id = f"sec_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO search_evaluation_cases(
+                    case_id, institution_id, query, expected_result_ids,
+                    expected_topics_json, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    case_id,
+                    institution_id,
+                    query.strip(),
+                    json.dumps(expected_result_ids),
+                    json.dumps(expected_topics),
+                    json.dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+    return case_id
+
+
+def record_search_evaluation_result(
+    database_path: Path,
+    *,
+    institution_id: str | None,
+    case_id: str,
+    recall_at_k: float | None,
+    precision_at_k: float | None,
+    mrr: float | None,
+    citation_correctness: float | None,
+    retrieval_latency_ms: float | None,
+    total_results: int,
+    relevant_results: int,
+    mode: str,
+) -> str:
+    """Record the result of evaluating a search query against a case."""
+    result_id = f"ser_{secrets.token_urlsafe(12)}"
+    now = _iso_now()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO search_evaluation_results(
+                    result_id, case_id, institution_id,
+                    recall_at_k, precision_at_k, mrr,
+                    citation_correctness, retrieval_latency_ms,
+                    total_results, relevant_results, mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result_id,
+                    case_id,
+                    institution_id,
+                    recall_at_k,
+                    precision_at_k,
+                    mrr,
+                    citation_correctness,
+                    retrieval_latency_ms,
+                    total_results,
+                    relevant_results,
+                    mode,
+                    now,
+                ),
+            )
+    return result_id
+
+
+def list_search_evaluation_cases(
+    database_path: Path,
+    *,
+    institution_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List search evaluation cases, optionally filtered by institution."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT case_id, institution_id, query, expected_result_ids,
+                   expected_topics_json, metadata_json, created_at, updated_at
+            FROM search_evaluation_cases
+        """
+        params: list[Any] = []
+        if institution_id is not None:
+            query += " WHERE institution_id = ?"
+            params.append(institution_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "caseId": row["case_id"],
+            "institutionId": row["institution_id"],
+            "query": row["query"],
+            "expectedResultIds": json.loads(row["expected_result_ids"]),
+            "expectedTopics": json.loads(row["expected_topics_json"]),
+            "metadata": json.loads(row["metadata_json"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def list_search_evaluation_results(
+    database_path: Path,
+    *,
+    institution_id: str | None = None,
+    case_id: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List search evaluation results, optionally filtered by institution/case."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT result_id, case_id, institution_id, recall_at_k,
+                   precision_at_k, mrr, citation_correctness,
+                   retrieval_latency_ms, total_results, relevant_results,
+                   mode, created_at
+            FROM search_evaluation_results
+        """
+        params: list[Any] = []
+        conditions = []
+        if institution_id is not None:
+            conditions.append("institution_id = ?")
+            params.append(institution_id)
+        if case_id is not None:
+            conditions.append("case_id = ?")
+            params.append(case_id)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "resultId": row["result_id"],
+            "caseId": row["case_id"],
+            "institutionId": row["institution_id"],
+            "recallAtK": row["recall_at_k"],
+            "precisionAtK": row["precision_at_k"],
+            "mrr": row["mrr"],
+            "citationCorrectness": row["citation_correctness"],
+            "retrievalLatencyMs": row["retrieval_latency_ms"],
+            "totalResults": row["total_results"],
+            "relevantResults": row["relevant_results"],
+            "mode": row["mode"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
 

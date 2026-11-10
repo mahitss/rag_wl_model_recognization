@@ -203,7 +203,9 @@ export function useLiveRegion() {
     ref.current.textContent = "";
     // Force a re-read by clearing and re-setting after a tick.
     setTimeout(() => {
-      ref.current.textContent = message;
+      if (ref.current) {
+        ref.current.textContent = message;
+      }
     }, 50);
   }, []);
 

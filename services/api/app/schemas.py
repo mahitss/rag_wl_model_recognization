@@ -4292,3 +4292,200 @@ class KnowledgeGraphInsightsResponse(ApiModel):
     verificationRate: float
     evidenceCoverage: float
 
+
+# ---------------------------------------------------------------------------
+# M80: Educational Standards & Learning Interoperability schemas
+# ---------------------------------------------------------------------------
+
+
+class XAPIActor(ApiModel):
+    objectType: str = "Agent"
+    name: str | None = None
+    mbox: str | None = None
+    mbox_sha1sum: str | None = None
+    openid: str | None = None
+    account: dict[str, Any] | None = None
+
+
+class XAPIVerb(ApiModel):
+    id: str
+    display: dict[str, str]
+
+
+class XAPIObject(ApiModel):
+    objectType: str = "Activity"
+    id: str
+    definition: dict[str, Any] | None = None
+
+
+class XAPIResult(ApiModel):
+    score: dict[str, Any] | None = None
+    success: bool | None = None
+    completion: bool | None = None
+    duration: str | None = None
+    response: str | None = None
+    extensions: dict[str, Any] | None = None
+
+
+class XAPIContext(ApiModel):
+    registration: str | None = None
+    instructor: XAPIActor | None = None
+    team: XAPIActor | None = None
+    contextActivities: dict[str, Any] | None = None
+    revision: str | None = None
+    platform: str | None = None
+    language: str | None = None
+    statement: dict[str, Any] | None = None
+    extensions: dict[str, Any] | None = None
+
+
+class XAPIStatementCreate(ApiModel):
+    actor: XAPIActor
+    verb: XAPIVerb
+    object: XAPIObject
+    result: XAPIResult | None = None
+    context: XAPIContext | None = None
+    timestamp: str | None = None
+    authority: XAPIActor | None = None
+    version: str = "1.0.3"
+    attachmentUrls: list[str] | None = None
+
+
+class XAPIStatementResponse(ApiModel):
+    statementId: str
+    userId: str
+    tenantId: str
+    actor: XAPIActor
+    verb: XAPIVerb
+    object: XAPIObject
+    result: XAPIResult | None = None
+    context: XAPIContext | None = None
+    timestamp: str
+    storedAt: str
+    authority: XAPIActor | None = None
+    version: str
+    attachmentUrls: list[str]
+
+
+class XAPIStatementListResponse(ApiModel):
+    statements: list[XAPIStatementResponse]
+
+
+class SCORMPackageCreate(ApiModel):
+    displayName: str
+    sourceType: str  # scorm12 | scorm2004 | imscc
+    manifestSha256: str
+    archiveSha256: str
+    manifest: dict[str, Any]
+    organizationId: str | None = None
+    courseId: str | None = None
+    status: str = "imported"
+
+
+class SCORMPackageResponse(ApiModel):
+    packageId: str
+    userId: str
+    tenantId: str
+    displayName: str
+    sourceType: str
+    manifestSha256: str
+    archiveSha256: str
+    organizationId: str | None = None
+    courseId: str | None = None
+    status: str
+    createdAt: str
+    importedAt: str
+
+
+class SCORMPackageListResponse(ApiModel):
+    packages: list[SCORMPackageResponse]
+
+
+class SCORMSessionCreate(ApiModel):
+    packageId: str
+    learnerId: str
+    lessonStatus: str | None = None
+    scoreRaw: float | None = None
+    scoreMin: float | None = None
+    scoreMax: float | None = None
+    totalTimeMs: int | None = None
+    lessonLocation: str | None = None
+    suspendData: dict[str, Any] | None = None
+
+
+class SCORMSessionResponse(ApiModel):
+    sessionId: str
+    packageId: str
+    learnerId: str
+    lessonStatus: str | None = None
+    scoreRaw: float | None = None
+    scoreMin: float | None = None
+    scoreMax: float | None = None
+    totalTimeMs: int | None = None
+    lessonLocation: str | None = None
+    suspendData: dict[str, Any] | None = None
+    startedAt: str
+    lastUpdatedAt: str
+
+
+class SCORMSessionListResponse(ApiModel):
+    sessions: list[SCORMSessionResponse]
+
+
+class LTILaunchCreate(ApiModel):
+    userId: str | None = None
+    toolConsumerInstanceGuid: str | None = None
+    toolConsumerInfoProductFamilyCode: str | None = None
+    ltiMessageType: str | None = None
+    ltiVersion: str | None = None
+    resourceLinkId: str | None = None
+    userIdLms: str | None = None
+    roles: list[str] | None = None
+    audit: dict[str, Any] | None = None
+
+
+class LTILaunchResponse(ApiModel):
+    launchId: str
+    userId: str | None = None
+    tenantId: str
+    toolConsumerInstanceGuid: str | None = None
+    toolConsumerInfoProductFamilyCode: str | None = None
+    ltiMessageType: str | None = None
+    ltiVersion: str | None = None
+    resourceLinkId: str | None = None
+    userIdLms: str | None = None
+    roles: list[str] = []
+    launchPresentedAt: str
+    audit: dict[str, Any] = {}
+
+
+class InteroperabilityAuditRecord(ApiModel):
+    auditId: str
+    userId: str | None = None
+    tenantId: str
+    operation: str
+    standard: str
+    targetId: str | None = None
+    success: bool
+    errorCode: str | None = None
+    createdAt: str
+
+
+class InteroperabilityValidationResult(ApiModel):
+    valid: bool
+    standard: str
+    version: str
+    warnings: list[str] = []
+    errors: list[str] = []
+    details: dict[str, Any] = {}
+
+
+class InteroperabilityImportResult(ApiModel):
+    importId: str
+    standard: str
+    status: str  # imported | validated | failed
+    packageId: str | None = None
+    warnings: list[str] = []
+    errors: list[str] = []
+    details: dict[str, Any] = {}
+

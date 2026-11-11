@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 35
+SCHEMA_VERSION = 36
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -4786,6 +4786,164 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_search_evaluation_results_institution "
                     "ON search_evaluation_results(institution_id, created_at)"
+                )
+
+                # M80: Educational Standards & Learning Interoperability.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS xapi_statements (
+                        statement_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        actor_json TEXT NOT NULL CHECK (length(actor_json) > 0),
+                        verb_json TEXT NOT NULL CHECK (length(verb_json) > 0),
+                        object_json TEXT NOT NULL CHECK (length(object_json) > 0),
+                        result_json TEXT,
+                        context_json TEXT,
+                        timestamp TEXT NOT NULL,
+                        stored_at TEXT NOT NULL,
+                        authority_json TEXT,
+                        version TEXT NOT NULL DEFAULT '1.0.3',
+                        attachment_urls_json TEXT NOT NULL DEFAULT '[]',
+                        tenant_id TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_xapi_statements_user_id "
+                    "ON xapi_statements(user_id, stored_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_xapi_statements_tenant_id "
+                    "ON xapi_statements(tenant_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_xapi_statements_verb "
+                    "ON xapi_statements(json_extract(verb_json, '$.id'))"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scorm_packages (
+                        package_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        display_name TEXT NOT NULL CHECK (length(display_name) > 0),
+                        source_type TEXT NOT NULL CHECK (source_type IN ('scorm12', 'scorm2004', 'imscc')),
+                        manifest_sha256 TEXT NOT NULL CHECK (length(manifest_sha256) = 64),
+                        archive_sha256 TEXT NOT NULL CHECK (length(archive_sha256) = 64),
+                        manifest_json TEXT NOT NULL CHECK (length(manifest_json) > 0),
+                        organization_id TEXT,
+                        course_id TEXT REFERENCES courses(course_id) ON DELETE SET NULL,
+                        status TEXT NOT NULL CHECK (status IN ('imported', 'validated', 'failed')) DEFAULT 'imported',
+                        created_at TEXT NOT NULL,
+                        imported_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scorm_packages_user_id "
+                    "ON scorm_packages(user_id, imported_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scorm_packages_tenant_id "
+                    "ON scorm_packages(tenant_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scorm_packages_course_id "
+                    "ON scorm_packages(course_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scorm_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        package_id TEXT NOT NULL REFERENCES scorm_packages(package_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        learner_id TEXT NOT NULL CHECK (length(learner_id) > 0),
+                        lesson_status TEXT,
+                        score_raw REAL,
+                        score_min REAL,
+                        score_max REAL,
+                        total_time_ms INTEGER CHECK (total_time_ms >= 0),
+                        lesson_location TEXT,
+                        suspend_data_json TEXT,
+                        started_at TEXT NOT NULL,
+                        last_updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scorm_sessions_package_id "
+                    "ON scorm_sessions(package_id, last_updated_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scorm_sessions_user_id "
+                    "ON scorm_sessions(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scorm_sessions_tenant_id "
+                    "ON scorm_sessions(tenant_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS lti_launches (
+                        launch_id TEXT PRIMARY KEY,
+                        user_id TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+                        tenant_id TEXT NOT NULL,
+                        tool_consumer_instance_guid TEXT,
+                        tool_consumer_info_product_family_code TEXT,
+                        lti_message_type TEXT,
+                        lti_version TEXT,
+                        resource_link_id TEXT,
+                        user_id_lms TEXT,
+                        roles_json TEXT NOT NULL DEFAULT '[]',
+                        launch_presented_at TEXT NOT NULL,
+                        audit_json TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lti_launches_tenant_id "
+                    "ON lti_launches(tenant_id, launch_presented_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_lti_launches_user_id "
+                    "ON lti_launches(user_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS interoperability_audit (
+                        audit_id TEXT PRIMARY KEY,
+                        user_id TEXT REFERENCES users(user_id) ON DELETE SET NULL,
+                        tenant_id TEXT NOT NULL,
+                        operation TEXT NOT NULL CHECK (length(operation) BETWEEN 1 AND 100),
+                        standard TEXT NOT NULL CHECK (length(standard) BETWEEN 1 AND 50),
+                        target_id TEXT,
+                        success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                        error_code TEXT,
+                        details_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_interoperability_audit_tenant_id "
+                    "ON interoperability_audit(tenant_id, created_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_interoperability_audit_user_id "
+                    "ON interoperability_audit(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_interoperability_audit_standard "
+                    "ON interoperability_audit(standard, created_at)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -22359,4 +22517,561 @@ def get_knowledge_graph_insights(
             evidence_count / concept_count if concept_count > 0 else 0.0
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# M80: Educational Standards & Learning Interoperability storage layer
+# ---------------------------------------------------------------------------
+
+def _interop_tenant_id(database_path: Path, user_id: str) -> str:
+    """Derive a stable tenant id from a user (single-tenant per user in this
+    local deployment)."""
+    import hashlib
+    return f"tenant_{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
+
+
+def store_xapi_statement(
+    database_path: Path,
+    *,
+    user_id: str,
+    actor: dict,
+    verb: dict,
+    object: dict,
+    result: dict | None = None,
+    context: dict | None = None,
+    timestamp: str | None = None,
+    authority: dict | None = None,
+    version: str = "1.0.3",
+    attachment_urls: list[str] | None = None,
+) -> dict:
+    """Store an xAPI learning statement. Returns the stored statement."""
+    from datetime import UTC, datetime
+
+    statement_id = f"xapi_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    stored_at = now
+    if timestamp is None:
+        timestamp = now
+    tenant_id = _interop_tenant_id(database_path, user_id)
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO xapi_statements(
+                    statement_id, user_id, actor_json, verb_json, object_json,
+                    result_json, context_json, timestamp, stored_at,
+                    authority_json, version, attachment_urls_json, tenant_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    statement_id,
+                    user_id,
+                    json.dumps(actor, sort_keys=True),
+                    json.dumps(verb, sort_keys=True),
+                    json.dumps(object, sort_keys=True),
+                    json.dumps(result, sort_keys=True) if result is not None else None,
+                    json.dumps(context, sort_keys=True) if context is not None else None,
+                    timestamp,
+                    stored_at,
+                    json.dumps(authority, sort_keys=True) if authority is not None else None,
+                    version,
+                    json.dumps(attachment_urls or [], sort_keys=True),
+                    tenant_id,
+                ),
+            )
+    return {
+        "statementId": statement_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "actor": actor,
+        "verb": verb,
+        "object": object,
+        "result": result,
+        "context": context,
+        "timestamp": timestamp,
+        "storedAt": stored_at,
+        "authority": authority,
+        "version": version,
+        "attachmentUrls": attachment_urls or [],
+    }
+
+
+def list_xapi_statements(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    verb_id: str | None = None,
+) -> list[dict]:
+    """List xAPI statements for a user, newest first."""
+    tenant_id = _interop_tenant_id(database_path, user_id)
+    params: list = [tenant_id, limit, offset]
+    where = "WHERE tenant_id = ?"
+    if verb_id is not None:
+        where += " AND json_extract(verb_json, '$.id') = ?"
+        params.insert(1, verb_id)
+    sql = f"""
+        SELECT statement_id, user_id, tenant_id, actor_json, verb_json,
+               object_json, result_json, context_json, timestamp, stored_at,
+               authority_json, version, attachment_urls_json
+        FROM xapi_statements
+        {where}
+        ORDER BY stored_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "statementId": row["statement_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "actor": json.loads(row["actor_json"]),
+            "verb": json.loads(row["verb_json"]),
+            "object": json.loads(row["object_json"]),
+            "result": json.loads(row["result_json"]) if row["result_json"] else None,
+            "context": json.loads(row["context_json"]) if row["context_json"] else None,
+            "timestamp": row["timestamp"],
+            "storedAt": row["stored_at"],
+            "authority": json.loads(row["authority_json"]) if row["authority_json"] else None,
+            "version": row["version"],
+            "attachmentUrls": json.loads(row["attachment_urls_json"] or "[]"),
+        }
+        for row in rows
+    ]
+
+
+def store_scorm_package(
+    database_path: Path,
+    *,
+    user_id: str,
+    display_name: str,
+    source_type: str,
+    manifest_sha256: str,
+    archive_sha256: str,
+    manifest: dict,
+    organization_id: str | None = None,
+    course_id: str | None = None,
+    status: str = "imported",
+) -> dict:
+    """Store an imported SCORM package record. Returns the stored record."""
+    from datetime import UTC, datetime
+
+    package_id = f"scorm_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _interop_tenant_id(database_path, user_id)
+
+    if source_type not in {"scorm12", "scorm2004", "imscc"}:
+        raise ValueError("source_type must be scorm12, scorm2004, or imscc")
+    if status not in {"imported", "validated", "failed"}:
+        raise ValueError("status must be imported, validated, or failed")
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO scorm_packages(
+                    package_id, user_id, tenant_id, display_name, source_type,
+                    manifest_sha256, archive_sha256, manifest_json,
+                    organization_id, course_id, status, created_at, imported_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    package_id,
+                    user_id,
+                    tenant_id,
+                    display_name,
+                    source_type,
+                    manifest_sha256,
+                    archive_sha256,
+                    json.dumps(manifest, sort_keys=True),
+                    organization_id,
+                    course_id,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "packageId": package_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "displayName": display_name,
+        "sourceType": source_type,
+        "manifestSha256": manifest_sha256,
+        "archiveSha256": archive_sha256,
+        "organizationId": organization_id,
+        "courseId": course_id,
+        "status": status,
+        "createdAt": now,
+        "importedAt": now,
+    }
+
+
+def list_scorm_packages(
+    database_path: Path,
+    *,
+    user_id: str,
+) -> list[dict]:
+    """List SCORM packages for a user."""
+    tenant_id = _interop_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT package_id, display_name, source_type, manifest_sha256,
+                   archive_sha256, organization_id, course_id, status,
+                   created_at, imported_at
+            FROM scorm_packages
+            WHERE tenant_id = ?
+            ORDER BY imported_at DESC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [
+        {
+            "packageId": row["package_id"],
+            "displayName": row["display_name"],
+            "sourceType": row["source_type"],
+            "manifestSha256": row["manifest_sha256"],
+            "archiveSha256": row["archive_sha256"],
+            "organizationId": row["organization_id"],
+            "courseId": row["course_id"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "importedAt": row["imported_at"],
+        }
+        for row in rows
+    ]
+
+
+def store_scorm_session(
+    database_path: Path,
+    *,
+    package_id: str,
+    user_id: str,
+    learner_id: str,
+    lesson_status: str | None = None,
+    score_raw: float | None = None,
+    score_min: float | None = None,
+    score_max: float | None = None,
+    total_time_ms: int | None = None,
+    lesson_location: str | None = None,
+    suspend_data: dict | None = None,
+) -> dict:
+    """Upsert a SCORM learner session runtime record."""
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _interop_tenant_id(database_path, user_id)
+    session_id = f"scormsess_{secrets.token_urlsafe(12)}"
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT session_id FROM scorm_sessions "
+                "WHERE package_id=? AND user_id=? AND learner_id=? "
+                "ORDER BY last_updated_at DESC LIMIT 1",
+                (package_id, user_id, learner_id),
+            ).fetchone()
+            if existing is not None:
+                session_id = existing["session_id"]
+                connection.execute(
+                    """
+                    UPDATE scorm_sessions
+                    SET lesson_status=COALESCE(?, lesson_status),
+                        score_raw=COALESCE(?, score_raw),
+                        score_min=COALESCE(?, score_min),
+                        score_max=COALESCE(?, score_max),
+                        total_time_ms=COALESCE(?, total_time_ms),
+                        lesson_location=COALESCE(?, lesson_location),
+                        suspend_data_json=COALESCE(?, suspend_data_json),
+                        last_updated_at=?
+                    WHERE session_id=?
+                    """,
+                    (
+                        lesson_status,
+                        score_raw,
+                        score_min,
+                        score_max,
+                        total_time_ms,
+                        lesson_location,
+                        json.dumps(suspend_data, sort_keys=True)
+                        if suspend_data is not None
+                        else None,
+                        now,
+                        session_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO scorm_sessions(
+                        session_id, package_id, user_id, tenant_id, learner_id,
+                        lesson_status, score_raw, score_min, score_max,
+                        total_time_ms, lesson_location, suspend_data_json,
+                        started_at, last_updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        session_id,
+                        package_id,
+                        user_id,
+                        tenant_id,
+                        learner_id,
+                        lesson_status,
+                        score_raw,
+                        score_min,
+                        score_max,
+                        total_time_ms,
+                        lesson_location,
+                        json.dumps(suspend_data, sort_keys=True)
+                        if suspend_data is not None
+                        else None,
+                        now,
+                        now,
+                    ),
+                )
+    return {
+        "sessionId": session_id,
+        "packageId": package_id,
+        "learnerId": learner_id,
+        "lessonStatus": lesson_status,
+        "scoreRaw": score_raw,
+        "totalTimeMs": total_time_ms,
+        "lastUpdatedAt": now,
+    }
+
+
+def list_scorm_sessions(
+    database_path: Path,
+    *,
+    user_id: str,
+    package_id: str | None = None,
+) -> list[dict]:
+    """List SCORM sessions for a user."""
+    tenant_id = _interop_tenant_id(database_path, user_id)
+    params: list = [tenant_id]
+    where = "WHERE tenant_id = ?"
+    if package_id is not None:
+        where += " AND package_id = ?"
+        params.append(package_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT session_id, package_id, learner_id, lesson_status, score_raw,
+                   score_min, score_max, total_time_ms, lesson_location,
+                   suspend_data_json, started_at, last_updated_at
+            FROM scorm_sessions
+            {where}
+            ORDER BY last_updated_at DESC
+            """,
+            params,
+        ).fetchall()
+    return [
+        {
+            "sessionId": row["session_id"],
+            "packageId": row["package_id"],
+            "learnerId": row["learner_id"],
+            "lessonStatus": row["lesson_status"],
+            "scoreRaw": row["score_raw"],
+            "scoreMin": row["score_min"],
+            "scoreMax": row["score_max"],
+            "totalTimeMs": row["total_time_ms"],
+            "lessonLocation": row["lesson_location"],
+            "suspendData": json.loads(row["suspend_data_json"]) if row["suspend_data_json"] else None,
+            "startedAt": row["started_at"],
+            "lastUpdatedAt": row["last_updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def store_lti_launch(
+    database_path: Path,
+    *,
+    user_id: str | None,
+    tenant_id: str,
+    tool_consumer_instance_guid: str | None = None,
+    tool_consumer_info_product_family_code: str | None = None,
+    lti_message_type: str | None = None,
+    lti_version: str | None = None,
+    resource_link_id: str | None = None,
+    user_id_lms: str | None = None,
+    roles: list[str] | None = None,
+    audit: dict | None = None,
+) -> dict:
+    """Record an LTI launch audit entry (no secrets stored)."""
+    from datetime import UTC, datetime
+
+    launch_id = f"lti_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO lti_launches(
+                    launch_id, user_id, tenant_id,
+                    tool_consumer_instance_guid, tool_consumer_info_product_family_code,
+                    lti_message_type, lti_version, resource_link_id, user_id_lms,
+                    roles_json, launch_presented_at, audit_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    launch_id,
+                    user_id,
+                    tenant_id,
+                    tool_consumer_instance_guid,
+                    tool_consumer_info_product_family_code,
+                    lti_message_type,
+                    lti_version,
+                    resource_link_id,
+                    user_id_lms,
+                    json.dumps(roles or [], sort_keys=True),
+                    now,
+                    json.dumps(audit or {}, sort_keys=True),
+                ),
+            )
+    return {
+        "launchId": launch_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "launchPresentedAt": now,
+    }
+
+
+def store_interoperability_audit(
+    database_path: Path,
+    *,
+    user_id: str | None,
+    tenant_id: str,
+    operation: str,
+    standard: str,
+    target_id: str | None = None,
+    success: bool = False,
+    error_code: str | None = None,
+    details: dict | None = None,
+) -> dict:
+    """Append an auditable record of an interoperability operation."""
+    from datetime import UTC, datetime
+
+    audit_id = f"interop_audit_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO interoperability_audit(
+                    audit_id, user_id, tenant_id, operation, standard,
+                    target_id, success, error_code, details_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit_id,
+                    user_id,
+                    tenant_id,
+                    operation,
+                    standard,
+                    target_id,
+                    1 if success else 0,
+                    error_code,
+                    json.dumps(details or {}, sort_keys=True),
+                    now,
+                ),
+            )
+    return {
+        "auditId": audit_id,
+        "operation": operation,
+        "standard": standard,
+        "success": success,
+        "createdAt": now,
+    }
+
+
+def list_interoperability_audit(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    standard: str | None = None,
+) -> list[dict]:
+    """List interoperability audit records for a user."""
+    tenant_id = _interop_tenant_id(database_path, user_id)
+    params: list = [tenant_id, limit, offset]
+    where = "WHERE tenant_id = ?"
+    if standard is not None:
+        where += " AND standard = ?"
+        params.insert(1, standard)
+    sql = f"""
+        SELECT audit_id, user_id, tenant_id, operation, standard, target_id,
+               success, error_code, details_json, created_at
+        FROM interoperability_audit
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "auditId": row["audit_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "operation": row["operation"],
+            "standard": row["standard"],
+            "targetId": row["target_id"],
+            "success": bool(row["success"]),
+            "errorCode": row["error_code"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def list_lti_launches(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """List LTI launch audit entries for a user."""
+    tenant_id = _interop_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT launch_id, user_id, tenant_id, tool_consumer_instance_guid,
+                   tool_consumer_info_product_family_code, lti_message_type,
+                   lti_version, resource_link_id, user_id_lms, roles_json,
+                   launch_presented_at, audit_json
+            FROM lti_launches
+            WHERE tenant_id = ?
+            ORDER BY launch_presented_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (tenant_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "launchId": row["launch_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "toolConsumerInstanceGuid": row["tool_consumer_instance_guid"],
+            "toolConsumerInfoProductFamilyCode": row[
+                "tool_consumer_info_product_family_code"
+            ],
+            "ltiMessageType": row["lti_message_type"],
+            "ltiVersion": row["lti_version"],
+            "resourceLinkId": row["resource_link_id"],
+            "userIdLms": row["user_id_lms"],
+            "roles": json.loads(row["roles_json"] or "[]"),
+            "launchPresentedAt": row["launch_presented_at"],
+            "audit": json.loads(row["audit_json"] or "{}"),
+        }
+        for row in rows
+    ]
 

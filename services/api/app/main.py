@@ -24,6 +24,7 @@ from app.api.v1.gap_routes import router as gap_router
 from app.api.v1.groups_ai_routes import router as groups_ai_router
 from app.api.v1.groups_routes import router as groups_router
 from app.api.v1.institutions_routes import router as institutions_router
+from app.api.v1.interoperability_routes import router as interoperability_router
 from app.api.v1.journey_routes import router as journey_router
 from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.model_routes import router as model_routes_router
@@ -167,6 +168,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(platform_router)
     # Universal Search & Intelligent Knowledge Discovery (M78)
     application.include_router(search_router)
+    # Educational Standards & Learning Interoperability (M80)
+    application.include_router(interoperability_router)
     # API v2 (backward-compatible versioned router)
     application.include_router(v2_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")

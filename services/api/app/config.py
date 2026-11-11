@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     tutor_timeout_seconds: float = 90.0
     tutor_max_tokens: int = 700
 
+    # Interoperability settings (M80)
+    max_interop_upload_bytes: int = 50 * 1024 * 1024
+    max_interop_manifest_entries: int = 500
+    max_interop_xml_depth: int = 12
+    max_interop_xml_entity_expansion: int = 1000
+    interop_allowed_archive_extensions: str = ".zip,.imscc"
+    interop_xapi_statement_retention_days: int = 90
+
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     admin_usernames: str = ""
@@ -231,6 +239,52 @@ class Settings(BaseSettings):
         if not value.strip():
             raise ValueError("WL_TUTOR_MODEL_ID cannot be empty")
         return value.strip()
+
+    @field_validator("max_interop_upload_bytes")
+    @classmethod
+    def interop_upload_limit_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_INTEROP_UPLOAD_BYTES must be positive")
+        return value
+
+    @field_validator("max_interop_manifest_entries")
+    @classmethod
+    def interop_manifest_entries_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_INTEROP_MANIFEST_ENTRIES must be positive")
+        return value
+
+    @field_validator("max_interop_xml_depth")
+    @classmethod
+    def interop_xml_depth_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_INTEROP_XML_DEPTH must be positive")
+        return value
+
+    @field_validator("max_interop_xml_entity_expansion")
+    @classmethod
+    def interop_xml_entity_expansion_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_INTEROP_XML_ENTITY_EXPANSION must be positive")
+        return value
+
+    @field_validator("interop_allowed_archive_extensions")
+    @classmethod
+    def interop_archive_extensions_valid(cls, value: str) -> str:
+        exts = [e.strip().lower() for e in value.split(",") if e.strip()]
+        if not exts:
+            raise ValueError("WL_INTEROP_ALLOWED_ARCHIVE_EXTENSIONS must not be empty")
+        for ext in exts:
+            if not ext.startswith("."):
+                raise ValueError("Archive extensions must start with '.'")
+        return ",".join(exts)
+
+    @field_validator("interop_xapi_statement_retention_days")
+    @classmethod
+    def interop_xapi_retention_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_INTEROP_XAPI_STATEMENT_RETENTION_DAYS must be positive")
+        return value
 
     @field_validator("chunk_overlap_chars")
     @classmethod

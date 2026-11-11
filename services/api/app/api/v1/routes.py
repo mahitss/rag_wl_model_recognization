@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Body, Depends, File, Request, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from app.auth import AuthUser, get_current_user, require_admin, require_auth
@@ -35,7 +35,13 @@ from app.schemas import (
     AdaptiveRecommendationsResponse,
     AnswerRequest,
     AnswerResponse,
+    CircuitBreakerListResponse,
+    CircuitBreakerStateResponse,
+    CrossSubjectConnection,
+    CrossSubjectDiscoveryResponse,
     DeleteDocumentResponse,
+    DependencyHealthListResponse,
+    DependencyHealthResponse,
     DiagramConceptResponse,
     DiagramEvidenceRequest,
     DiagramEvidenceResponse,
@@ -45,6 +51,8 @@ from app.schemas import (
     DiagramsResponse,
     DocumentResponse,
     DocumentsResponse,
+    DuplicateConceptGroup,
+    DuplicateDetectionResponse,
     EmbeddingStatusResponse,
     FeedbackAdminStatusRequest,
     FeedbackAdminUpdateRequest,
@@ -61,10 +69,16 @@ from app.schemas import (
     ImprovementTaskListResponse,
     ImprovementTaskResponse,
     ImprovementTaskUpdateRequest,
+    IncidentListResponse,
+    IncidentRecord,
     KnowledgeGraphConceptDetail,
     KnowledgeGraphConceptList,
     KnowledgeGraphExtractRequest,
     KnowledgeGraphExtractResponse,
+    KnowledgeGraphInsightsResponse,
+    LearnerCompetencyData,
+    LearnerProgressData,
+    LearnerRevisionData,
     LearningAnalyticsResponse,
     LearningImageDetailResponse,
     LearningImageListResponse,
@@ -79,6 +93,10 @@ from app.schemas import (
     LearningProgressResponse,
     LinkObjectiveActivityRequest,
     LinkObjectiveEvidenceRequest,
+    MergeConceptsRequest,
+    MergeConceptsResponse,
+    ObservabilityDashboardResponse,
+    PersonalizedKnowledgeGraphResponse,
     PrioritizationExplanation,
     ProductAnalyticsEventRequest,
     ProductAnalyticsSummary,
@@ -100,18 +118,12 @@ from app.schemas import (
     StudyCoachRecommendation,
     StudySessionRequest,
     StudySessionResponse,
+    TraversePrerequisitesResponse,
     TutorAnswerRequest,
     TutorAnswerResponse,
     TutorStatusResponse,
     UnifiedSearchRequest,
     UnifiedSearchResponse,
-    DependencyHealthResponse,
-    CircuitBreakerStateResponse,
-    DependencyHealthListResponse,
-    CircuitBreakerListResponse,
-    ObservabilityDashboardResponse,
-    IncidentRecord,
-    IncidentListResponse,
 )
 from app.storage import (
     complete_study_session,
@@ -126,8 +138,11 @@ from app.storage import (
     delete_learning_image,
     delete_learning_objective,
     delete_learning_path,
+    discover_cross_subject_connections,
+    find_duplicate_concepts,
     get_document,
     get_knowledge_concept,
+    get_knowledge_graph_insights,
     get_learning_analytics_data,
     get_learning_image,
     get_learning_image_detail,
@@ -137,6 +152,7 @@ from app.storage import (
     get_learning_progress,
     get_or_create_study_coach_plan,
     get_overdue_topics,
+    get_personalized_knowledge_graph,
     get_product_analytics_snapshot,
     get_quiz_question,
     get_quiz_set,
@@ -158,6 +174,7 @@ from app.storage import (
     list_learning_images,
     list_learning_objectives,
     list_learning_paths,
+    merge_knowledge_concepts,
     prune_product_events,
     record_flashcard_review,
     record_product_event,
@@ -172,6 +189,7 @@ from app.storage import (
     start_study_session,
     store_knowledge_extraction,
     store_learning_image,
+    traverse_classroom_concepts,
     unlink_feedback_from_task,
     update_feedback_item,
     update_feedback_item_admin,
@@ -1927,7 +1945,167 @@ def verify_knowledge_graph_relationship(
     return {"relationshipId": relationship_id, "status": "human_verified"}
 
 
-@router.post("/quizzes", response_model=QuizSetResponse, tags=["learning"])
+# ---------------------------------------------------------------------------
+# M79: Personal Knowledge Graph & Cross-Subject Intelligence routes.
+# ---------------------------------------------------------------------------
+
+
+@router.post(
+    "/knowledge-graph/duplicates",
+    response_model=DuplicateDetectionResponse,
+    tags=["knowledge graph"],
+)
+def find_duplicate_classroom_concepts(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+    similarity_threshold: float = Body(default=0.85, ge=0.0, le=1.0, embed=True),
+) -> dict[str, Any]:
+    """Find potential duplicate classroom concepts based on similar names
+    or shared aliases. Returns groups of concepts that may be duplicates.
+    """
+    database_path = _database_path(request)
+    result = find_duplicate_concepts(
+        database_path,
+        user_id=current_user.user_id,
+        similarity_threshold=similarity_threshold,
+    )
+    return {"duplicateGroups": result}
+
+
+@router.post(
+    "/knowledge-graph/merge",
+    response_model=MergeConceptsResponse,
+    tags=["knowledge graph"],
+)
+def merge_knowledge_concepts_route(
+    request: Request,
+    payload: MergeConceptsRequest,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Merge duplicate classroom concepts into a primary concept.
+
+    Merges aliases, evidence, and relationships from duplicate concepts into
+    the primary concept. Dependent relationships are re-pointed to the
+    primary concept.
+    """
+    database_path = _database_path(request)
+    result = merge_knowledge_concepts(
+        database_path,
+        primary_concept_id=payload.primaryConceptId,
+        duplicate_concept_ids=payload.duplicateConceptIds,
+        user_id=current_user.user_id,
+    )
+    if result is None:
+        raise ApiError(404, "CONCEPT_NOT_FOUND", "Primary concept not found.")
+    return result
+
+
+@router.get(
+    "/knowledge-graph/traverse/{concept_id}",
+    response_model=TraversePrerequisitesResponse,
+    tags=["knowledge graph"],
+)
+def traverse_classroom_concepts_route(
+    request: Request,
+    concept_id: str,
+    current_user: AuthUser = Depends(require_auth),
+    topic_id: str | None = Query(default=None),
+    max_depth: int = Query(default=5, ge=1, le=10),
+) -> dict[str, Any]:
+    """Traverse the classroom concept graph starting from a given concept."""
+    database_path = _database_path(request)
+    result = traverse_classroom_concepts(
+        database_path,
+        user_id=current_user.user_id,
+        topic_id=topic_id,
+        max_depth=max_depth,
+    )
+    return result
+
+
+@router.get(
+    "/knowledge-graph/cross-subject",
+    response_model=CrossSubjectDiscoveryResponse,
+    tags=["knowledge graph"],
+)
+def discover_cross_subject_connections_route(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+    topic_id: str | None = Query(default=None),
+    max_depth: int = Query(default=3, ge=1, le=5),
+) -> dict[str, Any]:
+    """Discover cross-subject connections between concepts.
+
+    Finds concepts that bridge different subject areas, indicating
+    interdisciplinary connections. Each connection includes evidence
+    (source citations) and is labeled as evidence-based or AI-suggested.
+    """
+    database_path = _database_path(request)
+    result = discover_cross_subject_connections(
+        database_path,
+        user_id=current_user.user_id,
+        topic_id=topic_id,
+        max_depth=max_depth,
+    )
+    return result
+
+
+@router.get(
+    "/knowledge-graph/personalized/{user_id}",
+    response_model=PersonalizedKnowledgeGraphResponse,
+    tags=["knowledge graph"],
+)
+def get_personalized_knowledge_graph_route(
+    request: Request,
+    user_id: str,
+    current_user: AuthUser = Depends(require_auth),
+    topic_id: str | None = Query(default=None),
+    include_weak_areas: bool = Query(default=True),
+    max_depth: int = Query(default=3, ge=1, le=5),
+) -> dict[str, Any]:
+    """Get a personalized knowledge graph view for a learner.
+
+    Combines the classroom knowledge graph with learner-specific evidence:
+    competency performance from quiz attempts, revision activity from topic
+    reviews, and identified learning gaps. Distinguishes observed
+    performance from estimates.
+    """
+    database_path = _database_path(request)
+    result = get_personalized_knowledge_graph(
+        database_path,
+        user_id=user_id,
+        topic_id=topic_id,
+        include_weak_areas=include_weak_areas,
+        max_depth=max_depth,
+    )
+    return result
+
+
+@router.get(
+    "/knowledge-graph/insights",
+    response_model=KnowledgeGraphInsightsResponse,
+    tags=["knowledge graph"],
+)
+def get_knowledge_graph_insights_route(
+    request: Request,
+    current_user: AuthUser = Depends(require_auth),
+) -> dict[str, Any]:
+    """Get overall knowledge graph analytics for the current user.
+
+    Provides aggregate metrics: total concepts, relationships, evidence
+    count, verification rate, and evidence coverage.
+    """
+    database_path = _database_path(request)
+    result = get_knowledge_graph_insights(
+        database_path,
+        user_id=current_user.user_id,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Quiz routes
+# ---------------------------------------------------------------------------
 async def create_quiz(
     request: Request, payload: QuizGenerateRequest, current_user: AuthUser = Depends(require_auth)
 ) -> dict[str, Any]:

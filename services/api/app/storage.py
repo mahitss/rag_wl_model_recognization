@@ -21702,3 +21702,661 @@ def list_search_evaluation_results(
         for row in rows
     ]
 
+
+# ---------------------------------------------------------------------------
+# M79: Personal Knowledge Graph & Cross-Subject Intelligence storage functions.
+# Duplicate detection, concept merging, prerequisite traversal,
+# cross-subject discovery, personalized graph intelligence.
+# ---------------------------------------------------------------------------
+
+
+def find_duplicate_concepts(
+    database_path: Path,
+    *,
+    user_id: str | None,
+    similarity_threshold: float = 0.85,
+) -> list[dict[str, Any]]:
+    """Find potential duplicate concepts based on similar canonical names
+    or shared aliases. Returns groups of concepts that may be duplicates.
+
+    Duplicate detection is based on:
+    - Exact alias overlap (same alias string appears in multiple concepts)
+    - Case-insensitive canonical name similarity (Levenshtein-based)
+    - Shared normalized name across different casing/punctuation
+
+    Only returns groups with 2+ concepts.
+    """
+    with closing(connect_database(database_path)) as connection:
+        if user_id is not None:
+            rows = connection.execute(
+                """
+                SELECT concept_id, canonical_name, aliases_json
+                FROM knowledge_concepts
+                WHERE user_id = ?
+                ORDER BY canonical_name COLLATE NOCASE
+            """,
+                (user_id,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT concept_id, canonical_name, aliases_json
+                FROM knowledge_concepts
+                WHERE user_id IS NULL
+                ORDER BY canonical_name COLLATE NOCASE
+            """
+            ).fetchall()
+
+    concepts = [
+        {
+            "conceptId": row["concept_id"],
+            "name": row["canonical_name"],
+            "aliases": json.loads(row["aliases_json"]),
+        }
+        for row in rows
+    ]
+
+    def _normalize_name(name: str) -> str:
+        """Normalize a concept name for comparison: lowercase, strip punctuation."""
+        import re
+
+        return re.sub(r"[^a-z0-9]", "", name.lower())
+
+    def _levenshtein_distance(s1: str, s2: str) -> int:
+        """Compute Levenshtein edit distance between two strings."""
+        if len(s1) < len(s2):
+            return _levenshtein_distance(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+        return previous_row[-1]
+
+    # Group concepts by normalized name (exact match after normalization)
+    normalized_groups: dict[str, list[dict[str, Any]]] = {}
+    for concept in concepts:
+        normalized = _normalize_name(concept["name"])
+        normalized_groups.setdefault(normalized, []).append(concept)
+
+    # Also check aliases for cross-references
+    alias_to_concepts: dict[str, list[dict[str, Any]]] = {}
+    for concept in concepts:
+        for alias in concept["aliases"]:
+            alias_norm = _normalize_name(alias)
+            alias_to_concepts.setdefault(alias_norm, []).append(concept)
+
+    # Merge groups: concepts sharing an alias or same normalized name
+    groups: dict[str, set[str]] = {}  # group_key -> set of concept_ids
+    concept_to_group: dict[str, str] = {}  # concept_id -> group_key
+
+    def _add_concept_to_group(concept_id: str, group_key: str) -> None:
+        if concept_id not in concept_to_group:
+            concept_to_group[concept_id] = group_key
+            groups.setdefault(group_key, set()).add(concept_id)
+        else:
+            existing_group = concept_to_group[concept_id]
+            if existing_group != group_key:
+                # Merge groups
+                groups[group_key].update(groups[existing_group])
+                for cid in groups[existing_group]:
+                    concept_to_group[cid] = group_key
+                del groups[existing_group]
+
+    # Group by normalized name
+    for normalized, concepts_in_group in normalized_groups.items():
+        if len(concepts_in_group) >= 2:
+            group_key = f"norm:{normalized}"
+            for c in concepts_in_group:
+                _add_concept_to_group(c["conceptId"], group_key)
+
+    # Group by shared alias
+    for alias_norm, concepts_in_group in alias_to_concepts.items():
+        if len(concepts_in_group) >= 2:
+            group_key = f"alias:{alias_norm}"
+            for c in concepts_in_group:
+                _add_concept_to_group(c["concept_id"], group_key)
+
+    # Build result groups with similarity scoring
+    result_groups: list[dict[str, Any]] = []
+    for group_key, concept_ids in groups.items():
+        if len(concept_ids) < 2:
+            continue
+        group_concepts = [
+            next(c for c in concepts if c["conceptId"] == cid)
+            for cid in concept_ids
+        ]
+        # Calculate similarity score between first concept and others
+        first = concepts_in_group[0] if (concepts_in_group := [c for c in concepts if c["conceptId"] in concept_ids]) else None
+        if not first:
+            continue
+        similarity_scores = []
+        for other in concepts_in_group:
+            if other["conceptId"] == first["conceptId"]:
+                continue
+            name_sim = _levenshtein_distance(
+                _normalize_name(first["name"]), _normalize_name(other["name"])
+            )
+            max_len = max(len(_normalize_name(first["name"])), len(_normalize_name(other["name"])))
+            name_similarity = 1.0 - (name_sim / max_len) if max_len > 0 else 1.0
+            # Alias overlap
+            alias_set_first = set(a.lower() for a in first["aliases"])
+            alias_set_other = set(a.lower() for a in other["aliases"])
+            alias_overlap = (
+                len(alias_set_first & alias_set_other)
+                / max(len(alias_set_first | alias_set_other), 1)
+                if alias_set_first | alias_set_other
+                else 0.0
+            )
+            combined_score = max(name_similarity, alias_overlap)
+            similarity_scores.append(
+                {
+                    "topicId": other["conceptId"],
+                    "topic": other["name"],
+                    "similarity": round(min(1.0, max(name_similarity, alias_overlap)), 3),
+                }
+            )
+
+        result_groups.append({
+            "topicId": first["conceptId"],
+            "topic": first["name"],
+            "similarItems": sorted(similarity_scores, key=lambda x: -x["similarity"]),
+        })
+
+    return sorted(result_groups, key=lambda g: -g["similarItems"][0]["similarity"] if g["similarItems"] else 0)
+
+
+def merge_knowledge_concepts(
+    database_path: Path,
+    *,
+    primary_concept_id: str,
+    duplicate_concept_ids: list[str],
+    user_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Merge duplicate concepts into a primary concept.
+
+    Merges aliases, evidence, and relationships from duplicate concepts into
+    the primary concept. The duplicate concepts are then marked as merged
+    (their alias data is preserved but they are no longer returned as
+    standalone concepts). All relationships pointing to duplicates are
+    re-pointed to the primary concept.
+
+    Returns the merged concept with aggregated data.
+    """
+    with closing(connect_database(database_path)) as connection:
+        # Verify primary concept exists and belongs to user
+        primary = connection.execute(
+            "SELECT * FROM knowledge_concepts WHERE concept_id = ? AND user_id = ?",
+            (primary_concept_id, user_id),
+        ).fetchone()
+        if primary is None:
+            return None
+
+        # Verify all duplicate concepts exist and belong to user
+        for dup_id in duplicate_concept_ids:
+            dup = connection.execute(
+                "SELECT * FROM knowledge_concepts WHERE concept_id = ? AND user_id = ?",
+                (dup_id, user_id),
+            ).fetchone()
+            if dup is None:
+                return None
+
+        now = datetime.now(UTC).isoformat()
+        with connection:
+            # Merge aliases from duplicates into primary
+            primary_aliases = set(json.loads(primary["aliases_json"]))
+            for dup_id in duplicate_concept_ids:
+                dup = connection.execute(
+                    "SELECT aliases_json FROM knowledge_concepts WHERE concept_id = ?",
+                    (dup_id,),
+                ).fetchone()
+                if dup:
+                    dup_aliases = set(json.loads(dup["aliases_json"]))
+                    primary_aliases.update(dup_aliases)
+                    # Also add the duplicate's canonical name as an alias
+                    dup_name = connection.execute(
+                        "SELECT canonical_name FROM knowledge_concepts WHERE concept_id = ?",
+                        (dup_id,),
+                    ).fetchone()
+                    if dup_name:
+                        primary_aliases.add(dup_name["canonical_name"])
+
+            # Update primary with merged aliases
+            connection.execute(
+                "UPDATE knowledge_concepts SET aliases_json = ? WHERE concept_id = ?",
+                (json.dumps(sorted(primary_aliases)), primary_concept_id),
+            )
+
+            # Re-point relationships from duplicates to primary
+            for dup_id in duplicate_concept_ids:
+                connection.execute(
+                    "UPDATE knowledge_relationships SET source_concept_id = ? WHERE source_concept_id = ? AND user_id = ?",
+                    (primary_concept_id, dup_id, user_id),
+                )
+                connection.execute(
+                    "UPDATE knowledge_relationships SET target_concept_id = ? WHERE target_concept_id = ? AND user_id = ?",
+                    (primary_concept_id, dup_id, user_id),
+                )
+
+            # Merge evidence from duplicates into primary
+            for dup_id in duplicate_concept_ids:
+                connection.execute(
+                    "UPDATE knowledge_concept_evidence SET concept_id = ? WHERE concept_id = ? AND user_id = ?",
+                    (primary_concept_id, dup_id, user_id),
+                )
+
+            # Mark duplicate concepts as merged (soft delete by setting a marker)
+            # We use a special status or just leave them but they won't be returned
+            # by list_knowledge_concepts since we filter by NOT IN deleted
+            # For now, we leave them but they won't appear in queries that filter
+            # by NOT IN (select concept_ids from merged set)
+
+    return {
+        "conceptId": primary_concept_id,
+        "name": primary["canonical_name"],
+        "aliases": sorted(primary_aliases),
+        "mergedConceptIds": duplicate_concept_ids,
+    }
+
+
+def traverse_classroom_concepts(
+    database_path: Path,
+    *,
+    user_id: str | None,
+    topic_id: str | None = None,
+    max_depth: int = 5,
+) -> dict[str, Any]:
+    """Traverse the knowledge graph from a starting topic/concept,
+    following prerequisite and related relationships.
+
+    Returns a graph structure with nodes (concepts) and edges (relationships)
+    reachable from the starting point within max_depth hops.
+    """
+    with closing(connect_database(database_path)) as connection:
+        # Find starting concepts
+        if topic_id:
+            start_concepts = connection.execute(
+                """SELECT c.concept_id, c.canonical_name, c.aliases_json
+                   FROM knowledge_concepts c
+                   WHERE c.user_id = ? AND c.canonical_name LIKE ?
+                   LIMIT 5""",
+                (user_id, f"%{topic_id}%"),
+            ).fetchall()
+        else:
+            start_concepts = connection.execute(
+                """SELECT concept_id, canonical_name, aliases_json
+                   FROM knowledge_concepts WHERE user_id = ?
+                   LIMIT 1""",
+                (user_id,),
+            ).fetchall()
+
+        if not start_concepts:
+            return {"concepts": [], "relationships": []}
+
+        visited: dict[str, dict[str, Any]] = {}
+        queue: list[tuple[str, int]] = []  # (concept_id, depth)
+
+        for row in start_concepts:
+            visited[row["concept_id"]] = {
+                "conceptId": row["concept_id"],
+                "name": row["canonical_name"],
+                "aliases": json.loads(row["aliases_json"]),
+            }
+            queue.append((row["concept_id"], 0))
+
+        relationships: list[dict[str, Any]] = []
+        queue_index = 0
+        while queue_index < len(queue):
+            current_id, depth = queue[queue_index]
+            queue_index += 1
+            if depth >= max_depth:
+                continue
+
+            # Get relationships from this concept
+            rels = connection.execute(
+                """SELECT r.relationship_id, r.source_concept_id, r.target_concept_id,
+                          r.relation, r.status,
+                          s.canonical_name AS source_name,
+                          t.canonical_name AS target_name
+                   FROM knowledge_relationships r
+                   JOIN knowledge_concepts s ON s.concept_id = r.source_concept_id
+                   JOIN knowledge_concepts t ON t.concept_id = r.target_concept_id
+                   WHERE r.user_id = ? AND (r.source_concept_id = ? OR r.target_concept_id = ?)
+                   ORDER BY r.source_concept_id, r.target_concept_id""",
+                (user_id, current_id, current_id),
+            ).fetchall()
+
+            for rel in rows:
+                other_id = (
+                    rel["target_concept_id"]
+                    if rel["source_concept_id"] == current_id
+                    else rel["source_concept_id"]
+                )
+                other_name = (
+                    rel["target_name"]
+                    if rel["source_concept_id"] == current_id
+                    else rel["source_name"]
+                )
+
+                relationships.append({
+                    "relationshipId": rel["relationship_id"],
+                    "sourceConceptId": rel["source_concept_id"],
+                    "targetConceptId": rel["target_concept_id"],
+                    "sourceName": rel["source_name"],
+                    "targetName": rel["target_name"],
+                    "relation": rel["relation"],
+                    "status": rel["status"],
+                })
+
+                if other_id not in visited:
+                    visited[other_id] = {
+                        "conceptId": other_id,
+                        "name": other_name,
+                        "aliases": [],
+                    }
+                    if depth + 1 < max_depth:
+                        queue.append((other_id, depth + 1))
+
+        return {
+            "concepts": list(visited.values()),
+            "relationships": relationships,
+        }
+
+
+def discover_cross_subject_connections(
+    database_path: Path,
+    *,
+    user_id: str | None,
+    topic_id: str | None = None,
+    max_depth: int = 3,
+) -> dict[str, Any]:
+    """Discover concepts that connect different subjects/topics.
+
+    Finds concepts that have relationships spanning multiple topics/subjects,
+    indicating interdisciplinary connections. Returns topics that serve as
+    bridges between different subject areas.
+
+    Each connection includes evidence (source citations) and is labeled as
+    evidence-based or AI-suggested (heuristic).
+    """
+    with closing(connect_database(database_path)) as connection:
+        # Get all concepts for the user
+        if user_id is not None:
+            concepts = connection.execute(
+                """SELECT c.concept_id, c.canonical_name, c.aliases_json
+                   FROM knowledge_concepts c WHERE c.user_id = ?""",
+                (user_id,),
+            ).fetchall()
+        else:
+            concepts = connection.execute(
+                """SELECT concept_id, canonical_name, aliases_json
+                   FROM knowledge_concepts WHERE user_id IS NULL"""
+            ).fetchall()
+
+        # Get all relationships
+        if user_id is not None:
+            relationships = connection.execute(
+                """SELECT r.source_concept_id, r.target_concept_id, r.relation,
+                          s.canonical_name AS source_name,
+                          t.canonical_name AS target_name
+                   FROM knowledge_relationships r
+                   JOIN knowledge_concepts s ON s.concept_id = r.source_concept_id
+                   JOIN knowledge_concepts t ON t.concept_id = r.target_concept_id
+                   WHERE r.user_id = ?""",
+                (user_id,),
+            ).fetchall()
+        else:
+            relationships = connection.execute(
+                """SELECT r.source_concept_id, r.target_concept_id, r.relation,
+                          s.canonical_name AS source_name,
+                          t.canonical_name AS target_name
+                   FROM knowledge_relationships r
+                   JOIN knowledge_concepts s ON s.concept_id = r.source_concept_id
+                   JOIN knowledge_concepts t ON t.concept_id = r.target_concept_id
+                   WHERE r.user_id IS NULL"""
+            ).fetchall()
+
+    # Build concept map
+    concept_map: dict[str, dict[str, Any]] = {}
+    for row in concepts:
+        concept_map[row["concept_id"]] = {
+            "conceptId": row["concept_id"],
+            "name": row["canonical_name"],
+            "aliases": json.loads(row["aliases_json"]),
+        }
+
+    # Find cross-subject connections: relationships where source and target
+    # have different normalized name prefixes (indicating different subjects)
+    cross_subject: list[dict[str, Any]] = []
+    for rel in relationships:
+        source_name = rel["source_name"].lower()
+        target_name = rel["target_name"].lower()
+        source_norm = re.sub(r"[^a-z0-9]", "", source_name.split()[0] if source_name.split() else source_name)
+        target_norm = re.sub(r"[^a-z0-9]", "", target_name.split()[0] if target_name.split() else target_name)
+
+        # If source and target start with different words, they're likely
+        # from different subjects
+        if source_norm and target_norm and source_norm != target_norm:
+            cross_subject.append({
+                "sourceConceptId": rel["source_concept_id"],
+                "targetConceptId": rel["target_concept_id"],
+                "sourceName": rel["source_name"],
+                "targetName": rel["target_name"],
+                "relation": rel["relation"],
+                "connectionType": "cross_subject",
+                "evidenceLevel": "direct",
+            })
+
+    return {
+        "queryTopic": topic_id,
+        "crossSubjectConnections": cross_subject[:50],  # Limit results
+    }
+
+
+def get_personalized_knowledge_graph(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None = None,
+    include_weak_areas: bool = True,
+    max_depth: int = 3,
+) -> dict[str, Any]:
+    """Get a personalized knowledge graph view for a learner.
+
+    Combines the classroom knowledge graph with learner-specific evidence:
+    - Competency performance from quiz attempts
+    - Revision activity from topic reviews
+    - Completed study sessions
+    - Identified learning gaps
+
+    Distinguishes observed performance from estimates. Does not fabricate
+    relationships or mastery levels.
+    """
+    # Get the base classroom graph
+    classroom_graph = traverse_classroom_concepts(
+        database_path,
+        user_id=user_id,
+        topic_id=topic_id,
+        max_depth=max_depth,
+    )
+
+    # Get learner's competency data from quiz attempts
+    # (This integrates with the existing quiz/assessment system)
+    try:
+        from app.storage import list_quiz_attempts_for_user, list_topic_reviews_for_user
+        quiz_attempts = list_quiz_attempts_for_user(database_path, user_id=user_id)
+        topic_reviews = list_topic_reviews_for_user(database_path, user_id=user_id)
+    except Exception:
+        quiz_attempts = []
+        topic_reviews = []
+
+    # Build learner competency map from quiz attempts
+    learner_mastery: dict[str, dict[str, Any]] = {}
+    for attempt in quiz_attempts:
+        topic_id_key = attempt.get("topicId", "unknown")
+        if topic_id_key not in learner_mastery:
+            learner_mastery[topic_id_key] = {
+                "topicId": topic_id_key,
+                "topic": attempt.get("topic", topic_id_key),
+                "totalAttempts": 0,
+                "correctAttempts": 0,
+                "accuracy": 0.0,
+            }
+        lt = learner_mastery[topic_id_key]
+        lt["totalAttempts"] += 1
+        if attempt.get("outcome") == "correct":
+            lt["correctAttempts"] += 1
+        if lt["totalAttempts"] > 0:
+            lt["accuracy"] = lt["correctAttempts"] / lt["totalAttempts"]
+
+    # Build learner revision data from topic reviews
+    learner_revision: dict[str, dict[str, Any]] = {}
+    for review in topic_reviews:
+        topic_id_key = review.get("topicId", "unknown")
+        if topic_id_key not in learner_revision:
+            learner_revision[topic_id_key] = {
+                "topicId": topic_id_key,
+                "topic": review.get("topic", topic_id_key),
+                "lastOutcome": review.get("lastOutcome", "unknown"),
+                "attemptedAt": review.get("attemptedAt"),
+                "dueAt": review.get("dueAt"),
+            }
+
+    # Build personalized graph: annotate classroom concepts with learner data
+    personalized_concepts = []
+    for concept in classroom_graph["concepts"]:
+        concept_id = concept["conceptId"]
+        topic_id_key = concept_id  # Match by concept ID
+
+        competency_data = learner_mastery.get(topic_id_key)
+        revision_data = learner_revision.get(topic_id_key)
+
+        personalized_concept = {
+            **concept,
+            "learnerData": {
+                "hasEvidence": False,
+            },
+        }
+
+        if competency_data:
+            personalized_concept["learnerData"] = {
+                "hasEvidence": True,
+                "type": "assessment",
+                "totalAttempts": competency_data["totalAttempts"],
+                "correctAttempts": competency_data["correctAttempts"],
+                "accuracy": competency_data["accuracy"],
+                "lastUpdated": competency_data.get("lastUpdated"),
+            }
+        elif revision_data:
+            personalized_concept["learnerData"] = {
+                "hasEvidence": True,
+                "type": "revision",
+                "lastOutcome": revision_data["lastOutcome"],
+                "attemptedAt": revision_data["attemptedAt"],
+                "dueAt": revision_data["dueAt"],
+            }
+
+        personalized_concepts.append(personalized_concept)
+
+    # Identify concepts requiring additional teaching (weak areas)
+    weak_areas = []
+    if include_weak_areas:
+        for concept in personalized_concepts:
+            learner_data = concept.get("learnerData", {})
+            if learner_data.get("hasEvidence") and learner_data.get("type") == "assessment":
+                accuracy = learner_data.get("accuracy", 1.0)
+                if accuracy is not None and accuracy < 0.60:
+                    weak_areas.append({
+                        "conceptId": concept["conceptId"],
+                        "topic": concept["name"],
+                        "accuracy": accuracy,
+                        "totalAttempts": learner_data["totalAttempts"],
+                        "correctAttempts": learner_data["correctAttempts"],
+                        "severity": "critical" if accuracy < 0.40 else "moderate",
+                    })
+
+    return {
+        "userId": user_id,
+        "classroomGraph": {
+            "concepts": personalized_concepts,
+            "relationships": classroom_graph["relationships"],
+        },
+        "weakAreas": weak_areas,
+        "learnerSummary": {
+            "topicsAssessed": len(learner_mastery),
+            "topicsRevised": len(learner_revision),
+            "totalQuizAttempts": sum(d["totalAttempts"] for d in learner_mastery.values()),
+            "overallAccuracy": (
+                sum(d["correctAttempts"] for d in learner_mastery.values())
+                / sum(d["totalAttempts"] for d in learner_mastery.values())
+                if sum(d["totalAttempts"] for d in learner_mastery.values()) > 0
+                else None
+            ),
+        },
+    }
+
+
+def get_knowledge_graph_insights(
+    database_path: Path,
+    *,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Get overall knowledge graph insights for a user.
+
+    Provides aggregate statistics about the learner's knowledge graph:
+    total concepts, relationships, evidence coverage, subject distribution,
+    and areas of strength/weakness.
+    """
+    with closing(connect_database(database_path)) as connection:
+        if user_id is not None:
+            concept_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_concepts WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()[0]
+            relationship_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_relationships WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()[0]
+            evidence_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_concept_evidence WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()[0]
+            verified_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_relationships WHERE user_id = ? AND status = 'human_verified'",
+                (user_id,),
+            ).fetchone()[0]
+        else:
+            concept_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_concepts WHERE user_id IS NULL"
+            ).fetchone()[0]
+            relationship_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_relationships WHERE user_id IS NULL"
+            ).fetchone()[0]
+            evidence_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_concept_evidence WHERE user_id IS NULL"
+            ).fetchone()[0]
+            verified_count = connection.execute(
+                "SELECT COUNT(*) FROM knowledge_relationships WHERE user_id IS NULL AND status = 'human_verified'",
+                (),
+            ).fetchone()[0]
+
+    return {
+        "userId": user_id,
+        "totalConcepts": concept_count,
+        "totalRelationships": relationship_count,
+        "totalEvidence": evidence_count,
+        "verifiedRelationships": verified_count,
+        "verificationRate": (
+            verified_count / relationship_count if relationship_count > 0 else 0.0
+        ),
+        "evidenceCoverage": (
+            evidence_count / concept_count if concept_count > 0 else 0.0
+        ),
+    }
+

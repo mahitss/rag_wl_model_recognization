@@ -4201,3 +4201,94 @@ class SearchRelatedTopicsResponse(ApiModel):
     prerequisiteConcepts: list[str]
     suggestedFollowUps: list[str]
 
+
+# ---------------------------------------------------------------------------
+# M79: Personal Knowledge Graph & Cross-Subject Intelligence schemas.
+# ---------------------------------------------------------------------------
+
+
+class DuplicateConceptGroup(ApiModel):
+    conceptId: str
+    topic: str
+    similarityScore: float
+
+
+class DuplicateDetectionResponse(ApiModel):
+    duplicateGroups: list[DuplicateConceptGroup]
+
+
+class MergeConceptsRequest(ApiModel):
+    primaryConceptId: str
+    duplicateConceptIds: list[str] = Field(min_length=1)
+
+
+class MergeConceptsResponse(ApiModel):
+    conceptId: str
+    name: str
+    aliases: list[str]
+    mergedConceptIds: list[str]
+
+
+class TraversePrerequisitesResponse(ApiModel):
+    concepts: list[dict[str, Any]]
+    relationships: list[dict[str, Any]]
+
+
+class CrossSubjectConnection(ApiModel):
+    sourceConceptId: str
+    targetConceptId: str
+    sourceName: str
+    targetName: str
+    relation: str
+    connectionType: str
+    evidenceLevel: str
+
+
+class CrossSubjectDiscoveryResponse(ApiModel):
+    queryTopic: str | None
+    crossSubjectConnections: list[CrossSubjectConnection]
+
+
+class LearnerCompetencyData(ApiModel):
+    topicId: str
+    topic: str
+    totalAttempts: int
+    correctAttempts: int
+    accuracy: float | None
+    lastUpdated: str | None
+
+
+class LearnerRevisionData(ApiModel):
+    topicId: str
+    topic: str
+    lastOutcome: str
+    attemptedAt: str | None
+    dueAt: str | None
+
+
+class LearnerProgressData(ApiModel):
+    topicId: str
+    topic: str
+    accuracy: float | None
+    lastOutcome: str | None
+    totalAttempts: int | None
+    correctAttempts: int | None
+    lastAttempted: str | None
+
+
+class PersonalizedKnowledgeGraphResponse(ApiModel):
+    userId: str
+    classroomGraph: dict[str, Any]
+    weakAreas: list[dict[str, Any]]
+    learnerSummary: dict[str, Any]
+
+
+class KnowledgeGraphInsightsResponse(ApiModel):
+    userId: str | None
+    totalConcepts: int
+    totalRelationships: int
+    totalEvidence: int
+    verifiedRelationships: int
+    verificationRate: float
+    evidenceCoverage: float
+

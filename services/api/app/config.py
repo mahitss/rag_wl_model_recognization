@@ -68,6 +68,14 @@ class Settings(BaseSettings):
     interop_allowed_archive_extensions: str = ".zip,.imscc"
     interop_xapi_statement_retention_days: int = 90
 
+    # Recommendation settings (M81)
+    max_recommendations: int = 10
+    recommendation_daily_limit: int = 50
+    recommendation_weak_threshold: float = 0.60
+    recommendation_stale_days: int = 30
+    recommendation_impression_retention_days: int = 90
+    recommendation_feedback_retention_days: int = 90
+
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     admin_usernames: str = ""
@@ -284,6 +292,48 @@ class Settings(BaseSettings):
     def interop_xapi_retention_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("WL_INTEROP_XAPI_STATEMENT_RETENTION_DAYS must be positive")
+        return value
+
+    @field_validator("max_recommendations")
+    @classmethod
+    def recommendation_limit_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_RECOMMENDATIONS must be positive")
+        return value
+
+    @field_validator("recommendation_daily_limit")
+    @classmethod
+    def recommendation_daily_limit_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_RECOMMENDATION_DAILY_LIMIT must be positive")
+        return value
+
+    @field_validator("recommendation_weak_threshold")
+    @classmethod
+    def recommendation_weak_threshold_bounded(cls, value: float) -> float:
+        if not 0.0 <= value <= 1.0:
+            raise ValueError("WL_RECOMMENDATION_WEAK_THRESHOLD must be between 0 and 1")
+        return value
+
+    @field_validator("recommendation_stale_days")
+    @classmethod
+    def recommendation_stale_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_RECOMMENDATION_STALE_DAYS must be positive")
+        return value
+
+    @field_validator("recommendation_impression_retention_days")
+    @classmethod
+    def recommendation_impression_retention_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_RECOMMENDATION_IMPRESSION_RETENTION_DAYS must be positive")
+        return value
+
+    @field_validator("recommendation_feedback_retention_days")
+    @classmethod
+    def recommendation_feedback_retention_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_RECOMMENDATION_FEEDBACK_RETENTION_DAYS must be positive")
         return value
 
     @field_validator("chunk_overlap_chars")

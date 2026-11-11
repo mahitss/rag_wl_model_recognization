@@ -29,6 +29,7 @@ from app.api.v1.journey_routes import router as journey_router
 from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.platform_routes import router as platform_router
+from app.api.v1.recommendations_routes import router as recommendations_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.search_routes import router as search_router
 from app.api.v1.verification_routes import router as verification_router
@@ -170,6 +171,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(search_router)
     # Educational Standards & Learning Interoperability (M80)
     application.include_router(interoperability_router)
+    # AI-Powered Learning Content Recommendation & Discovery (M81)
+    application.include_router(recommendations_router)
     # API v2 (backward-compatible versioned router)
     application.include_router(v2_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")

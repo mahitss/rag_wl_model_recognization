@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 36
+SCHEMA_VERSION = 37
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -4944,6 +4944,65 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_interoperability_audit_standard "
                     "ON interoperability_audit(standard, created_at)"
+                )
+
+                # M81: AI-Powered Learning Content Recommendation & Discovery.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS recommendation_feedback (
+                        feedback_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        recommendation_id TEXT NOT NULL CHECK (length(recommendation_id) > 0),
+                        recommendation_type TEXT NOT NULL CHECK (length(recommendation_type) BETWEEN 1 AND 50),
+                        target_type TEXT NOT NULL CHECK (length(target_type) BETWEEN 1 AND 50),
+                        target_id TEXT NOT NULL CHECK (length(target_id) > 0),
+                        action TEXT NOT NULL CHECK (action IN (
+                            'dismiss', 'select', 'rate', 'postpone'
+                        )),
+                        rating INTEGER CHECK (rating >= 1 AND rating <= 5),
+                        note TEXT,
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_user_id "
+                    "ON recommendation_feedback(user_id, created_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_tenant_id "
+                    "ON recommendation_feedback(tenant_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_recommendation_feedback_action "
+                    "ON recommendation_feedback(action, created_at)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS recommendation_impressions (
+                        impression_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        recommendation_id TEXT NOT NULL CHECK (length(recommendation_id) > 0),
+                        recommendation_type TEXT NOT NULL CHECK (length(recommendation_type) BETWEEN 1 AND 50),
+                        target_type TEXT NOT NULL CHECK (length(target_type) BETWEEN 1 AND 50),
+                        target_id TEXT NOT NULL CHECK (length(target_id) > 0),
+                        shown_at TEXT NOT NULL,
+                        context_json TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_recommendation_impressions_user_id "
+                    "ON recommendation_impressions(user_id, shown_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_recommendation_impressions_tenant_id "
+                    "ON recommendation_impressions(tenant_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -23074,4 +23133,240 @@ def list_lti_launches(
         }
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# M81: AI-Powered Learning Content Recommendation & Discovery storage layer
+# ---------------------------------------------------------------------------
+
+def _recommendation_tenant_id(database_path: Path, user_id: str) -> str:
+    """Derive a stable tenant id from a user (single-tenant per user)."""
+    import hashlib
+
+    return f"tenant_{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
+
+
+def store_recommendation_feedback(
+    database_path: Path,
+    *,
+    user_id: str,
+    recommendation_id: str,
+    recommendation_type: str,
+    target_type: str,
+    target_id: str,
+    action: str,
+    rating: int | None = None,
+    note: str | None = None,
+) -> dict:
+    """Record learner feedback (dismiss/select/rate/postpone) on a recommendation."""
+    from datetime import UTC, datetime
+
+    if action not in {"dismiss", "select", "rate", "postpone"}:
+        raise ValueError("action must be dismiss, select, rate, or postpone")
+    if rating is not None and not 1 <= rating <= 5:
+        raise ValueError("rating must be between 1 and 5")
+
+    feedback_id = f"rec_feedback_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _recommendation_tenant_id(database_path, user_id)
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO recommendation_feedback(
+                    feedback_id, user_id, tenant_id, recommendation_id,
+                    recommendation_type, target_type, target_id, action,
+                    rating, note, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    user_id,
+                    tenant_id,
+                    recommendation_id,
+                    recommendation_type,
+                    target_type,
+                    target_id,
+                    action,
+                    rating,
+                    note,
+                    now,
+                ),
+            )
+    return {
+        "feedbackId": feedback_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "recommendationId": recommendation_id,
+        "recommendationType": recommendation_type,
+        "targetType": target_type,
+        "targetId": target_id,
+        "action": action,
+        "rating": rating,
+        "createdAt": now,
+    }
+
+
+def list_recommendation_feedback(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    action: str | None = None,
+) -> list[dict]:
+    """List recommendation feedback for a user."""
+    tenant_id = _recommendation_tenant_id(database_path, user_id)
+    params: list = [tenant_id, limit, offset]
+    where = "WHERE tenant_id = ?"
+    if action is not None:
+        where += " AND action = ?"
+        params.insert(1, action)
+    sql = f"""
+        SELECT feedback_id, recommendation_id, recommendation_type, target_type,
+               target_id, action, rating, note, created_at
+        FROM recommendation_feedback
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "feedbackId": row["feedback_id"],
+            "recommendationId": row["recommendation_id"],
+            "recommendationType": row["recommendation_type"],
+            "targetType": row["target_type"],
+            "targetId": row["target_id"],
+            "action": row["action"],
+            "rating": row["rating"],
+            "note": row["note"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def list_dismissed_recommendation_targets(
+    database_path: Path, *, user_id: str
+) -> list[tuple[str, str]]:
+    """Return (target_type, target_id) pairs dismissed by the user."""
+    tenant_id = _recommendation_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT DISTINCT target_type, target_id
+            FROM recommendation_feedback
+            WHERE tenant_id = ? AND action = 'dismiss'
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [(row["target_type"], row["target_id"]) for row in rows]
+
+
+def record_recommendation_impression(
+    database_path: Path,
+    *,
+    user_id: str,
+    recommendation_id: str,
+    recommendation_type: str,
+    target_type: str,
+    target_id: str,
+    context: dict | None = None,
+) -> dict:
+    """Record that a recommendation was shown to the learner."""
+    from datetime import UTC, datetime
+
+    impression_id = f"rec_impression_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _recommendation_tenant_id(database_path, user_id)
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO recommendation_impressions(
+                    impression_id, user_id, tenant_id, recommendation_id,
+                    recommendation_type, target_type, target_id, shown_at,
+                    context_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    impression_id,
+                    user_id,
+                    tenant_id,
+                    recommendation_id,
+                    recommendation_type,
+                    target_type,
+                    target_id,
+                    now,
+                    json.dumps(context or {}, sort_keys=True),
+                ),
+            )
+    return {
+        "impressionId": impression_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "recommendationId": recommendation_id,
+        "shownAt": now,
+    }
+
+
+def list_knowledge_relationships(
+    database_path: Path, *, user_id: str
+) -> list[dict[str, Any]]:
+    """List knowledge-graph relationships for a user."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT relationship_id, source_concept_id, target_concept_id, relation, status
+            FROM knowledge_relationships
+            WHERE user_id = ?
+            ORDER BY relationship_id
+            """,
+            (user_id,),
+        ).fetchall()
+    return [
+        {
+            "relationshipId": row["relationship_id"],
+            "sourceConceptId": row["source_concept_id"],
+            "targetConceptId": row["target_concept_id"],
+            "relation": row["relation"],
+            "status": row["status"],
+        }
+        for row in rows
+    ]
+
+
+def delete_recommendation_feedback(
+    database_path: Path, *, feedback_id: str, user_id: str
+) -> dict | None:
+    """Remove a learner's feedback record.  Returns the deleted record or
+    None if not found / access denied."""
+    from datetime import UTC, datetime
+
+    tenant_id = _recommendation_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                """
+                SELECT feedback_id FROM recommendation_feedback
+                WHERE feedback_id = ? AND user_id = ?
+                """,
+                (feedback_id, user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                "DELETE FROM recommendation_feedback WHERE feedback_id = ?",
+                (feedback_id,),
+            )
+    return {
+        "feedbackId": feedback_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "deletedAt": datetime.now(UTC).isoformat(),
+    }
 

@@ -4489,3 +4489,79 @@ class InteroperabilityImportResult(ApiModel):
     errors: list[str] = []
     details: dict[str, Any] = {}
 
+
+# ---------------------------------------------------------------------------
+# M81: AI-Powered Learning Content Recommendation & Discovery schemas
+# ---------------------------------------------------------------------------
+
+
+class RecommendationItem(ApiModel):
+    recommendationId: str
+    type: str
+    # topic_practice | gap_focus | prerequisite | competency_practice |
+    # exam_retake | content_discovery | next_topic
+    title: str
+    description: str | None = None
+    reason: str
+    confidence: str  # high | medium | low | insufficient_evidence
+    priority: float
+    targetType: str  # topic | competency | gap | concept | exam | resource
+    targetId: str
+    targetName: str | None = None
+    difficultyLevel: str | None = None  # foundational | building | practice | advanced
+    estimatedMinutes: int | None = None
+    activitySuggestion: str | None = None
+    citations: list[dict[str, Any]] = []
+    prerequisiteConceptIds: list[str] = []
+    knowledgeGapIds: list[str] = []
+    measuredFields: list[str] = []
+    estimatedFields: list[str] = []
+    aiUnavailable: bool = False
+
+
+class RecommendationRequest(ApiModel):
+    limit: int = 10
+    includeDismissed: bool = False
+    topicId: str | None = None
+    difficultyLevel: str | None = None
+    includePrerequisites: bool = True
+    includeKnowledgeGaps: bool = True
+
+
+class RecommendationResponse(ApiModel):
+    recommendations: list[RecommendationItem]
+    generatedAt: str
+    total: int
+    coldStart: bool
+    aiUnavailable: bool
+    userId: str
+
+
+class RecommendationFeedbackCreate(ApiModel):
+    recommendationId: str
+    recommendationType: str
+    targetType: str
+    targetId: str
+    action: str  # dismiss | select | rate | postpone
+    rating: int | None = None
+    note: str | None = None
+
+
+class RecommendationFeedbackResponse(ApiModel):
+    feedbackId: str
+    userId: str
+    tenantId: str
+    recommendationId: str
+    recommendationType: str
+    targetType: str
+    targetId: str
+    action: str
+    rating: int | None = None
+    note: str | None = None
+    createdAt: str
+
+
+class RecommendationFeedbackListResponse(ApiModel):
+    feedback: list[RecommendationFeedbackResponse]
+    total: int
+

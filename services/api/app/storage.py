@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 37
+SCHEMA_VERSION = 38
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -5003,6 +5003,190 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_recommendation_impressions_tenant_id "
                     "ON recommendation_impressions(tenant_id)"
+                )
+
+                # M82: AI Learning Path Generator & Dynamic Curriculum Orchestration.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_path_versions (
+                        version_id TEXT PRIMARY KEY,
+                        path_id TEXT NOT NULL REFERENCES learning_paths(path_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        version_number INTEGER NOT NULL CHECK (version_number >= 1),
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'completed', 'archived')),
+                        target_skill TEXT NOT NULL CHECK (length(target_skill) BETWEEN 1 AND 200),
+                        target_date TEXT,
+                        study_hours_per_week INTEGER CHECK (study_hours_per_week > 0),
+                        difficulty_level TEXT CHECK (difficulty_level IN ('foundational', 'building', 'practice', 'advanced')),
+                        total_estimated_minutes INTEGER CHECK (total_estimated_minutes >= 0),
+                        module_count INTEGER NOT NULL CHECK (module_count >= 0),
+                        objective_count INTEGER NOT NULL CHECK (objective_count >= 0),
+                        milestone_count INTEGER NOT NULL CHECK (milestone_count >= 0),
+                        created_at TEXT NOT NULL,
+                        is_current INTEGER NOT NULL CHECK (is_current IN (0, 1)) DEFAULT 1
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_versions_path_id "
+                    "ON learning_path_versions(path_id, version_number)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_versions_user_id "
+                    "ON learning_path_versions(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_versions_current "
+                    "ON learning_path_versions(path_id, is_current)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_path_modules (
+                        module_id TEXT PRIMARY KEY,
+                        path_id TEXT NOT NULL REFERENCES learning_paths(path_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        version_id TEXT NOT NULL REFERENCES learning_path_versions(version_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        order_index INTEGER NOT NULL CHECK (order_index >= 0),
+                        status TEXT NOT NULL CHECK (status IN ('not_started', 'in_progress', 'completed', 'skipped')),
+                        difficulty_level TEXT CHECK (difficulty_level IN ('foundational', 'building', 'practice', 'advanced')),
+                        estimated_minutes INTEGER CHECK (estimated_minutes >= 0),
+                        prerequisite_module_ids_json TEXT NOT NULL DEFAULT '[]',
+                        rationale TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_modules_path_id "
+                    "ON learning_path_modules(path_id, order_index)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_modules_version_id "
+                    "ON learning_path_modules(version_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_modules_user_id "
+                    "ON learning_path_modules(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_modules_status "
+                    "ON learning_path_modules(status)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_path_milestones (
+                        milestone_id TEXT PRIMARY KEY,
+                        path_id TEXT NOT NULL REFERENCES learning_paths(path_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        version_id TEXT NOT NULL REFERENCES learning_path_versions(version_id)
+                            ON DELETE CASCADE,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        target_date TEXT,
+                        status TEXT NOT NULL CHECK (status IN ('upcoming', 'met', 'missed')),
+                        module_ids_json TEXT NOT NULL DEFAULT '[]',
+                        criteria_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_milestones_path_id "
+                    "ON learning_path_milestones(path_id, target_date)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_milestones_version_id "
+                    "ON learning_path_milestones(version_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_milestones_status "
+                    "ON learning_path_milestones(status)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_path_progress (
+                        progress_id TEXT PRIMARY KEY,
+                        path_id TEXT NOT NULL REFERENCES learning_paths(path_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        module_id TEXT REFERENCES learning_path_modules(module_id)
+                            ON DELETE SET NULL,
+                        objective_id TEXT REFERENCES learning_objectives(objective_id)
+                            ON DELETE SET NULL,
+                        status TEXT NOT NULL CHECK (status IN ('not_started', 'in_progress', 'completed', 'skipped')),
+                        mastery_at_completion REAL CHECK (mastery_at_completion >= 0.0 AND mastery_at_completion <= 1.0),
+                        completed_at TEXT,
+                        time_spent_ms INTEGER CHECK (time_spent_ms >= 0),
+                        notes TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_progress_path_id "
+                    "ON learning_path_progress(path_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_progress_user_id "
+                    "ON learning_path_progress(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_progress_module_id "
+                    "ON learning_path_progress(module_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_progress_objective_id "
+                    "ON learning_path_progress(objective_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_path_adaptation_log (
+                        adaptation_id TEXT PRIMARY KEY,
+                        path_id TEXT NOT NULL REFERENCES learning_paths(path_id)
+                            ON DELETE CASCADE,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        version_id TEXT NOT NULL REFERENCES learning_path_versions(version_id)
+                            ON DELETE CASCADE,
+                        trigger TEXT NOT NULL CHECK (length(trigger) BETWEEN 1 AND 100),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 1000),
+                        previous_version_id TEXT,
+                        new_version_id TEXT,
+                        changes_json TEXT NOT NULL DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_adaptation_log_path_id "
+                    "ON learning_path_adaptation_log(path_id, created_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_adaptation_log_user_id "
+                    "ON learning_path_adaptation_log(user_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_path_adaptation_log_trigger "
+                    "ON learning_path_adaptation_log(trigger, created_at)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -23369,4 +23553,630 @@ def delete_recommendation_feedback(
         "tenantId": tenant_id,
         "deletedAt": datetime.now(UTC).isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# M82: AI Learning Path Generator & Dynamic Curriculum Orchestration storage layer
+# ---------------------------------------------------------------------------
+
+def _learning_path_tenant_id(database_path: Path, user_id: str) -> str:
+    """Derive a stable tenant id from a user (single-tenant per user)."""
+    import hashlib
+
+    return f"tenant_{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
+
+
+def create_learning_path_version(
+    database_path: Path,
+    *,
+    path_id: str,
+    user_id: str,
+    version_number: int,
+    title: str,
+    description: str,
+    status: str,
+    target_skill: str,
+    target_date: str | None = None,
+    study_hours_per_week: int | None = None,
+    difficulty_level: str | None = None,
+    total_estimated_minutes: int = 0,
+    module_count: int = 0,
+    objective_count: int = 0,
+    milestone_count: int = 0,
+) -> dict:
+    """Create a new version record for a learning path."""
+    from datetime import UTC, datetime
+
+    version_id = f"pathver_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+
+    if status not in {"active", "paused", "completed", "archived"}:
+        raise ValueError("status must be active, paused, completed, or archived")
+    if difficulty_level is not None and difficulty_level not in {
+        "foundational", "building", "practice", "advanced"
+    }:
+        raise ValueError("invalid difficulty_level")
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            # Mark all previous versions as not current.
+            connection.execute(
+                "UPDATE learning_path_versions SET is_current = 0 WHERE path_id = ?",
+                (path_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO learning_path_versions(
+                    version_id, path_id, user_id, version_number, title, description,
+                    status, target_skill, target_date, study_hours_per_week,
+                    difficulty_level, total_estimated_minutes, module_count,
+                    objective_count, milestone_count, created_at, is_current
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    version_id,
+                    path_id,
+                    user_id,
+                    version_number,
+                    title,
+                    description,
+                    status,
+                    target_skill,
+                    target_date,
+                    study_hours_per_week,
+                    difficulty_level,
+                    total_estimated_minutes,
+                    module_count,
+                    objective_count,
+                    milestone_count,
+                    now,
+                ),
+            )
+    return {
+        "versionId": version_id,
+        "pathId": path_id,
+        "userId": user_id,
+        "versionNumber": version_number,
+        "title": title,
+        "description": description,
+        "status": status,
+        "targetSkill": target_skill,
+        "targetDate": target_date,
+        "studyHoursPerWeek": study_hours_per_week,
+        "difficultyLevel": difficulty_level,
+        "totalEstimatedMinutes": total_estimated_minutes,
+        "moduleCount": module_count,
+        "objectiveCount": objective_count,
+        "milestoneCount": milestone_count,
+        "createdAt": now,
+        "isCurrent": True,
+    }
+
+
+def list_learning_path_versions(
+    database_path: Path, *, path_id: str, user_id: str
+) -> list[dict]:
+    """List all versions of a learning path, newest first."""
+    with closing(connect_database(database_path)) as connection:
+        path = connection.execute(
+            "SELECT user_id FROM learning_paths WHERE path_id = ?",
+            (path_id,),
+        ).fetchone()
+        if path is None or path["user_id"] != user_id:
+            raise PermissionError("You do not own this learning path.")
+        rows = connection.execute(
+            """
+            SELECT version_id, path_id, user_id, version_number, title, description,
+                   status, target_skill, target_date, study_hours_per_week,
+                   difficulty_level, total_estimated_minutes, module_count,
+                   objective_count, milestone_count, created_at, is_current
+            FROM learning_path_versions
+            WHERE path_id = ? AND user_id = ?
+            ORDER BY version_number DESC
+            """,
+            (path_id, user_id),
+        ).fetchall()
+    return [
+        {
+            "versionId": row["version_id"],
+            "pathId": row["path_id"],
+            "userId": row["user_id"],
+            "versionNumber": row["version_number"],
+            "title": row["title"],
+            "description": row["description"],
+            "status": row["status"],
+            "targetSkill": row["target_skill"],
+            "targetDate": row["target_date"],
+            "studyHoursPerWeek": row["study_hours_per_week"],
+            "difficultyLevel": row["difficulty_level"],
+            "totalEstimatedMinutes": row["total_estimated_minutes"],
+            "moduleCount": row["module_count"],
+            "objectiveCount": row["objective_count"],
+            "milestoneCount": row["milestone_count"],
+            "createdAt": row["created_at"],
+            "isCurrent": bool(row["is_current"]),
+        }
+        for row in rows
+    ]
+
+
+def create_learning_path_module(
+    database_path: Path,
+    *,
+    path_id: str,
+    user_id: str,
+    version_id: str,
+    title: str,
+    description: str,
+    order_index: int,
+    status: str = "not_started",
+    difficulty_level: str | None = None,
+    estimated_minutes: int | None = None,
+    prerequisite_module_ids: list[str] | None = None,
+    rationale: str | None = None,
+) -> dict:
+    """Create a module within a learning path version."""
+    from datetime import UTC, datetime
+
+    if status not in {"not_started", "in_progress", "completed", "skipped"}:
+        raise ValueError("invalid status")
+    if difficulty_level is not None and difficulty_level not in {
+        "foundational", "building", "practice", "advanced"
+    }:
+        raise ValueError("invalid difficulty_level")
+
+    module_id = f"pathmod_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    prerequisite_module_ids = prerequisite_module_ids or []
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            path = connection.execute(
+                "SELECT user_id FROM learning_paths WHERE path_id = ?",
+                (path_id,),
+            ).fetchone()
+            if path is None or path["user_id"] != user_id:
+                raise PermissionError("You do not own this learning path.")
+            connection.execute(
+                """
+                INSERT INTO learning_path_modules(
+                    module_id, path_id, user_id, version_id, title, description,
+                    order_index, status, difficulty_level, estimated_minutes,
+                    prerequisite_module_ids_json, rationale, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    module_id,
+                    path_id,
+                    user_id,
+                    version_id,
+                    title,
+                    description,
+                    order_index,
+                    status,
+                    difficulty_level,
+                    estimated_minutes,
+                    json.dumps(prerequisite_module_ids, separators=(",", ":")),
+                    rationale,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "moduleId": module_id,
+        "pathId": path_id,
+        "userId": user_id,
+        "versionId": version_id,
+        "title": title,
+        "description": description,
+        "orderIndex": order_index,
+        "status": status,
+        "difficultyLevel": difficulty_level,
+        "estimatedMinutes": estimated_minutes,
+        "prerequisiteModuleIds": prerequisite_module_ids,
+        "rationale": rationale,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_learning_path_modules(
+    database_path: Path, *, path_id: str, user_id: str
+) -> list[dict]:
+    """List modules for a learning path, ordered by order_index."""
+    with closing(connect_database(database_path)) as connection:
+        path = connection.execute(
+            "SELECT user_id FROM learning_paths WHERE path_id = ?",
+            (path_id,),
+        ).fetchone()
+        if path is None or path["user_id"] != user_id:
+            raise PermissionError("You do not own this learning path.")
+        rows = connection.execute(
+            """
+            SELECT module_id, path_id, user_id, version_id, title, description,
+                   order_index, status, difficulty_level, estimated_minutes,
+                   prerequisite_module_ids_json, rationale, created_at, updated_at
+            FROM learning_path_modules
+            WHERE path_id = ? AND user_id = ?
+            ORDER BY order_index ASC
+            """,
+            (path_id, user_id),
+        ).fetchall()
+    return [
+        {
+            "moduleId": row["module_id"],
+            "pathId": row["path_id"],
+            "userId": row["user_id"],
+            "versionId": row["version_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "orderIndex": row["order_index"],
+            "status": row["status"],
+            "difficultyLevel": row["difficulty_level"],
+            "estimatedMinutes": row["estimated_minutes"],
+            "prerequisiteModuleIds": json.loads(row["prerequisite_module_ids_json"] or "[]"),
+            "rationale": row["rationale"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_learning_path_milestone(
+    database_path: Path,
+    *,
+    path_id: str,
+    user_id: str,
+    version_id: str,
+    title: str,
+    description: str,
+    target_date: str | None = None,
+    status: str = "upcoming",
+    module_ids: list[str] | None = None,
+    criteria: list[str] | None = None,
+) -> dict:
+    """Create a milestone within a learning path version."""
+    from datetime import UTC, datetime
+
+    if status not in {"upcoming", "met", "missed"}:
+        raise ValueError("invalid status")
+
+    milestone_id = f"pathmile_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    module_ids = module_ids or []
+    criteria = criteria or []
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            path = connection.execute(
+                "SELECT user_id FROM learning_paths WHERE path_id = ?",
+                (path_id,),
+            ).fetchone()
+            if path is None or path["user_id"] != user_id:
+                raise PermissionError("You do not own this learning path.")
+            connection.execute(
+                """
+                INSERT INTO learning_path_milestones(
+                    milestone_id, path_id, user_id, version_id, title, description,
+                    target_date, status, module_ids_json, criteria_json,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    milestone_id,
+                    path_id,
+                    user_id,
+                    version_id,
+                    title,
+                    description,
+                    target_date,
+                    status,
+                    json.dumps(module_ids, separators=(",", ":")),
+                    json.dumps(criteria, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "milestoneId": milestone_id,
+        "pathId": path_id,
+        "userId": user_id,
+        "versionId": version_id,
+        "title": title,
+        "description": description,
+        "targetDate": target_date,
+        "status": status,
+        "moduleIds": module_ids,
+        "criteria": criteria,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_learning_path_milestones(
+    database_path: Path, *, path_id: str, user_id: str
+) -> list[dict]:
+    """List milestones for a learning path."""
+    with closing(connect_database(database_path)) as connection:
+        path = connection.execute(
+            "SELECT user_id FROM learning_paths WHERE path_id = ?",
+            (path_id,),
+        ).fetchone()
+        if path is None or path["user_id"] != user_id:
+            raise PermissionError("You do not own this learning path.")
+        rows = connection.execute(
+            """
+            SELECT milestone_id, path_id, user_id, version_id, title, description,
+                   target_date, status, module_ids_json, criteria_json,
+                   created_at, updated_at
+            FROM learning_path_milestones
+            WHERE path_id = ? AND user_id = ?
+            ORDER BY COALESCE(target_date, '') ASC, created_at ASC
+            """,
+            (path_id, user_id),
+        ).fetchall()
+    return [
+        {
+            "milestoneId": row["milestone_id"],
+            "pathId": row["path_id"],
+            "userId": row["user_id"],
+            "versionId": row["version_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "targetDate": row["target_date"],
+            "status": row["status"],
+            "moduleIds": json.loads(row["module_ids_json"] or "[]"),
+            "criteria": json.loads(row["criteria_json"] or "[]"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def upsert_learning_path_progress(
+    database_path: Path,
+    *,
+    path_id: str,
+    user_id: str,
+    module_id: str | None = None,
+    objective_id: str | None = None,
+    status: str = "not_started",
+    mastery_at_completion: float | None = None,
+    completed_at: str | None = None,
+    time_spent_ms: int | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Create or update progress for a module/objective within a path."""
+    from datetime import UTC, datetime
+
+    if status not in {"not_started", "in_progress", "completed", "skipped"}:
+        raise ValueError("invalid status")
+    if mastery_at_completion is not None and not 0.0 <= mastery_at_completion <= 1.0:
+        raise ValueError("mastery_at_completion must be between 0 and 1")
+
+    progress_id = f"pathprog_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            path = connection.execute(
+                "SELECT user_id FROM learning_paths WHERE path_id = ?",
+                (path_id,),
+            ).fetchone()
+            if path is None or path["user_id"] != user_id:
+                raise PermissionError("You do not own this learning path.")
+            existing = connection.execute(
+                """
+                SELECT progress_id FROM learning_path_progress
+                WHERE path_id = ? AND user_id = ?
+                  AND (module_id IS NULL OR module_id = ?)
+                  AND (objective_id IS NULL OR objective_id = ?)
+                LIMIT 1
+                """,
+                (path_id, user_id, module_id, objective_id),
+            ).fetchone()
+            if existing is not None:
+                progress_id = existing["progress_id"]
+                connection.execute(
+                    """
+                    UPDATE learning_path_progress
+                    SET status = COALESCE(?, status),
+                        mastery_at_completion = COALESCE(?, mastery_at_completion),
+                        completed_at = COALESCE(?, completed_at),
+                        time_spent_ms = COALESCE(?, time_spent_ms),
+                        notes = COALESCE(?, notes),
+                        updated_at = ?
+                    WHERE progress_id = ?
+                    """,
+                    (
+                        status,
+                        mastery_at_completion,
+                        completed_at,
+                        time_spent_ms,
+                        notes,
+                        now,
+                        progress_id,
+                    ),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO learning_path_progress(
+                        progress_id, path_id, user_id, module_id, objective_id,
+                        status, mastery_at_completion, completed_at,
+                        time_spent_ms, notes, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        progress_id,
+                        path_id,
+                        user_id,
+                        module_id,
+                        objective_id,
+                        status,
+                        mastery_at_completion,
+                        completed_at,
+                        time_spent_ms,
+                        notes,
+                        now,
+                        now,
+                    ),
+                )
+    return {
+        "progressId": progress_id,
+        "pathId": path_id,
+        "userId": user_id,
+        "moduleId": module_id,
+        "objectiveId": objective_id,
+        "status": status,
+        "masteryAtCompletion": mastery_at_completion,
+        "completedAt": completed_at,
+        "timeSpentMs": time_spent_ms,
+        "notes": notes,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_learning_path_progress(
+    database_path: Path, *, path_id: str, user_id: str
+) -> list[dict]:
+    """List progress records for a learning path."""
+    with closing(connect_database(database_path)) as connection:
+        path = connection.execute(
+            "SELECT user_id FROM learning_paths WHERE path_id = ?",
+            (path_id,),
+        ).fetchone()
+        if path is None or path["user_id"] != user_id:
+            raise PermissionError("You do not own this learning path.")
+        rows = connection.execute(
+            """
+            SELECT progress_id, path_id, user_id, module_id, objective_id,
+                   status, mastery_at_completion, completed_at, time_spent_ms,
+                   notes, created_at, updated_at
+            FROM learning_path_progress
+            WHERE path_id = ? AND user_id = ?
+            ORDER BY created_at ASC
+            """,
+            (path_id, user_id),
+        ).fetchall()
+    return [
+        {
+            "progressId": row["progress_id"],
+            "pathId": row["path_id"],
+            "userId": row["user_id"],
+            "moduleId": row["module_id"],
+            "objectiveId": row["objective_id"],
+            "status": row["status"],
+            "masteryAtCompletion": row["mastery_at_completion"],
+            "completedAt": row["completed_at"],
+            "timeSpentMs": row["time_spent_ms"],
+            "notes": row["notes"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_learning_path_adaptation(
+    database_path: Path,
+    *,
+    path_id: str,
+    user_id: str,
+    version_id: str,
+    trigger: str,
+    description: str,
+    previous_version_id: str | None = None,
+    new_version_id: str | None = None,
+    changes: dict | None = None,
+) -> dict:
+    """Record an adaptation of a learning path."""
+    from datetime import UTC, datetime
+
+    adaptation_id = f"pathadapt_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            path = connection.execute(
+                "SELECT user_id FROM learning_paths WHERE path_id = ?",
+                (path_id,),
+            ).fetchone()
+            if path is None or path["user_id"] != user_id:
+                raise PermissionError("You do not own this learning path.")
+            connection.execute(
+                """
+                INSERT INTO learning_path_adaptation_log(
+                    adaptation_id, path_id, user_id, version_id, trigger,
+                    description, previous_version_id, new_version_id,
+                    changes_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    adaptation_id,
+                    path_id,
+                    user_id,
+                    version_id,
+                    trigger,
+                    description,
+                    previous_version_id,
+                    new_version_id,
+                    json.dumps(changes or {}, sort_keys=True),
+                    now,
+                ),
+            )
+    return {
+        "adaptationId": adaptation_id,
+        "pathId": path_id,
+        "userId": user_id,
+        "versionId": version_id,
+        "trigger": trigger,
+        "description": description,
+        "previousVersionId": previous_version_id,
+        "newVersionId": new_version_id,
+        "changes": changes or {},
+        "createdAt": now,
+    }
+
+
+def list_learning_path_adaptations(
+    database_path: Path, *, path_id: str, user_id: str
+) -> list[dict]:
+    """List adaptation history for a learning path."""
+    with closing(connect_database(database_path)) as connection:
+        path = connection.execute(
+            "SELECT user_id FROM learning_paths WHERE path_id = ?",
+            (path_id,),
+        ).fetchone()
+        if path is None or path["user_id"] != user_id:
+            raise PermissionError("You do not own this learning path.")
+        rows = connection.execute(
+            """
+            SELECT adaptation_id, path_id, user_id, version_id, trigger,
+                   description, previous_version_id, new_version_id,
+                   changes_json, created_at
+            FROM learning_path_adaptation_log
+            WHERE path_id = ? AND user_id = ?
+            ORDER BY created_at DESC
+            """,
+            (path_id, user_id),
+        ).fetchall()
+    return [
+        {
+            "adaptationId": row["adaptation_id"],
+            "pathId": row["path_id"],
+            "userId": row["user_id"],
+            "versionId": row["version_id"],
+            "trigger": row["trigger"],
+            "description": row["description"],
+            "previousVersionId": row["previous_version_id"],
+            "newVersionId": row["new_version_id"],
+            "changes": json.loads(row["changes_json"] or "{}"),
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
 

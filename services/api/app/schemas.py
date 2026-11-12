@@ -4565,3 +4565,169 @@ class RecommendationFeedbackListResponse(ApiModel):
     feedback: list[RecommendationFeedbackResponse]
     total: int
 
+
+# ---------------------------------------------------------------------------
+# M82: AI Learning Path Generator & Dynamic Curriculum Orchestration schemas
+# ---------------------------------------------------------------------------
+
+
+class LearningPathGenerateRequest(ApiModel):
+    targetSkill: str = Field(min_length=1, max_length=200)
+    targetDate: str | None = None
+    studyHoursPerWeek: int = Field(default=5, ge=1, le=40)
+    difficultyLevel: str = Field(default="foundational")
+    includePrerequisites: bool = True
+    includeMilestones: bool = True
+    maxModules: int = Field(default=10, ge=1, le=50)
+    maxObjectivesPerModule: int = Field(default=5, ge=1, le=20)
+
+
+class LearningPathModuleCreate(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4000)
+    orderIndex: int = Field(default=0, ge=0)
+    difficultyLevel: str | None = None
+    estimatedMinutes: int | None = Field(default=None, ge=0)
+    prerequisiteModuleIds: list[str] | None = None
+    rationale: str | None = Field(default=None, max_length=4000)
+
+
+class LearningPathModuleResponse(ApiModel):
+    moduleId: str
+    pathId: str
+    userId: str
+    versionId: str
+    title: str
+    description: str
+    orderIndex: int
+    status: str
+    difficultyLevel: str | None = None
+    estimatedMinutes: int | None = None
+    prerequisiteModuleIds: list[str] = []
+    rationale: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class LearningPathModuleListResponse(ApiModel):
+    modules: list[LearningPathModuleResponse]
+
+
+class LearningPathMilestoneCreate(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4000)
+    targetDate: str | None = None
+    status: str = "upcoming"
+    moduleIds: list[str] | None = None
+    criteria: list[str] | None = None
+
+
+class LearningPathMilestoneResponse(ApiModel):
+    milestoneId: str
+    pathId: str
+    userId: str
+    versionId: str
+    title: str
+    description: str
+    targetDate: str | None = None
+    status: str
+    moduleIds: list[str] = []
+    criteria: list[str] = []
+    createdAt: str
+    updatedAt: str
+
+
+class LearningPathMilestoneListResponse(ApiModel):
+    milestones: list[LearningPathMilestoneResponse]
+
+
+class LearningPathVersionResponse(ApiModel):
+    versionId: str
+    pathId: str
+    userId: str
+    versionNumber: int
+    title: str
+    description: str
+    status: str
+    targetSkill: str
+    targetDate: str | None = None
+    studyHoursPerWeek: int | None = None
+    difficultyLevel: str | None = None
+    totalEstimatedMinutes: int
+    moduleCount: int
+    objectiveCount: int
+    milestoneCount: int
+    createdAt: str
+    isCurrent: bool
+
+
+class LearningPathProgressCreate(ApiModel):
+    moduleId: str | None = None
+    objectiveId: str | None = None
+    status: str = "not_started"
+    masteryAtCompletion: float | None = Field(default=None, ge=0.0, le=1.0)
+    completedAt: str | None = None
+    timeSpentMs: int | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class LearningPathProgressResponse(ApiModel):
+    progressId: str
+    pathId: str
+    userId: str
+    moduleId: str | None = None
+    objectiveId: str | None = None
+    status: str
+    masteryAtCompletion: float | None = None
+    completedAt: str | None = None
+    timeSpentMs: int | None = None
+    notes: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class LearningPathProgressListResponse(ApiModel):
+    progress: list[LearningPathProgressResponse]
+
+
+class LearningPathAdaptationCreate(ApiModel):
+    trigger: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=1000)
+    previousVersionId: str | None = None
+    newVersionId: str | None = None
+    changes: dict[str, Any] | None = None
+
+
+class LearningPathAdaptationResponse(ApiModel):
+    adaptationId: str
+    pathId: str
+    userId: str
+    versionId: str
+    trigger: str
+    description: str
+    previousVersionId: str | None = None
+    newVersionId: str | None = None
+    changes: dict[str, Any]
+    createdAt: str
+
+
+class LearningPathAdaptationListResponse(ApiModel):
+    adaptations: list[LearningPathAdaptationResponse]
+
+
+class LearningPathGenerationResult(ApiModel):
+    pathId: str
+    userId: str
+    versionId: str
+    versionNumber: int
+    title: str
+    description: str
+    status: str
+    targetSkill: str
+    modules: list[LearningPathModuleResponse]
+    milestones: list[LearningPathMilestoneResponse]
+    totalEstimatedMinutes: int
+    prerequisitesDetected: list[str] = []
+    generationNotes: list[str] = []
+    aiUnavailable: bool = False
+

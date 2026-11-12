@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     recommendation_impression_retention_days: int = 90
     recommendation_feedback_retention_days: int = 90
 
+    # Learning path settings (M82)
+    max_path_modules: int = 20
+    max_path_objectives_per_module: int = 10
+    max_path_milestones: int = 10
+    path_generation_daily_limit: int = 10
+    path_stale_days: int = 30
+    path_default_study_hours_per_week: int = 5
+    path_retention_days: int = 365
+
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     admin_usernames: str = ""
@@ -334,6 +343,55 @@ class Settings(BaseSettings):
     def recommendation_feedback_retention_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("WL_RECOMMENDATION_FEEDBACK_RETENTION_DAYS must be positive")
+        return value
+
+    @field_validator("max_path_modules")
+    @classmethod
+    def path_modules_limit_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_PATH_MODULES must be positive")
+        return value
+
+    @field_validator("max_path_objectives_per_module")
+    @classmethod
+    def path_objectives_per_module_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_PATH_OBJECTIVES_PER_MODULE must be positive")
+        return value
+
+    @field_validator("max_path_milestones")
+    @classmethod
+    def path_milestones_limit_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_PATH_MILESTONES must be positive")
+        return value
+
+    @field_validator("path_generation_daily_limit")
+    @classmethod
+    def path_generation_daily_limit_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_PATH_GENERATION_DAILY_LIMIT must be positive")
+        return value
+
+    @field_validator("path_stale_days")
+    @classmethod
+    def path_stale_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_PATH_STALE_DAYS must be positive")
+        return value
+
+    @field_validator("path_default_study_hours_per_week")
+    @classmethod
+    def path_study_hours_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_PATH_DEFAULT_STUDY_HOURS_PER_WEEK must be positive")
+        return value
+
+    @field_validator("path_retention_days")
+    @classmethod
+    def path_retention_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_PATH_RETENTION_DAYS must be positive")
         return value
 
     @field_validator("chunk_overlap_chars")

@@ -26,6 +26,7 @@ from app.api.v1.groups_routes import router as groups_router
 from app.api.v1.institutions_routes import router as institutions_router
 from app.api.v1.interoperability_routes import router as interoperability_router
 from app.api.v1.journey_routes import router as journey_router
+from app.api.v1.learning_path_routes import router as learning_path_router
 from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.platform_routes import router as platform_router
@@ -173,6 +174,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(interoperability_router)
     # AI-Powered Learning Content Recommendation & Discovery (M81)
     application.include_router(recommendations_router)
+    # AI Learning Path Generator & Dynamic Curriculum Orchestration (M82)
+    application.include_router(learning_path_router)
     # API v2 (backward-compatible versioned router)
     application.include_router(v2_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")

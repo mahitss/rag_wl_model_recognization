@@ -30,6 +30,7 @@ from app.api.v1.learning_path_routes import router as learning_path_router
 from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.platform_routes import router as platform_router
+from app.api.v1.progress_routes import router as progress_router
 from app.api.v1.recommendations_routes import router as recommendations_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.scheduler_routes import router as scheduler_router
@@ -179,6 +180,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(learning_path_router)
     # Intelligent Study Scheduler & Adaptive Time Management (M83)
     application.include_router(scheduler_router)
+    # Real-Time Learning Progress & Engagement Intelligence (M84)
+    application.include_router(progress_router)
     # API v2 (backward-compatible versioned router)
     application.include_router(v2_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")

@@ -403,6 +403,64 @@ class Settings(BaseSettings):
             raise ValueError("WL_PATH_RETENTION_DAYS must be positive")
         return value
 
+    # Learning progress & engagement intelligence settings (M84)
+    event_retention_days: int = 365
+    max_events_per_day: int = 1000
+    max_event_metadata_bytes: int = 4096
+    insight_retention_days: int = 90
+    max_insights_per_user: int = 50
+    engagement_staleness_days: int = 14
+    progress_lookback_days: int = 90
+
+    @field_validator("event_retention_days")
+    @classmethod
+    def event_retention_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_EVENT_RETENTION_DAYS must be positive")
+        return value
+
+    @field_validator("max_events_per_day")
+    @classmethod
+    def max_events_per_day_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_EVENTS_PER_DAY must be positive")
+        return value
+
+    @field_validator("max_event_metadata_bytes")
+    @classmethod
+    def max_event_metadata_bytes_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_EVENT_METADATA_BYTES must be positive")
+        return value
+
+    @field_validator("insight_retention_days")
+    @classmethod
+    def insight_retention_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_INSIGHT_RETENTION_DAYS must be positive")
+        return value
+
+    @field_validator("max_insights_per_user")
+    @classmethod
+    def max_insights_per_user_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_MAX_INSIGHTS_PER_USER must be positive")
+        return value
+
+    @field_validator("engagement_staleness_days")
+    @classmethod
+    def engagement_staleness_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_ENGAGEMENT_STALENESS_DAYS must be positive")
+        return value
+
+    @field_validator("progress_lookback_days")
+    @classmethod
+    def progress_lookback_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_PROGRESS_LOOKBACK_DAYS must be positive")
+        return value
+
     @field_validator("scheduler_max_daily_hours")
     @classmethod
     def scheduler_max_daily_hours_positive(cls, value: int) -> int:

@@ -4889,3 +4889,136 @@ class ScheduleAdaptationRequest(BaseModel):
     description: str = Field(min_length=1, max_length=1000)
     rescheduleMissed: bool = True
 
+
+# ---------------------------------------------------------------------------
+# M84: Real-Time Learning Progress & Engagement Intelligence schemas
+# ---------------------------------------------------------------------------
+
+
+class LearningEventCreate(BaseModel):
+    eventType: str = Field(min_length=1, max_length=100)
+    eventSubtype: str | None = Field(default=None, max_length=100)
+    occurredAt: str
+    eventData: dict[str, Any] | None = Field(default=None)
+    metadata: dict[str, Any] | None = Field(default=None)
+    source: str | None = Field(default=None, max_length=100)
+    idempotencyKey: str | None = Field(default=None, max_length=200)
+
+
+class LearningEventResponse(BaseModel):
+    eventId: str
+    userId: str
+    tenantId: str
+    eventType: str
+    eventSubtype: str | None = None
+    occurredAt: str
+    receivedAt: str
+    idempotencyKey: str | None = None
+    eventData: dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
+    source: str | None = None
+    deduplicated: bool = False
+
+
+class LearningEventListResponse(BaseModel):
+    events: list[LearningEventResponse]
+
+
+class ProgressAggregateCreate(BaseModel):
+    metricType: str = Field(min_length=1, max_length=100)
+    metricSubtype: str | None = Field(default=None, max_length=100)
+    subject: str | None = Field(default=None, max_length=200)
+    topicId: str | None = Field(default=None, max_length=200)
+    value: float = Field(ge=0.0, le=1.0)
+    unit: str = Field(min_length=1, max_length=50)
+    computedAt: str
+    dataAsOf: str
+    details: dict[str, Any] | None = Field(default=None)
+
+
+class ProgressAggregateResponse(BaseModel):
+    aggregateId: str
+    userId: str
+    tenantId: str
+    metricType: str
+    metricSubtype: str | None = None
+    subject: str | None = None
+    topicId: str | None = None
+    value: float
+    unit: str
+    computedAt: str
+    dataAsOf: str
+    details: dict[str, Any] = {}
+
+
+class ProgressAggregateListResponse(BaseModel):
+    aggregates: list[ProgressAggregateResponse]
+
+
+class LearnerInsightCreate(BaseModel):
+    insightType: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=4000)
+    severity: str = Field(default="info")
+    confidence: float = Field(default=0.5, ge=0.0, le=1.0)
+    triggerEventIds: list[str] | None = Field(default=None)
+    recommendedActions: list[str] | None = Field(default=None)
+    expiresAt: str | None = Field(default=None)
+
+
+class LearnerInsightResponse(BaseModel):
+    insightId: str
+    userId: str
+    tenantId: str
+    insightType: str
+    title: str
+    description: str
+    severity: str
+    confidence: float
+    status: str
+    triggerEventIds: list[str] = []
+    recommendedActions: list[str] = []
+    createdAt: str
+    updatedAt: str
+    dismissedAt: str | None = None
+    expiresAt: str | None = None
+
+
+class LearnerInsightListResponse(BaseModel):
+    insights: list[LearnerInsightResponse]
+
+
+class InsightDismissalCreate(BaseModel):
+    insightId: str
+    reason: str | None = Field(default=None, max_length=200)
+
+
+class InsightDismissalResponse(BaseModel):
+    insightId: str
+    userId: str
+    tenantId: str
+    status: str
+    dismissedAt: str
+
+
+class ProgressSummary(BaseModel):
+    userId: str
+    totalEvents: int
+    eventsByType: dict[str, int]
+    completionRate: float | None
+    averageMastery: float | None
+    activeStreakDays: int
+    lastActivityAt: str | None
+    insightsCount: int
+    generatedAt: str
+
+
+class ProgressInsight(BaseModel):
+    insightType: str
+    title: str
+    description: str
+    severity: str
+    confidence: float
+    recommendedActions: list[str] = []
+    triggerEventIds: list[str] = []
+

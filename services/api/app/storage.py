@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 39
+SCHEMA_VERSION = 40
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -5317,6 +5317,136 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_schedule_constraints_user_id "
                     "ON schedule_constraints(user_id)"
+                )
+
+                # M84: Real-Time Learning Progress & Engagement Intelligence.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learning_events (
+                        event_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL CHECK (length(event_type) BETWEEN 1 AND 100),
+                        event_subtype TEXT,
+                        occurred_at TEXT NOT NULL,
+                        received_at TEXT NOT NULL,
+                        idempotency_key TEXT UNIQUE,
+                        event_data_json TEXT NOT NULL DEFAULT '{}',
+                        metadata_json TEXT NOT NULL DEFAULT '{}',
+                        source TEXT CHECK (length(source) BETWEEN 1 AND 100)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_events_user_id "
+                    "ON learning_events(user_id, occurred_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_events_tenant_id "
+                    "ON learning_events(tenant_id, occurred_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_events_type "
+                    "ON learning_events(event_type, occurred_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learning_events_idempotency "
+                    "ON learning_events(idempotency_key)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS progress_aggregates (
+                        aggregate_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        metric_type TEXT NOT NULL CHECK (length(metric_type) BETWEEN 1 AND 100),
+                        metric_subtype TEXT,
+                        subject TEXT CHECK (length(subject) BETWEEN 1 AND 200),
+                        topic_id TEXT,
+                        value REAL NOT NULL,
+                        unit TEXT CHECK (length(unit) BETWEEN 1 AND 50),
+                        computed_at TEXT NOT NULL,
+                        data_as_of TEXT NOT NULL,
+                        details_json TEXT NOT NULL DEFAULT '{}'
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_progress_aggregates_user_id "
+                    "ON progress_aggregates(user_id, metric_type, computed_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_progress_aggregates_tenant_id "
+                    "ON progress_aggregates(tenant_id, metric_type)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_progress_aggregates_subject "
+                    "ON progress_aggregates(subject, computed_at)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS learner_insights (
+                        insight_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        insight_type TEXT NOT NULL CHECK (length(insight_type) BETWEEN 1 AND 100),
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 4000),
+                        severity TEXT NOT NULL CHECK (severity IN (
+                            'info', 'low', 'medium', 'high', 'critical'
+                        )),
+                        confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'active', 'dismissed', 'resolved'
+                        )) DEFAULT 'active',
+                        trigger_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                        recommended_actions_json TEXT NOT NULL DEFAULT '[]',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        dismissed_at TEXT,
+                        expires_at TEXT
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learner_insights_user_id "
+                    "ON learner_insights(user_id, status, created_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learner_insights_tenant_id "
+                    "ON learner_insights(tenant_id, status)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_learner_insights_type "
+                    "ON learner_insights(insight_type, created_at)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS insight_dismissals (
+                        dismissal_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        insight_id TEXT NOT NULL REFERENCES learner_insights(insight_id)
+                            ON DELETE CASCADE,
+                        reason TEXT CHECK (length(reason) BETWEEN 1 AND 200),
+                        dismissed_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_insight_dismissals_user_id "
+                    "ON insight_dismissals(user_id, dismissed_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_insight_dismissals_insight_id "
+                    "ON insight_dismissals(insight_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -24923,4 +25053,474 @@ def get_schedule_constraints(
         "createdAt": row["created_at"],
         "updatedAt": row["updated_at"],
     }
+
+
+# ---------------------------------------------------------------------------
+# M84: Real-Time Learning Progress & Engagement Intelligence storage layer
+# ---------------------------------------------------------------------------
+
+def _progress_tenant_id(database_path: Path, user_id: str) -> str:
+    """Derive a stable tenant id from a user (single-tenant per user)."""
+    import hashlib
+
+    return f"tenant_{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
+
+
+def ingest_learning_event(
+    database_path: Path,
+    *,
+    user_id: str,
+    event_type: str,
+    occurred_at: str,
+    event_data: dict | None = None,
+    metadata: dict | None = None,
+    source: str | None = None,
+    event_subtype: str | None = None,
+    idempotency_key: str | None = None,
+    received_at: str | None = None,
+) -> dict:
+    """Ingest a learning event idempotently.
+
+    If an event with the same idempotency_key already exists, it is returned
+    unchanged (no duplicate write).
+    """
+    from datetime import UTC, datetime
+
+    if not event_type or not event_type.strip():
+        raise ValueError("event_type is required")
+    try:
+        datetime.fromisoformat(occurred_at.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("occurred_at must be a valid ISO-8601 datetime")
+
+    event_data = event_data or {}
+    metadata = metadata or {}
+    now = datetime.now(UTC).isoformat()
+    recv = received_at or now
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    event_id = f"evt_{secrets.token_urlsafe(12)}"
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            # Idempotency check: return existing event if key matches.
+            if idempotency_key is not None:
+                existing = connection.execute(
+                    """
+                    SELECT event_id, event_type, occurred_at, received_at
+                    FROM learning_events WHERE idempotency_key = ?
+                    """,
+                    (idempotency_key,),
+                ).fetchone()
+                if existing is not None:
+                    return {
+                        "eventId": existing["event_id"],
+                        "userId": user_id,
+                        "tenantId": tenant_id,
+                        "eventType": existing["event_type"],
+                        "occurredAt": existing["occurred_at"],
+                        "receivedAt": existing["received_at"],
+                        "idempotencyKey": idempotency_key,
+                        "eventData": {},
+                        "metadata": {},
+                        "source": None,
+                        "deduplicated": True,
+                    }
+
+            connection.execute(
+                """
+                INSERT INTO learning_events(
+                    event_id, user_id, tenant_id, event_type, event_subtype,
+                    occurred_at, received_at, idempotency_key,
+                    event_data_json, metadata_json, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event_id,
+                    user_id,
+                    tenant_id,
+                    event_type,
+                    event_subtype,
+                    occurred_at,
+                    recv,
+                    idempotency_key,
+                    json.dumps(event_data, sort_keys=True),
+                    json.dumps(metadata, sort_keys=True),
+                    source,
+                ),
+            )
+    return {
+        "eventId": event_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "eventType": event_type,
+        "occurredAt": occurred_at,
+        "receivedAt": recv,
+        "deduplicated": False,
+    }
+
+
+def list_learning_events(
+    database_path: Path,
+    *,
+    user_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    event_type: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+) -> list[dict]:
+    """List learning events for a user."""
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    params: list = [tenant_id]
+    where = "WHERE tenant_id = ?"
+    if event_type is not None:
+        where += " AND event_type = ?"
+        params.append(event_type)
+    if start_date is not None:
+        where += " AND occurred_at >= ?"
+        params.append(start_date)
+    if end_date is not None:
+        where += " AND occurred_at <= ?"
+        params.append(end_date)
+    params.extend([limit, offset])
+    sql = f"""
+        SELECT event_id, user_id, tenant_id, event_type, event_subtype,
+               occurred_at, received_at, idempotency_key, event_data_json,
+               metadata_json, source
+        FROM learning_events
+        {where}
+        ORDER BY occurred_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "eventId": row["event_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "eventType": row["event_type"],
+            "eventSubtype": row["event_subtype"],
+            "occurredAt": row["occurred_at"],
+            "receivedAt": row["received_at"],
+            "idempotencyKey": row["idempotency_key"],
+            "eventData": json.loads(row["event_data_json"] or "{}"),
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "source": row["source"],
+        }
+        for row in rows
+    ]
+
+
+def upsert_progress_aggregate(
+    database_path: Path,
+    *,
+    user_id: str,
+    metric_type: str,
+    value: float,
+    unit: str,
+    computed_at: str,
+    data_as_of: str,
+    subject: str | None = None,
+    topic_id: str | None = None,
+    metric_subtype: str | None = None,
+    details: dict | None = None,
+) -> dict:
+    """Create or update a progress aggregate (idempotent per metric)."""
+
+    if not 0.0 <= value <= 1.0:
+        raise ValueError("value must be between 0 and 1")
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    agg_key = f"{user_id}:{metric_type}:{subject or ''}:{topic_id or ''}"
+    aggregate_id = f"agg_{hashlib.sha256(agg_key.encode()).hexdigest()[:24]}"
+    details = details or {}
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT aggregate_id FROM progress_aggregates WHERE aggregate_id = ?",
+                (aggregate_id,),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    """
+                    UPDATE progress_aggregates
+                    SET value = ?, unit = ?, computed_at = ?, data_as_of = ?,
+                        details_json = ?
+                    WHERE aggregate_id = ?
+                    """,
+                    (value, unit, computed_at, data_as_of,
+                     json.dumps(details, sort_keys=True), aggregate_id),
+                )
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO progress_aggregates(
+                        aggregate_id, user_id, tenant_id, metric_type,
+                        metric_subtype, subject, topic_id, value, unit,
+                        computed_at, data_as_of, details_json
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        aggregate_id, user_id, tenant_id, metric_type,
+                        metric_subtype, subject, topic_id, value, unit,
+                        computed_at, data_as_of,
+                        json.dumps(details, sort_keys=True),
+                    ),
+                )
+    return {
+        "aggregateId": aggregate_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "metricType": metric_type,
+        "value": value,
+        "unit": unit,
+        "computedAt": computed_at,
+        "dataAsOf": data_as_of,
+        "subject": subject,
+    }
+
+
+def list_progress_aggregates(
+    database_path: Path,
+    *,
+    user_id: str,
+    metric_type: str | None = None,
+    subject: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """List progress aggregates for a user."""
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    params: list = [tenant_id]
+    where = "WHERE tenant_id = ?"
+    if metric_type is not None:
+        where += " AND metric_type = ?"
+        params.append(metric_type)
+    if subject is not None:
+        where += " AND subject = ?"
+        params.append(subject)
+    params.extend([limit, offset])
+    sql = f"""
+        SELECT aggregate_id, user_id, tenant_id, metric_type, metric_subtype,
+               subject, topic_id, value, unit, computed_at, data_as_of,
+                details_json
+        FROM progress_aggregates
+        {where}
+        ORDER BY computed_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "aggregateId": row["aggregate_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "metricType": row["metric_type"],
+            "metricSubtype": row["metric_subtype"],
+            "subject": row["subject"],
+            "topicId": row["topic_id"],
+            "value": row["value"],
+            "unit": row["unit"],
+            "computedAt": row["computed_at"],
+            "dataAsOf": row["data_as_of"],
+            "details": json.loads(row["details_json"] or "{}"),
+        }
+        for row in rows
+    ]
+
+
+def create_learner_insight(
+    database_path: Path,
+    *,
+    user_id: str,
+    insight_type: str,
+    title: str,
+    description: str,
+    severity: str = "info",
+    confidence: float = 0.5,
+    trigger_event_ids: list[str] | None = None,
+    recommended_actions: list[str] | None = None,
+    expires_at: str | None = None,
+) -> dict:
+    """Create a learner insight."""
+    from datetime import UTC, datetime
+
+    if severity not in {"info", "low", "medium", "high", "critical"}:
+        raise ValueError("invalid severity")
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+
+    insight_id = f"insight_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    trigger_event_ids = trigger_event_ids or []
+    recommended_actions = recommended_actions or []
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO learner_insights(
+                    insight_id, user_id, tenant_id, insight_type, title,
+                    description, severity, confidence, status,
+                    trigger_event_ids_json, recommended_actions_json,
+                    created_at, updated_at, expires_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)
+                """,
+                (
+                    insight_id, user_id, tenant_id, insight_type, title,
+                    description, severity, confidence,
+                    json.dumps(trigger_event_ids, sort_keys=True),
+                    json.dumps(recommended_actions, sort_keys=True),
+                    now, now, expires_at,
+                ),
+            )
+    return {
+        "insightId": insight_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "insightType": insight_type,
+        "title": title,
+        "description": description,
+        "severity": severity,
+        "confidence": confidence,
+        "status": "active",
+        "triggerEventIds": trigger_event_ids,
+        "recommendedActions": recommended_actions,
+        "createdAt": now,
+        "updatedAt": now,
+        "expiresAt": expires_at,
+    }
+
+
+def list_learner_insights(
+    database_path: Path,
+    *,
+    user_id: str,
+    insight_type: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """List learner insights for a user."""
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    params: list = [tenant_id]
+    where = "WHERE tenant_id = ?"
+    if insight_type is not None:
+        where += " AND insight_type = ?"
+        params.append(insight_type)
+    if status is not None:
+        where += " AND status = ?"
+        params.append(status)
+    params.extend([limit, offset])
+    sql = f"""
+        SELECT insight_id, user_id, tenant_id, insight_type, title, description,
+               severity, confidence, status, trigger_event_ids_json,
+               recommended_actions_json, created_at, updated_at, dismissed_at,
+                expires_at
+        FROM learner_insights
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "insightId": row["insight_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "insightType": row["insight_type"],
+            "title": row["title"],
+            "description": row["description"],
+            "severity": row["severity"],
+            "confidence": row["confidence"],
+            "status": row["status"],
+            "triggerEventIds": json.loads(row["trigger_event_ids_json"] or "[]"),
+            "recommendedActions": json.loads(row["recommended_actions_json"] or "[]"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "dismissedAt": row["dismissed_at"],
+            "expiresAt": row["expires_at"],
+        }
+        for row in rows
+    ]
+
+
+def dismiss_learner_insight(
+    database_path: Path,
+    *,
+    insight_id: str,
+    user_id: str,
+    reason: str | None = None,
+) -> dict | None:
+    """Dismiss a learner insight. Returns the dismissed record or None."""
+    from datetime import UTC, datetime
+
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                """
+                SELECT insight_id FROM learner_insights
+                WHERE insight_id = ? AND user_id = ? AND status = 'active'
+                """,
+                (insight_id, user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                """
+                UPDATE learner_insights
+                SET status = 'dismissed', updated_at = ?, dismissed_at = ?
+                WHERE insight_id = ?
+                """,
+                (now, now, insight_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO insight_dismissals(
+                    dismissal_id, user_id, tenant_id, insight_id, reason,
+                    dismissed_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (f"dismiss_{secrets.token_urlsafe(8)}", user_id, tenant_id,
+                 insight_id, reason, now),
+            )
+    return {
+        "insightId": insight_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "status": "dismissed",
+        "dismissedAt": now,
+    }
+
+
+def list_insight_dismissals(
+    database_path: Path, *, user_id: str
+) -> list[dict]:
+    """List insight dismissals for a user."""
+    tenant_id = _progress_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT dismissal_id, insight_id, reason, dismissed_at
+            FROM insight_dismissals
+            WHERE tenant_id = ?
+            ORDER BY dismissed_at DESC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [
+        {
+            "dismissalId": row["dismissal_id"],
+            "insightId": row["insight_id"],
+            "reason": row["reason"],
+            "dismissedAt": row["dismissed_at"],
+        }
+        for row in rows
+    ]
 

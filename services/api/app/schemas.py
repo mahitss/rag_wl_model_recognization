@@ -4731,3 +4731,161 @@ class LearningPathGenerationResult(ApiModel):
     generationNotes: list[str] = []
     aiUnavailable: bool = False
 
+
+# ---------------------------------------------------------------------------
+# M83: Intelligent Study Scheduler & Adaptive Time Management schemas
+# ---------------------------------------------------------------------------
+
+
+class StudyAvailabilityCreate(BaseModel):
+    dayOfWeek: int = Field(ge=0, le=6)
+    startTime: str = Field(min_length=5, max_length=5)
+    endTime: str = Field(min_length=5, max_length=5)
+    isActive: bool = True
+
+
+class StudyAvailabilityResponse(BaseModel):
+    availabilityId: str
+    userId: str
+    tenantId: str
+    dayOfWeek: int
+    startTime: str
+    endTime: str
+    isActive: bool
+    createdAt: str
+    updatedAt: str
+
+
+class StudyAvailabilityListResponse(BaseModel):
+    availability: list[StudyAvailabilityResponse]
+
+
+class ScheduledStudySessionCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    startAt: str
+    endAt: str
+    sessionType: str = "learning"
+    priority: int = Field(default=3, ge=1, le=5)
+    pathId: str | None = None
+    moduleId: str | None = None
+    objectiveId: str | None = None
+    description: str | None = Field(default=None, max_length=4000)
+
+
+class ScheduledStudySessionResponse(BaseModel):
+    sessionId: str
+    userId: str
+    tenantId: str
+    pathId: str | None = None
+    moduleId: str | None = None
+    objectiveId: str | None = None
+    title: str
+    description: str | None = None
+    startAt: str
+    endAt: str
+    durationMinutes: int
+    status: str
+    sessionType: str
+    priority: int
+    actualDurationMinutes: int | None = None
+    notes: str | None = None
+    versionId: str | None = None
+    createdAt: str
+    updatedAt: str
+
+
+class ScheduledStudySessionListResponse(BaseModel):
+    sessions: list[ScheduledStudySessionResponse]
+
+
+class UpdateScheduledStudySession(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    startAt: str | None = None
+    endAt: str | None = None
+    sessionType: str | None = None
+    priority: int | None = Field(default=None, ge=1, le=5)
+    status: str | None = None
+    actualDurationMinutes: int | None = Field(default=None, ge=0)
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class ScheduleConstraintsCreate(BaseModel):
+    maxDailyHours: int = Field(gt=0)
+    defaultSessionMinutes: int = Field(gt=0)
+    bufferMinutes: int = Field(default=15, ge=0)
+    quietHoursStart: int = Field(default=22, ge=0, le=23)
+    quietHoursEnd: int = Field(default=7, ge=0, le=23)
+    notificationAdvanceMinutes: int = Field(default=15, ge=0)
+
+
+class ScheduleConstraintsResponse(BaseModel):
+    constraintId: str
+    userId: str
+    tenantId: str
+    maxDailyHours: int
+    defaultSessionMinutes: int
+    bufferMinutes: int
+    quietHoursStart: int
+    quietHoursEnd: int
+    notificationAdvanceMinutes: int
+    createdAt: str
+    updatedAt: str
+
+
+class ScheduleVersionCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    startDate: str
+    endDate: str
+    totalPlannedMinutes: int = Field(default=0, ge=0)
+    sessionCount: int = Field(default=0, ge=0)
+    status: str = "active"
+
+
+class ScheduleVersionResponse(BaseModel):
+    versionId: str
+    userId: str
+    tenantId: str
+    versionNumber: int
+    title: str
+    description: str | None = None
+    startDate: str
+    endDate: str
+    totalPlannedMinutes: int
+    sessionCount: int
+    status: str
+    createdAt: str
+    isCurrent: bool
+
+
+class ScheduleGenerationRequest(BaseModel):
+    pathId: str | None = None
+    startDate: str
+    endDate: str
+    maxDailyHours: int | None = None
+    defaultSessionMinutes: int | None = None
+    bufferMinutes: int | None = None
+    includeBreaks: bool = True
+    includeRevision: bool = True
+
+
+class ScheduleGenerationResult(BaseModel):
+    versionId: str
+    versionNumber: int
+    title: str
+    description: str
+    startDate: str
+    endDate: str
+    totalPlannedMinutes: int
+    sessionCount: int
+    sessions: list[ScheduledStudySessionResponse]
+    warnings: list[str] = []
+    aiUnavailable: bool = False
+
+
+class ScheduleAdaptationRequest(BaseModel):
+    scheduleId: str | None = None
+    trigger: str = Field(min_length=1, max_length=100)
+    description: str = Field(min_length=1, max_length=1000)
+    rescheduleMissed: bool = True
+

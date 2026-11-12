@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     path_default_study_hours_per_week: int = 5
     path_retention_days: int = 365
 
+    # Study scheduler settings (M83)
+    scheduler_max_daily_hours: int = 8
+    scheduler_default_session_minutes: int = 45
+    scheduler_buffer_minutes: int = 15
+    scheduler_max_lookahead_days: int = 90
+    scheduler_quiet_hours_start: int = 22
+    scheduler_quiet_hours_end: int = 7
+    scheduler_notification_advance_minutes: int = 15
+
     # Session and authentication settings
     session_ttl_seconds: int = 30 * 24 * 60 * 60  # 30 days
     admin_usernames: str = ""
@@ -392,6 +401,55 @@ class Settings(BaseSettings):
     def path_retention_days_positive(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("WL_PATH_RETENTION_DAYS must be positive")
+        return value
+
+    @field_validator("scheduler_max_daily_hours")
+    @classmethod
+    def scheduler_max_daily_hours_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_SCHEDULER_MAX_DAILY_HOURS must be positive")
+        return value
+
+    @field_validator("scheduler_default_session_minutes")
+    @classmethod
+    def scheduler_default_session_minutes_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_SCHEDULER_DEFAULT_SESSION_MINUTES must be positive")
+        return value
+
+    @field_validator("scheduler_buffer_minutes")
+    @classmethod
+    def scheduler_buffer_minutes_positive(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("WL_SCHEDULER_BUFFER_MINUTES must not be negative")
+        return value
+
+    @field_validator("scheduler_max_lookahead_days")
+    @classmethod
+    def scheduler_max_lookahead_days_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_SCHEDULER_MAX_LOOKAHEAD_DAYS must be positive")
+        return value
+
+    @field_validator("scheduler_quiet_hours_start")
+    @classmethod
+    def scheduler_quiet_hours_start_bounded(cls, value: int) -> int:
+        if not 0 <= value <= 23:
+            raise ValueError("WL_SCHEDULER_QUIET_HOURS_START must be between 0 and 23")
+        return value
+
+    @field_validator("scheduler_quiet_hours_end")
+    @classmethod
+    def scheduler_quiet_hours_end_bounded(cls, value: int) -> int:
+        if not 0 <= value <= 23:
+            raise ValueError("WL_SCHEDULER_QUIET_HOURS_END must be between 0 and 23")
+        return value
+
+    @field_validator("scheduler_notification_advance_minutes")
+    @classmethod
+    def scheduler_notification_advance_minutes_positive(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("WL_SCHEDULER_NOTIFICATION_ADVANCE_MINUTES must not be negative")
         return value
 
     @field_validator("chunk_overlap_chars")

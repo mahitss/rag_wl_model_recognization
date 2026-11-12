@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 38
+SCHEMA_VERSION = 39
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -5187,6 +5187,136 @@ def initialize_storage(database_path: Path) -> None:
                 connection.execute(
                     "CREATE INDEX IF NOT EXISTS idx_learning_path_adaptation_log_trigger "
                     "ON learning_path_adaptation_log(trigger, created_at)"
+                )
+
+                # M83: Intelligent Study Scheduler & Adaptive Time Management.
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS study_availability (
+                        availability_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        day_of_week INTEGER NOT NULL CHECK (day_of_week BETWEEN 0 AND 6),
+                        start_time TEXT NOT NULL CHECK (length(start_time) = 5),
+                        end_time TEXT NOT NULL CHECK (length(end_time) = 5),
+                        is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)) DEFAULT 1,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_availability_user_id "
+                    "ON study_availability(user_id, day_of_week)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_study_availability_tenant_id "
+                    "ON study_availability(tenant_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS scheduled_study_sessions (
+                        session_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        path_id TEXT REFERENCES learning_paths(path_id)
+                            ON DELETE SET NULL,
+                        module_id TEXT REFERENCES learning_path_modules(module_id)
+                            ON DELETE SET NULL,
+                        objective_id TEXT REFERENCES learning_objectives(objective_id)
+                            ON DELETE SET NULL,
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT,
+                        start_at TEXT NOT NULL,
+                        end_at TEXT NOT NULL,
+                        duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
+                        status TEXT NOT NULL CHECK (status IN (
+                            'scheduled', 'in_progress', 'completed', 'missed', 'cancelled'
+                        )) DEFAULT 'scheduled',
+                        session_type TEXT NOT NULL CHECK (session_type IN (
+                            'learning', 'revision', 'practice', 'assessment', 'break'
+                        )),
+                        priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5) DEFAULT 3,
+                        actual_duration_minutes INTEGER,
+                        notes TEXT,
+                        version_id TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduled_study_sessions_user_id "
+                    "ON scheduled_study_sessions(user_id, start_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduled_study_sessions_tenant_id "
+                    "ON scheduled_study_sessions(tenant_id)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduled_study_sessions_status "
+                    "ON scheduled_study_sessions(status, start_at)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_scheduled_study_sessions_path_id "
+                    "ON scheduled_study_sessions(path_id)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schedule_versions (
+                        version_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        version_number INTEGER NOT NULL CHECK (version_number >= 1),
+                        title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                        description TEXT,
+                        start_date TEXT NOT NULL,
+                        end_date TEXT NOT NULL,
+                        total_planned_minutes INTEGER NOT NULL CHECK (total_planned_minutes >= 0),
+                        session_count INTEGER NOT NULL CHECK (session_count >= 0),
+                        status TEXT NOT NULL CHECK (status IN ('active', 'superseded', 'archived'))
+                            DEFAULT 'active',
+                        created_at TEXT NOT NULL,
+                        is_current INTEGER NOT NULL CHECK (is_current IN (0, 1)) DEFAULT 1
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_schedule_versions_user_id "
+                    "ON schedule_versions(user_id, version_number)"
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_schedule_versions_current "
+                    "ON schedule_versions(user_id, is_current)"
+                )
+
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS schedule_constraints (
+                        constraint_id TEXT PRIMARY KEY,
+                        user_id TEXT NOT NULL REFERENCES users(user_id)
+                            ON DELETE CASCADE,
+                        tenant_id TEXT NOT NULL,
+                        max_daily_hours INTEGER NOT NULL CHECK (max_daily_hours > 0),
+                        default_session_minutes INTEGER NOT NULL CHECK (default_session_minutes > 0),
+                        buffer_minutes INTEGER NOT NULL CHECK (buffer_minutes >= 0),
+                        quiet_hours_start INTEGER NOT NULL CHECK (quiet_hours_start BETWEEN 0 AND 23),
+                        quiet_hours_end INTEGER NOT NULL CHECK (quiet_hours_end BETWEEN 0 AND 23),
+                        notification_advance_minutes INTEGER NOT NULL CHECK (notification_advance_minutes >= 0),
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        UNIQUE (user_id)
+                    )
+                    """
+                )
+                connection.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_schedule_constraints_user_id "
+                    "ON schedule_constraints(user_id)"
                 )
 
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -24179,4 +24309,618 @@ def list_learning_path_adaptations(
         }
         for row in rows
     ]
+
+
+# ---------------------------------------------------------------------------
+# M83: Intelligent Study Scheduler & Adaptive Time Management storage layer
+# ---------------------------------------------------------------------------
+
+def _scheduler_tenant_id(database_path: Path, user_id: str) -> str:
+    """Derive a stable tenant id from a user (single-tenant per user)."""
+    import hashlib
+
+    return f"tenant_{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
+
+
+def set_study_availability(
+    database_path: Path,
+    *,
+    user_id: str,
+    day_of_week: int,
+    start_time: str,
+    end_time: str,
+    is_active: bool = True,
+) -> dict:
+    """Set or update study availability for a day of the week.
+
+    day_of_week: 0=Monday ... 6=Sunday.  start_time/end_time in HH:MM format.
+    """
+    from datetime import UTC, datetime
+
+    if not 0 <= day_of_week <= 6:
+        raise ValueError("day_of_week must be between 0 and 6")
+    try:
+        datetime.strptime(start_time, "%H:%M")
+        datetime.strptime(end_time, "%H:%M")
+    except ValueError:
+        raise ValueError("start_time and end_time must be in HH:MM format")
+
+    availability_id = f"avail_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            # Deactivate any existing availability for this day.
+            connection.execute(
+                """
+                UPDATE study_availability
+                SET is_active = 0, updated_at = ?
+                WHERE user_id = ? AND day_of_week = ?
+                """,
+                (now, user_id, day_of_week),
+            )
+            connection.execute(
+                """
+                INSERT INTO study_availability(
+                    availability_id, user_id, tenant_id, day_of_week,
+                    start_time, end_time, is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    availability_id,
+                    user_id,
+                    tenant_id,
+                    day_of_week,
+                    start_time,
+                    end_time,
+                    1 if is_active else 0,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "availabilityId": availability_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "dayOfWeek": day_of_week,
+        "startTime": start_time,
+        "endTime": end_time,
+        "isActive": is_active,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_study_availability(
+    database_path: Path, *, user_id: str
+) -> list[dict]:
+    """List study availability blocks for a user."""
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT availability_id, day_of_week, start_time, end_time,
+                   is_active, created_at, updated_at
+            FROM study_availability
+            WHERE tenant_id = ?
+            ORDER BY day_of_week ASC, start_time ASC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [
+        {
+            "availabilityId": row["availability_id"],
+            "dayOfWeek": row["day_of_week"],
+            "startTime": row["start_time"],
+            "endTime": row["end_time"],
+            "isActive": bool(row["is_active"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def schedule_study_session(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    start_at: str,
+    end_at: str,
+    session_type: str = "learning",
+    priority: int = 3,
+    path_id: str | None = None,
+    module_id: str | None = None,
+    objective_id: str | None = None,
+    description: str | None = None,
+    version_id: str | None = None,
+) -> dict:
+    """Create a scheduled study session.  Validates no overlaps with existing
+    sessions for the same user."""
+    from datetime import UTC, datetime
+
+    if session_type not in {"learning", "revision", "practice", "assessment", "break"}:
+        raise ValueError("invalid session_type")
+    if not 1 <= priority <= 5:
+        raise ValueError("priority must be between 1 and 5")
+
+    start_dt = datetime.fromisoformat(start_at.replace("Z", "+00:00"))
+    end_dt = datetime.fromisoformat(end_at.replace("Z", "+00:00"))
+    if end_dt <= start_dt:
+        raise ValueError("end_at must be after start_at")
+
+    duration_minutes = int((end_dt - start_dt).total_seconds() / 60)
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+    session_id = f"sched_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            path = None
+            if path_id is not None:
+                path = connection.execute(
+                    "SELECT user_id FROM learning_paths WHERE path_id = ?",
+                    (path_id,),
+                ).fetchone()
+                if path is None or path["user_id"] != user_id:
+                    raise PermissionError("You do not own this learning path.")
+
+            # Check for overlapping sessions.
+            overlap = connection.execute(
+                """
+                SELECT session_id FROM scheduled_study_sessions
+                WHERE tenant_id = ?
+                  AND status != 'cancelled'
+                  AND start_at < ? AND end_at > ?
+                """,
+                (tenant_id, end_at, start_at),
+            ).fetchone()
+            if overlap is not None:
+                raise ValueError(
+                    f"Session overlaps with existing session {overlap['session_id']}"
+                )
+
+            connection.execute(
+                """
+                INSERT INTO scheduled_study_sessions(
+                    session_id, user_id, tenant_id, path_id, module_id,
+                    objective_id, title, description, start_at, end_at,
+                    duration_minutes, status, session_type, priority,
+                    actual_duration_minutes, notes, version_id,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    user_id,
+                    tenant_id,
+                    path_id,
+                    module_id,
+                    objective_id,
+                    title,
+                    description,
+                    start_at,
+                    end_at,
+                    duration_minutes,
+                    "scheduled",
+                    session_type,
+                    priority,
+                    None,
+                    None,
+                    version_id,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "sessionId": session_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "pathId": path_id,
+        "moduleId": module_id,
+        "objectiveId": objective_id,
+        "title": title,
+        "description": description,
+        "startAt": start_at,
+        "endAt": end_at,
+        "durationMinutes": duration_minutes,
+        "status": "scheduled",
+        "sessionType": session_type,
+        "priority": priority,
+        "versionId": version_id,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_scheduled_study_sessions(
+    database_path: Path,
+    *,
+    user_id: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    status: str | None = None,
+) -> list[dict]:
+    """List scheduled study sessions for a user, optionally filtered."""
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+    params: list = [tenant_id]
+    where = "WHERE tenant_id = ?"
+    if start_date is not None:
+        where += " AND start_at >= ?"
+        params.append(start_date)
+    if end_date is not None:
+        where += " AND end_at <= ?"
+        params.append(end_date)
+    if status is not None:
+        where += " AND status = ?"
+        params.append(status)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            f"""
+            SELECT session_id, user_id, tenant_id, path_id, module_id,
+                   objective_id, title, description, start_at, end_at,
+                   duration_minutes, status, session_type, priority,
+                   actual_duration_minutes, notes, version_id,
+                   created_at, updated_at
+            FROM scheduled_study_sessions
+            {where}
+            ORDER BY start_at ASC
+            """,
+            params,
+        ).fetchall()
+    return [
+        {
+            "sessionId": row["session_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "pathId": row["path_id"],
+            "moduleId": row["module_id"],
+            "objectiveId": row["objective_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "startAt": row["start_at"],
+            "endAt": row["end_at"],
+            "durationMinutes": row["duration_minutes"],
+            "status": row["status"],
+            "sessionType": row["session_type"],
+            "priority": row["priority"],
+            "actualDurationMinutes": row["actual_duration_minutes"],
+            "notes": row["notes"],
+            "versionId": row["version_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_scheduled_study_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    title: str | None = None,
+    start_at: str | None = None,
+    end_at: str | None = None,
+    session_type: str | None = None,
+    priority: int | None = None,
+    status: str | None = None,
+    actual_duration_minutes: int | None = None,
+    notes: str | None = None,
+) -> dict | None:
+    """Update a scheduled study session.  Only the owner may update."""
+    from datetime import UTC, datetime
+
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+    now = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                """
+                SELECT session_id FROM scheduled_study_sessions
+                WHERE session_id = ? AND user_id = ?
+                """,
+                (session_id, user_id),
+            ).fetchone()
+            if row is None:
+                return None
+
+            updates = []
+            params: list = []
+            if title is not None:
+                updates.append("title = ?")
+                params.append(title)
+            if start_at is not None:
+                updates.append("start_at = ?")
+                params.append(start_at)
+            if end_at is not None:
+                updates.append("end_at = ?")
+                params.append(end_at)
+            if session_type is not None:
+                updates.append("session_type = ?")
+                params.append(session_type)
+            if priority is not None:
+                if not 1 <= priority <= 5:
+                    raise ValueError("priority must be between 1 and 5")
+                updates.append("priority = ?")
+                params.append(priority)
+            if status is not None:
+                updates.append("status = ?")
+                params.append(status)
+            if actual_duration_minutes is not None:
+                updates.append("actual_duration_minutes = ?")
+                params.append(actual_duration_minutes)
+            if notes is not None:
+                updates.append("notes = ?")
+                params.append(notes)
+            updates.append("updated_at = ?")
+            params.append(now)
+            params.append(session_id)
+
+            connection.execute(
+                f"""
+                UPDATE scheduled_study_sessions
+                SET {', '.join(updates)}
+                WHERE session_id = ?
+                """,
+                params,
+            )
+
+            return {
+                "sessionId": session_id,
+                "userId": user_id,
+                "status": status or "scheduled",
+                "updatedAt": now,
+            }
+
+
+def cancel_scheduled_study_session(
+    database_path: Path, *, session_id: str, user_id: str
+) -> bool:
+    """Cancel a scheduled study session.  Returns True if cancelled."""
+    from datetime import UTC, datetime
+
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                """
+                SELECT session_id FROM scheduled_study_sessions
+                WHERE session_id = ? AND user_id = ?
+                """,
+                (session_id, user_id),
+            ).fetchone()
+            if row is None:
+                return False
+            connection.execute(
+                """
+                UPDATE scheduled_study_sessions
+                SET status = 'cancelled', updated_at = ?
+                WHERE session_id = ?
+                """,
+                (now, session_id),
+            )
+    return True
+
+
+def create_schedule_version(
+    database_path: Path,
+    *,
+    user_id: str,
+    version_number: int,
+    title: str,
+    description: str | None = None,
+    start_date: str,
+    end_date: str,
+    total_planned_minutes: int = 0,
+    session_count: int = 0,
+    status: str = "active",
+) -> dict:
+    """Create a new schedule version."""
+    from datetime import UTC, datetime
+
+    version_id = f"schedver_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+
+    if status not in {"active", "superseded", "archived"}:
+        raise ValueError("invalid status")
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            # Mark all previous versions as not current.
+            connection.execute(
+                "UPDATE schedule_versions SET is_current = 0 WHERE user_id = ?",
+                (user_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO schedule_versions(
+                    version_id, user_id, tenant_id, version_number, title,
+                    description, start_date, end_date, total_planned_minutes,
+                    session_count, status, created_at, is_current
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                """,
+                (
+                    version_id,
+                    user_id,
+                    tenant_id,
+                    version_number,
+                    title,
+                    description,
+                    start_date,
+                    end_date,
+                    total_planned_minutes,
+                    session_count,
+                    status,
+                    now,
+                ),
+            )
+    return {
+        "versionId": version_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "versionNumber": version_number,
+        "title": title,
+        "description": description,
+        "startDate": start_date,
+        "endDate": end_date,
+        "totalPlannedMinutes": total_planned_minutes,
+        "sessionCount": session_count,
+        "status": status,
+        "createdAt": now,
+        "isCurrent": True,
+    }
+
+
+def list_schedule_versions(
+    database_path: Path, *, user_id: str
+) -> list[dict]:
+    """List schedule versions for a user, newest first."""
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT version_id, user_id, tenant_id, version_number, title,
+                   description, start_date, end_date, total_planned_minutes,
+                   session_count, status, created_at, is_current
+            FROM schedule_versions
+            WHERE tenant_id = ?
+            ORDER BY version_number DESC
+            """,
+            (tenant_id,),
+        ).fetchall()
+    return [
+        {
+            "versionId": row["version_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "versionNumber": row["version_number"],
+            "title": row["title"],
+            "description": row["description"],
+            "startDate": row["start_date"],
+            "endDate": row["end_date"],
+            "totalPlannedMinutes": row["total_planned_minutes"],
+            "sessionCount": row["session_count"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "isCurrent": bool(row["is_current"]),
+        }
+        for row in rows
+    ]
+
+
+def set_schedule_constraints(
+    database_path: Path,
+    *,
+    user_id: str,
+    max_daily_hours: int,
+    default_session_minutes: int,
+    buffer_minutes: int,
+    quiet_hours_start: int,
+    quiet_hours_end: int,
+    notification_advance_minutes: int,
+) -> dict:
+    """Set or update scheduling constraints for a user."""
+    from datetime import UTC, datetime
+
+    if max_daily_hours <= 0:
+        raise ValueError("max_daily_hours must be positive")
+    if default_session_minutes <= 0:
+        raise ValueError("default_session_minutes must be positive")
+    if buffer_minutes < 0:
+        raise ValueError("buffer_minutes must not be negative")
+    if not 0 <= quiet_hours_start <= 23:
+        raise ValueError("quiet_hours_start must be between 0 and 23")
+    if not 0 <= quiet_hours_end <= 23:
+        raise ValueError("quiet_hours_end must be between 0 and 23")
+    if notification_advance_minutes < 0:
+        raise ValueError("notification_advance_minutes must not be negative")
+
+    constraint_id = f"schedcon_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO schedule_constraints(
+                    constraint_id, user_id, tenant_id, max_daily_hours,
+                    default_session_minutes, buffer_minutes,
+                    quiet_hours_start, quiet_hours_end,
+                    notification_advance_minutes, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    max_daily_hours = excluded.max_daily_hours,
+                    default_session_minutes = excluded.default_session_minutes,
+                    buffer_minutes = excluded.buffer_minutes,
+                    quiet_hours_start = excluded.quiet_hours_start,
+                    quiet_hours_end = excluded.quiet_hours_end,
+                    notification_advance_minutes = excluded.notification_advance_minutes,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    constraint_id,
+                    user_id,
+                    tenant_id,
+                    max_daily_hours,
+                    default_session_minutes,
+                    buffer_minutes,
+                    quiet_hours_start,
+                    quiet_hours_end,
+                    notification_advance_minutes,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "constraintId": constraint_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "maxDailyHours": max_daily_hours,
+        "defaultSessionMinutes": default_session_minutes,
+        "bufferMinutes": buffer_minutes,
+        "quietHoursStart": quiet_hours_start,
+        "quietHoursEnd": quiet_hours_end,
+        "notificationAdvanceMinutes": notification_advance_minutes,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_schedule_constraints(
+    database_path: Path, *, user_id: str
+) -> dict | None:
+    """Get scheduling constraints for a user."""
+    tenant_id = _scheduler_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT constraint_id, user_id, tenant_id, max_daily_hours,
+                   default_session_minutes, buffer_minutes,
+                   quiet_hours_start, quiet_hours_end,
+                   notification_advance_minutes, created_at, updated_at
+            FROM schedule_constraints
+            WHERE tenant_id = ?
+            """,
+            (tenant_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "constraintId": row["constraint_id"],
+        "maxDailyHours": row["max_daily_hours"],
+        "defaultSessionMinutes": row["default_session_minutes"],
+        "bufferMinutes": row["buffer_minutes"],
+        "quietHoursStart": row["quiet_hours_start"],
+        "quietHoursEnd": row["quiet_hours_end"],
+        "notificationAdvanceMinutes": row["notification_advance_minutes"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
 

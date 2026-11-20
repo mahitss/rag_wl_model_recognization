@@ -461,6 +461,56 @@ class Settings(BaseSettings):
             raise ValueError("WL_PROGRESS_LOOKBACK_DAYS must be positive")
         return value
 
+    # Behavior intelligence settings (M85)
+    behavior_analysis_lookback_days: int = 90
+    behavior_min_repetitions: int = 2
+    behavior_staleness_days: int = 30
+    intervention_cooldown_days: int = 7
+    intervention_max_active: int = 10
+    intervention_retention_days: int = 180
+
+    @field_validator("behavior_analysis_lookback_days")
+    @classmethod
+    def behavior_lookback_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_BEHAVIOR_ANALYSIS_LOOKBACK_DAYS must be positive")
+        return value
+
+    @field_validator("behavior_min_repetitions")
+    @classmethod
+    def behavior_min_repetitions_positive(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("WL_BEHAVIOR_MIN_REPETITIONS must be at least 1")
+        return value
+
+    @field_validator("behavior_staleness_days")
+    @classmethod
+    def behavior_staleness_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_BEHAVIOR_STALENESS_DAYS must be positive")
+        return value
+
+    @field_validator("intervention_cooldown_days")
+    @classmethod
+    def intervention_cooldown_positive(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("WL_INTERVENTION_COOLDOWN_DAYS must not be negative")
+        return value
+
+    @field_validator("intervention_max_active")
+    @classmethod
+    def intervention_max_active_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_INTERVENTION_MAX_ACTIVE must be positive")
+        return value
+
+    @field_validator("intervention_retention_days")
+    @classmethod
+    def intervention_retention_positive(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("WL_INTERVENTION_RETENTION_DAYS must be positive")
+        return value
+
     @field_validator("scheduler_max_daily_hours")
     @classmethod
     def scheduler_max_daily_hours_positive(cls, value: int) -> int:

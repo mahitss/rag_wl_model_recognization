@@ -5449,8 +5449,148 @@ def initialize_storage(database_path: Path) -> None:
                     "ON insight_dismissals(insight_id)"
                 )
 
-            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learner_behavior_patterns (
+                pattern_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                pattern_type TEXT NOT NULL CHECK (length(pattern_type) BETWEEN 1 AND 100),
+                severity TEXT NOT NULL CHECK (severity IN ('minor','moderate','major','critical')),
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                evidence_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 2000),
+                first_observed TEXT NOT NULL,
+                last_observed TEXT NOT NULL,
+                recurrence_count INTEGER NOT NULL CHECK (recurrence_count >= 1),
+                is_active INTEGER NOT NULL CHECK (is_active IN (0,1)) DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_behavior_patterns_user_id "
+            "ON learner_behavior_patterns(user_id, is_active)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_behavior_patterns_tenant_id "
+            "ON learner_behavior_patterns(tenant_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_behavior_patterns_type "
+            "ON learner_behavior_patterns(pattern_type, is_active)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learner_state (
+                state_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                overall_mastery REAL CHECK (overall_mastery >= 0.0 AND overall_mastery <= 1.0),
+                average_confidence REAL CHECK (average_confidence >= 0.0 AND average_confidence <= 1.0),
+                recent_assessment_average REAL CHECK (recent_assessment_average >= 0.0 AND recent_assessment_average <= 1.0),
+                study_consistency_score REAL CHECK (study_consistency_score >= 0.0 AND study_consistency_score <= 1.0),
+                prerequisite_readiness_score REAL CHECK (prerequisite_readiness_score >= 0.0 AND prerequisite_readiness_score <= 1.0),
+                progress_velocity REAL CHECK (progress_velocity >= 0.0),
+                revision_regularity_score REAL CHECK (revision_regularity_score >= 0.0 AND revision_regularity_score <= 1.0),
+                state_snapshot TEXT NOT NULL CHECK (length(state_snapshot) > 0),
+                stale_after TEXT NOT NULL,
+                computed_at TEXT NOT NULL,
+                evidence_summary_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learner_state_user_id "
+            "ON learner_state(user_id, computed_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learner_state_tenant_id "
+            "ON learner_state(tenant_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS interventions (
+                intervention_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                intervention_type TEXT NOT NULL CHECK (length(intervention_type) BETWEEN 1 AND 100),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 2000),
+                observed_evidence_json TEXT NOT NULL DEFAULT '[]',
+                rationale TEXT NOT NULL CHECK (length(rationale) BETWEEN 1 AND 2000),
+                expected_benefit TEXT NOT NULL CHECK (length(expected_benefit) BETWEEN 1 AND 1000),
+                priority TEXT NOT NULL CHECK (priority IN ('low','medium','high','critical')),
+                urgency INTEGER NOT NULL CHECK (urgency >= 1 AND urgency <= 5),
+                next_action TEXT NOT NULL CHECK (length(next_action) BETWEEN 1 AND 1000),
+                resolution_conditions_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL CHECK (status IN ('proposed','dismissed','completed','expired')) DEFAULT 'proposed',
+                target_entity_type TEXT CHECK (length(target_entity_type) BETWEEN 1 AND 100),
+                target_entity_id TEXT CHECK (length(target_entity_id) BETWEEN 1 AND 200),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT,
+                cooldown_until TEXT,
+                ai_generated INTEGER NOT NULL CHECK (ai_generated IN (0,1)) DEFAULT 0
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_user_id "
+            "ON interventions(user_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_tenant_id "
+            "ON interventions(tenant_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_type "
+            "ON interventions(intervention_type, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_cooldown "
+            "ON interventions(cooldown_until)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS intervention_outcomes (
+                outcome_id TEXT PRIMARY KEY,
+                intervention_id TEXT NOT NULL REFERENCES interventions(intervention_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                outcome_type TEXT NOT NULL CHECK (length(outcome_type) BETWEEN 1 AND 100),
+                mastered_before REAL CHECK (mastered_before >= 0.0 AND mastered_before <= 1.0),
+                mastered_after REAL CHECK (mastered_after >= 0.0 AND mastered_after <= 1.0),
+                improvement_delta REAL,
+                measurement_date TEXT NOT NULL,
+                evidence_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                notes TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intervention_outcomes_intervention_id "
+            "ON intervention_outcomes(intervention_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intervention_outcomes_user_id "
+            "ON intervention_outcomes(user_id, measurement_date)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intervention_outcomes_tenant_id "
+            "ON intervention_outcomes(tenant_id)"
+        )
+        connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise RuntimeError("Database migration produced invalid foreign-key references")
@@ -23030,6 +23170,14 @@ def _interop_tenant_id(database_path: Path, user_id: str) -> str:
     """Derive a stable tenant id from a user (single-tenant per user in this
     local deployment)."""
     import hashlib
+
+    return f"tenant_{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
+
+
+def _behavior_tenant_id(database_path: Path, user_id: str) -> str:
+    """Derive a stable tenant id from a user (single-tenant per user)."""
+    import hashlib
+
     return f"tenant_{hashlib.sha256(user_id.encode()).hexdigest()[:24]}"
 
 
@@ -25524,3 +25672,562 @@ def list_insight_dismissals(
         for row in rows
     ]
 
+
+def store_behavior_pattern(
+    database_path: Path,
+    *,
+    user_id: str,
+    pattern_type: str,
+    severity: str,
+    confidence: float,
+    evidence_event_ids: list[str],
+    description: str,
+    recurrence_count: int = 1,
+) -> dict:
+    """Store a detected behavior pattern. Idempotent per (user_id, pattern_type)."""
+    from datetime import UTC, datetime
+
+    if severity not in {"minor", "moderate", "major", "critical"}:
+        raise ValueError("severity must be minor, moderate, major, or critical")
+    if not 0.0 <= confidence <= 1.0:
+        raise ValueError("confidence must be between 0 and 1")
+
+    pattern_id = f"behav_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                """
+                SELECT pattern_id FROM learner_behavior_patterns
+                WHERE user_id = ? AND pattern_type = ? AND is_active = 1
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (user_id, pattern_type),
+            ).fetchone()
+            if existing is not None:
+                connection.execute(
+                    """
+                    UPDATE learner_behavior_patterns
+                    SET severity = ?, confidence = ?,
+                        evidence_event_ids_json = ?,
+                        last_observed = ?,
+                        recurrence_count = recurrence_count + 1,
+                        updated_at = ?
+                    WHERE pattern_id = ?
+                    """,
+                    (
+                        severity, confidence,
+                        json.dumps(evidence_event_ids, sort_keys=True),
+                        now, now, now,
+                        existing["pattern_id"],
+                    ),
+                )
+                return {
+                    "patternId": existing["pattern_id"],
+                    "userId": user_id,
+                    "tenantId": tenant_id,
+                    "patternType": pattern_type,
+                    "severity": severity,
+                    "confidence": confidence,
+                    "description": description,
+                    "recurrenceCount": recurrence_count + 1,
+                    "isActive": True,
+                    "updatedAt": now,
+                    "firstObserved": existing["first_observed"],
+                    "lastObserved": now,
+                    "createdAt": existing["created_at"],
+                    "evidenceEventIds": evidence_event_ids,
+                }
+
+            connection.execute(
+                """
+                INSERT INTO learner_behavior_patterns(
+                    pattern_id, user_id, tenant_id, pattern_type, severity,
+                    confidence, evidence_event_ids_json, description,
+                    first_observed, last_observed, recurrence_count,
+                    is_active, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    pattern_id, user_id, tenant_id, pattern_type, severity,
+                    confidence, json.dumps(evidence_event_ids, sort_keys=True),
+                    description, now, now, recurrence_count, 1, now, now,
+                ),
+            )
+    return {
+        "patternId": pattern_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "patternType": pattern_type,
+        "severity": severity,
+        "confidence": confidence,
+        "description": description,
+        "recurrenceCount": recurrence_count,
+        "isActive": True,
+        "createdAt": now,
+        "updatedAt": now,
+        "firstObserved": now,
+        "lastObserved": now,
+        "evidenceEventIds": evidence_event_ids,
+    }
+
+
+def list_behavior_patterns(
+    database_path: Path,
+    *,
+    user_id: str,
+    is_active: bool | None = None,
+    pattern_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """List behavior patterns for a user."""
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+    params: list = [tenant_id]
+    where = "WHERE tenant_id = ?"
+    if is_active is not None:
+        where += " AND is_active = ?"
+        params.append(1 if is_active else 0)
+    if pattern_type is not None:
+        where += " AND pattern_type = ?"
+        params.append(pattern_type)
+    params.extend([limit, offset])
+    sql = f"""
+        SELECT pattern_id, user_id, tenant_id, pattern_type, severity,
+               confidence, evidence_event_ids_json, description,
+               first_observed, last_observed, recurrence_count, is_active,
+               created_at, updated_at
+        FROM learner_behavior_patterns
+        {where}
+        ORDER BY updated_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "patternId": row["pattern_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "patternType": row["pattern_type"],
+            "severity": row["severity"],
+            "confidence": row["confidence"],
+            "evidenceEventIds": json.loads(row["evidence_event_ids_json"] or "[]"),
+            "description": row["description"],
+            "firstObserved": row["first_observed"],
+            "lastObserved": row["last_observed"],
+            "recurrenceCount": row["recurrence_count"],
+            "isActive": bool(row["is_active"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def upsert_learner_state(
+    database_path: Path,
+    *,
+    user_id: str,
+    overall_mastery: float | None = None,
+    average_confidence: float | None = None,
+    recent_assessment_average: float | None = None,
+    study_consistency_score: float | None = None,
+    prerequisite_readiness_score: float | None = None,
+    progress_velocity: float | None = None,
+    revision_regularity_score: float | None = None,
+    state_snapshot: dict,
+    stale_days: int = 30,
+    evidence_summary: dict | None = None,
+) -> dict:
+    """Create or update learner state snapshot (idempotent per user - replaces)."""
+    from datetime import UTC, datetime
+
+    state_id = f"state_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    stale_after = (datetime.now(UTC) + timedelta(days=stale_days)).isoformat()
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+
+    # Validate ranges
+    for field_name, value in [
+        ("overall_mastery", overall_mastery),
+        ("average_confidence", average_confidence),
+        ("recent_assessment_average", recent_assessment_average),
+        ("study_consistency_score", study_consistency_score),
+        ("prerequisite_readiness_score", prerequisite_readiness_score),
+        ("revision_regularity_score", revision_regularity_score),
+    ]:
+        if value is not None and not 0.0 <= value <= 1.0:
+            raise ValueError(f"{field_name} must be between 0 and 1")
+    if progress_velocity is not None and progress_velocity < 0:
+        raise ValueError("progress_velocity must be non-negative")
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                'UPDATE learner_state SET state_snapshot = state_snapshot || \'{"superseded":true}\' WHERE user_id = ?',
+                (user_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO learner_state(
+                    state_id, user_id, tenant_id, overall_mastery,
+                    average_confidence, recent_assessment_average,
+                    study_consistency_score, prerequisite_readiness_score,
+                    progress_velocity, revision_regularity_score,
+                    state_snapshot, stale_after, computed_at, evidence_summary_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    state_id, user_id, tenant_id, overall_mastery,
+                    average_confidence, recent_assessment_average,
+                    study_consistency_score, prerequisite_readiness_score,
+                    progress_velocity, revision_regularity_score,
+                    json.dumps(state_snapshot, sort_keys=True),
+                    stale_after, now,
+                    json.dumps(evidence_summary or {}, sort_keys=True),
+                ),
+            )
+    return {
+        "stateId": state_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "overallMastery": overall_mastery,
+        "averageConfidence": average_confidence,
+        "recentAssessmentAverage": recent_assessment_average,
+        "studyConsistencyScore": study_consistency_score,
+        "prerequisiteReadinessScore": prerequisite_readiness_score,
+        "progressVelocity": progress_velocity,
+        "revisionRegularityScore": revision_regularity_score,
+        "stateSnapshot": state_snapshot,
+        "staleAfter": stale_after,
+        "computedAt": now,
+        "evidenceSummary": evidence_summary or {},
+    }
+
+
+def get_learner_state(
+    database_path: Path, *, user_id: str
+) -> dict | None:
+    """Get the most recent learner state snapshot."""
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT state_id, user_id, tenant_id, overall_mastery,
+                   average_confidence, recent_assessment_average,
+                   study_consistency_score, prerequisite_readiness_score,
+                   progress_velocity, revision_regularity_score,
+                   state_snapshot, stale_after, computed_at,
+                   evidence_summary_json
+            FROM learner_state
+            WHERE user_id = ?
+            ORDER BY computed_at DESC LIMIT 1
+            """,
+            (user_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "stateId": row["state_id"],
+        "userId": row["user_id"],
+        "tenantId": row["tenant_id"],
+        "overallMastery": row["overall_mastery"],
+        "averageConfidence": row["average_confidence"],
+        "recentAssessmentAverage": row["recent_assessment_average"],
+        "studyConsistencyScore": row["study_consistency_score"],
+        "prerequisiteReadinessScore": row["prerequisite_readiness_score"],
+        "progressVelocity": row["progress_velocity"],
+        "revisionRegularityScore": row["revision_regularity_score"],
+        "stateSnapshot": json.loads(row["state_snapshot"] or "{}"),
+        "staleAfter": row["stale_after"],
+        "computedAt": row["computed_at"],
+        "evidenceSummary": json.loads(row["evidence_summary_json"] or "{}"),
+    }
+
+
+def create_intervention(
+    database_path: Path,
+    *,
+    user_id: str,
+    intervention_type: str,
+    title: str,
+    description: str,
+    observed_evidence: list[dict],
+    rationale: str,
+    expected_benefit: str,
+    priority: str,
+    urgency: int,
+    next_action: str,
+    resolution_conditions: list[str] | None = None,
+    target_entity_type: str | None = None,
+    target_entity_id: str | None = None,
+    ai_generated: bool = False,
+) -> dict:
+    """Create a new intervention proposal."""
+    from datetime import UTC, datetime, timedelta
+
+    if priority not in {"low", "medium", "high", "critical"}:
+        raise ValueError("priority must be low, medium, high, or critical")
+    if not 1 <= urgency <= 5:
+        raise ValueError("urgency must be between 1 and 5")
+
+    intervention_id = f"interv_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+    resolution_conditions = resolution_conditions or []
+
+    cooldown_days = 7
+    cooldown_until = (datetime.now(UTC) + timedelta(days=cooldown_days)).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO interventions(
+                    intervention_id, user_id, tenant_id, intervention_type,
+                    title, description, observed_evidence_json, rationale,
+                    expected_benefit, priority, urgency, next_action,
+                    resolution_conditions_json, status, target_entity_type,
+                    target_entity_id, created_at, updated_at, cooldown_until,
+                    ai_generated
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    intervention_id, user_id, tenant_id, intervention_type,
+                    title, description, json.dumps(observed_evidence, sort_keys=True),
+                    rationale, expected_benefit, priority, urgency, next_action,
+                    json.dumps(resolution_conditions, sort_keys=True),
+                    "proposed", target_entity_type, target_entity_id,
+                    now, now, cooldown_until, 1 if ai_generated else 0,
+                ),
+            )
+    return {
+        "interventionId": intervention_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "interventionType": intervention_type,
+        "title": title,
+        "description": description,
+        "observedEvidence": observed_evidence,
+        "rationale": rationale,
+        "expectedBenefit": expected_benefit,
+        "priority": priority,
+        "urgency": urgency,
+        "nextAction": next_action,
+        "resolutionConditions": resolution_conditions,
+        "status": "proposed",
+        "targetEntityType": target_entity_type,
+        "targetEntityId": target_entity_id,
+        "createdAt": now,
+        "updatedAt": now,
+        "cooldownUntil": cooldown_until,
+        "aiGenerated": ai_generated,
+    }
+
+
+def list_interventions(
+    database_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+    intervention_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """List interventions for a user."""
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+    params: list = [tenant_id, limit, offset]
+    where = "WHERE tenant_id = ?"
+    if status is not None:
+        where += " AND status = ?"
+        params.append(status)
+    if intervention_type is not None:
+        where += " AND intervention_type = ?"
+        params.append(intervention_type)
+    sql = f"""
+        SELECT intervention_id, user_id, tenant_id, intervention_type, title,
+               description, observed_evidence_json, rationale, expected_benefit,
+               priority, urgency, next_action, resolution_conditions_json,
+               status, target_entity_type, target_entity_id, created_at,
+               updated_at, resolved_at, cooldown_until, ai_generated
+        FROM interventions
+        {where}
+        ORDER BY created_at DESC
+        LIMIT ? OFFSET ?
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(sql, params).fetchall()
+    return [
+        {
+            "interventionId": row["intervention_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "interventionType": row["intervention_type"],
+            "title": row["title"],
+            "description": row["description"],
+            "observedEvidence": json.loads(row["observed_evidence_json"] or "[]"),
+            "rationale": row["rationale"],
+            "expectedBenefit": row["expected_benefit"],
+            "priority": row["priority"],
+            "urgency": row["urgency"],
+            "nextAction": row["next_action"],
+            "resolutionConditions": json.loads(row["resolution_conditions_json"] or "[]"),
+            "status": row["status"],
+            "targetEntityType": row["target_entity_type"],
+            "targetEntityId": row["target_entity_id"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+            "resolvedAt": row["resolved_at"],
+            "cooldownUntil": row["cooldown_until"],
+            "aiGenerated": bool(row["ai_generated"]),
+        }
+        for row in rows
+    ]
+
+
+def respond_to_intervention(
+    database_path: Path,
+    *,
+    intervention_id: str,
+    user_id: str,
+    response: str,
+) -> dict | None:
+    """Respond to an intervention: accept, dismiss, or complete."""
+    from datetime import UTC, datetime
+
+    if response not in {"accepted", "dismissed", "completed"}:
+        raise ValueError("response must be accepted, dismissed, or completed")
+
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+    now = datetime.now(UTC).isoformat()
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            row = connection.execute(
+                """
+                SELECT intervention_id FROM interventions
+                WHERE intervention_id = ? AND user_id = ? AND status = 'proposed'
+                """,
+                (intervention_id, user_id),
+            ).fetchone()
+            if row is None:
+                return None
+            connection.execute(
+                """
+                UPDATE interventions
+                SET status = ?, updated_at = ?, resolved_at = ?
+                WHERE intervention_id = ?
+                """,
+                (response, now, now, intervention_id),
+            )
+    return {
+        "interventionId": intervention_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "status": response,
+        "resolvedAt": now,
+    }
+
+
+def record_intervention_outcome(
+    database_path: Path,
+    *,
+    intervention_id: str,
+    user_id: str,
+    outcome_type: str,
+    mastered_before: float | None = None,
+    mastered_after: float | None = None,
+    evidence_event_ids: list[str] | None = None,
+    notes: str | None = None,
+) -> dict:
+    """Record the outcome of an intervention for effectiveness measurement."""
+    from datetime import UTC, datetime
+
+    outcome_id = f"outcome_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+    evidence_event_ids = evidence_event_ids or []
+
+    if mastered_before is not None and not 0.0 <= mastered_before <= 1.0:
+        raise ValueError("mastered_before must be between 0 and 1")
+    if mastered_after is not None and not 0.0 <= mastered_after <= 1.0:
+        raise ValueError("mastered_after must be between 0 and 1")
+
+    improvement_delta = None
+    if mastered_before is not None and mastered_after is not None:
+        improvement_delta = mastered_after - mastered_before
+
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO intervention_outcomes(
+                    outcome_id, intervention_id, user_id, tenant_id,
+                    outcome_type, mastered_before, mastered_after,
+                    improvement_delta, measurement_date,
+                    evidence_event_ids_json, notes, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    outcome_id, intervention_id, user_id, tenant_id,
+                    outcome_type, mastered_before, mastered_after,
+                    improvement_delta, now,
+                    json.dumps(evidence_event_ids, sort_keys=True),
+                    notes, now,
+                ),
+            )
+    return {
+        "outcomeId": outcome_id,
+        "interventionId": intervention_id,
+        "userId": user_id,
+        "tenantId": tenant_id,
+        "outcomeType": outcome_type,
+        "masteredBefore": mastered_before,
+        "masteredAfter": mastered_after,
+        "improvementDelta": improvement_delta,
+        "measurementDate": now,
+        "evidenceEventIds": evidence_event_ids,
+        "notes": notes,
+        "createdAt": now,
+    }
+
+
+def list_intervention_outcomes(
+    database_path: Path, *, user_id: str, limit: int = 50, offset: int = 0
+) -> list[dict]:
+    """List intervention outcomes for a user."""
+    tenant_id = _behavior_tenant_id(database_path, user_id)
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT outcome_id, intervention_id, user_id, tenant_id,
+                   outcome_type, mastered_before, mastered_after,
+                   improvement_delta, measurement_date,
+                   evidence_event_ids_json, notes, created_at
+            FROM intervention_outcomes
+            WHERE tenant_id = ?
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (tenant_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "outcomeId": row["outcome_id"],
+            "interventionId": row["intervention_id"],
+            "userId": row["user_id"],
+            "tenantId": row["tenant_id"],
+            "outcomeType": row["outcome_type"],
+            "masteredBefore": row["mastered_before"],
+            "masteredAfter": row["mastered_after"],
+            "improvementDelta": row["improvement_delta"],
+            "measurementDate": row["measurement_date"],
+            "evidenceEventIds": json.loads(row["evidence_event_ids_json"] or "[]"),
+            "notes": row["notes"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]

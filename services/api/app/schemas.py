@@ -5022,3 +5022,129 @@ class ProgressInsight(BaseModel):
     recommendedActions: list[str] = []
     triggerEventIds: list[str] = []
 
+
+# ---------------------------------------------------------------------------
+# M85: AI Learning Behavior Intelligence & Personalized Intervention schemas
+# ---------------------------------------------------------------------------
+
+
+class BehaviorPatternResponse(BaseModel):
+    patternId: str
+    userId: str
+    tenantId: str
+    patternType: str
+    severity: str
+    confidence: float
+    evidenceEventIds: list[str] = []
+    description: str
+    firstObserved: str
+    lastObserved: str
+    recurrenceCount: int
+    isActive: bool
+    createdAt: str
+    updatedAt: str
+
+
+class BehaviorPatternListResponse(BaseModel):
+    patterns: list[BehaviorPatternResponse]
+
+
+class LearnerStateResponse(BaseModel):
+    stateId: str
+    userId: str
+    tenantId: str
+    overallMastery: float | None = None
+    averageConfidence: float | None = None
+    recentAssessmentAverage: float | None = None
+    studyConsistencyScore: float | None = None
+    prerequisiteReadinessScore: float | None = None
+    progressVelocity: float | None = None
+    revisionRegularityScore: float | None = None
+    stateSnapshot: dict[str, Any]
+    staleAfter: str
+    computedAt: str
+    evidenceSummary: dict[str, Any] = {}
+
+
+class InterventionCreate(BaseModel):
+    interventionType: str = Field(min_length=1, max_length=100)
+    title: str = Field(min_length=1, max_length=200)
+    description: str = Field(min_length=1, max_length=2000)
+    observedEvidence: list[dict[str, Any]] = []
+    rationale: str = Field(min_length=1, max_length=2000)
+    expectedBenefit: str = Field(min_length=1, max_length=1000)
+    priority: str = Field(min_length=1, max_length=20)
+    urgency: int = Field(ge=1, le=5)
+    nextAction: str = Field(min_length=1, max_length=1000)
+    resolutionConditions: list[str] | None = Field(default=None)
+    targetEntityType: str | None = Field(default=None, max_length=100)
+    targetEntityId: str | None = Field(default=None, max_length=200)
+    aiGenerated: bool = False
+
+
+class InterventionResponse(BaseModel):
+    interventionId: str
+    userId: str
+    tenantId: str
+    interventionType: str
+    title: str
+    description: str
+    observedEvidence: list[dict[str, Any]] = []
+    rationale: str
+    expectedBenefit: str
+    priority: str
+    urgency: int
+    nextAction: str
+    resolutionConditions: list[str] = []
+    status: str
+    targetEntityType: str | None = None
+    targetEntityId: str | None = None
+    createdAt: str
+    updatedAt: str
+    resolvedAt: str | None = None
+    cooldownUntil: str | None = None
+    aiGenerated: bool = False
+
+
+class InterventionListResponse(BaseModel):
+    interventions: list[InterventionResponse]
+
+
+class InterventionRespond(BaseModel):
+    response: str = Field(min_length=1, max_length=20)
+
+
+class InterventionOutcomeCreate(BaseModel):
+    outcomeType: str = Field(min_length=1, max_length=100)
+    masteredBefore: float | None = Field(default=None, ge=0.0, le=1.0)
+    masteredAfter: float | None = Field(default=None, ge=0.0, le=1.0)
+    evidenceEventIds: list[str] | None = Field(default=None)
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class InterventionOutcomeResponse(BaseModel):
+    outcomeId: str
+    interventionId: str
+    userId: str
+    tenantId: str
+    outcomeType: str
+    masteredBefore: float | None = None
+    masteredAfter: float | None = None
+    improvementDelta: float | None = None
+    measurementDate: str
+    evidenceEventIds: list[str] = []
+    notes: str | None = None
+    createdAt: str
+
+
+class InterventionOutcomeListResponse(BaseModel):
+    outcomes: list[InterventionOutcomeResponse]
+
+
+class LearnerBehaviorAnalysisResult(BaseModel):
+    userId: str
+    patterns: list[BehaviorPatternResponse]
+    state: LearnerStateResponse | None = None
+    interventions: list[InterventionResponse]
+    generatedAt: str
+

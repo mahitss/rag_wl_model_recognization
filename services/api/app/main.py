@@ -26,6 +26,7 @@ from app.api.v1.groups_routes import router as groups_router
 from app.api.v1.institutions_routes import router as institutions_router
 from app.api.v1.interoperability_routes import router as interoperability_router
 from app.api.v1.journey_routes import router as journey_router
+from app.api.v1.learner_behavior_routes import router as learner_behavior_router
 from app.api.v1.learning_path_routes import router as learning_path_router
 from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.model_routes import router as model_routes_router
@@ -182,6 +183,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(scheduler_router)
     # Real-Time Learning Progress & Engagement Intelligence (M84)
     application.include_router(progress_router)
+    # AI Learning Behavior Intelligence & Personalized Intervention (M85)
+    application.include_router(learner_behavior_router)
     # API v2 (backward-compatible versioned router)
     application.include_router(v2_router)
     print(f"DEBUG content_validation_router included, routes={len(application.router.routes)}")

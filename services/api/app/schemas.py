@@ -5148,3 +5148,189 @@ class LearnerBehaviorAnalysisResult(BaseModel):
     interventions: list[InterventionResponse]
     generatedAt: str
 
+
+# ---------------------------------------------------------------------------
+# M86: AI-Powered Knowledge Assessment & Diagnostic Intelligence schemas.
+# Diagnostic assessment sessions, per-concept results, misconceptions, and
+# question versioning built on existing M64 assessment/competency tables.
+# ---------------------------------------------------------------------------
+
+
+class DiagnosticSessionStatus(str):
+    pass
+
+
+class DiagnosticSessionCreateRequest(ApiModel):
+    topicId: str = Field(min_length=1, max_length=200)
+    topic: str = Field(min_length=1, max_length=200)
+    assessmentId: str | None = Field(default=None, min_length=1, max_length=80)
+    difficultyLevel: str | None = Field(
+        default=None, description="foundational, building, practice, or advanced"
+    )
+    maxQuestions: int = Field(default=20, ge=1, le=50)
+    minEvidenceQuestions: int = Field(default=5, ge=1, le=20)
+    confidenceThreshold: float = Field(default=0.80, ge=0.0, le=1.0)
+
+
+class DiagnosticSessionResponse(ApiModel):
+    sessionId: str
+    userId: str
+    topicId: str
+    topic: str
+    assessmentId: str | None
+    status: str
+    difficultyLevel: str | None
+    currentConceptId: str | None
+    conceptsAssessed: list[str]
+    questionsAsked: list[str]
+    stoppingReason: str | None
+    maxQuestions: int
+    minEvidenceQuestions: int
+    confidenceThreshold: float
+    startedAt: str
+    completedAt: str | None
+    createdAt: str
+    updatedAt: str
+
+
+class DiagnosticQuestionResponse(ApiModel):
+    questionId: str
+    assessmentId: str
+    conceptId: str | None
+    conceptName: str | None
+    questionType: str
+    prompt: str
+    options: list[dict[str, str]] | None = None
+    difficultyLevel: str | None
+    position: int
+    citations: list[dict[str, Any]] = []
+
+
+class DiagnosticNextQuestionRequest(ApiModel):
+    sessionId: str = Field(min_length=1, max_length=80)
+
+
+class DiagnosticNextQuestionResponse(ApiModel):
+    sessionId: str
+    status: str
+    question: DiagnosticQuestionResponse | None = None
+    stoppingReason: str | None = None
+    evidenceSufficient: bool = False
+    conceptsRemaining: int = 0
+
+
+class DiagnosticAnswerSubmitRequest(ApiModel):
+    sessionId: str = Field(min_length=1, max_length=80)
+    questionId: str = Field(min_length=1, max_length=80)
+    answer: str = Field(min_length=1, max_length=2000)
+    durationMs: int | None = Field(default=None, ge=0)
+
+
+class DiagnosticAnswerSubmitResponse(ApiModel):
+    attemptId: str
+    questionId: str
+    outcome: str
+    isCorrect: bool | None
+    competencyScore: float | None
+    confidence: float
+    evidenceSufficient: bool
+    conceptsRemaining: int
+    stoppingReason: str | None
+
+
+class DiagnosticConceptResultResponse(ApiModel):
+    resultId: str
+    sessionId: str
+    userId: str
+    conceptId: str
+    conceptName: str
+    competencyScore: float | None
+    confidence: float
+    evidenceQuestionIds: list[str]
+    correctCount: int
+    incorrectCount: int
+    ambiguousCount: int
+    totalQuestions: int
+    prerequisiteGap: str | None
+    areasRequiringAssessment: list[str]
+    misconceptionIds: list[str]
+    assessedAt: str
+    createdAt: str
+
+
+class DiagnosticMisconceptionResponse(ApiModel):
+    misconceptionId: str
+    sessionId: str
+    userId: str
+    conceptId: str
+    conceptName: str
+    misconceptionType: str
+    description: str
+    evidenceQuestionIds: list[str]
+    severity: str
+    detectedAt: str
+
+
+class DiagnosticSessionResultResponse(ApiModel):
+    session: DiagnosticSessionResponse
+    conceptResults: list[DiagnosticConceptResultResponse]
+    misconceptions: list[DiagnosticMisconceptionResponse]
+    overallCompetency: float | None
+    overallConfidence: float
+    stoppingReason: str | None
+    evidenceSufficient: bool
+
+
+class DiagnosticSessionListItem(ApiModel):
+    sessionId: str
+    topicId: str
+    topic: str
+    status: str
+    startedAt: str
+    completedAt: str | None
+    stoppingReason: str | None
+    questionsAsked: int
+
+
+class DiagnosticSessionListResponse(ApiModel):
+    sessions: list[DiagnosticSessionListItem]
+    total: int
+    limit: int
+    offset: int
+
+
+class DiagnosticMasteryMappingItem(ApiModel):
+    conceptId: str
+    conceptName: str
+    diagnosticCompetency: float | None
+    diagnosticConfidence: float
+    persistedMastery: float | None
+    evidenceCount: int
+    recommendedAction: str
+
+
+class DiagnosticMasteryMappingResponse(ApiModel):
+    sessionId: str
+    masteryMapping: list[DiagnosticMasteryMappingItem]
+
+
+class DiagnosticRecommendationResponse(ApiModel):
+    sessionId: str
+    weakConcepts: list[dict[str, Any]]
+    recommendations: list[dict[str, Any]]
+
+
+class QuestionVersionResponse(ApiModel):
+    versionId: str
+    questionId: str
+    versionNumber: int
+    promptHash: str
+    optionsHash: str | None
+    answerKeyHash: str
+    difficultyLevel: str | None
+    conceptId: str | None
+    isCurrent: bool
+    createdAt: str
+    createdBy: str | None
+
+

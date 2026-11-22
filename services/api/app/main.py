@@ -19,6 +19,7 @@ from app.api.v1.companion_routes import router as companion_router
 from app.api.v1.content import router as content_router
 from app.api.v1.content_validation import router as content_validation_router
 from app.api.v1.courses_routes import router as courses_router
+from app.api.v1.diagnostic_routes import router as diagnostic_router
 from app.api.v1.exam_routes import router as exam_router
 from app.api.v1.gap_routes import router as gap_router
 from app.api.v1.groups_ai_routes import router as groups_ai_router
@@ -36,6 +37,7 @@ from app.api.v1.recommendations_routes import router as recommendations_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.scheduler_routes import router as scheduler_router
 from app.api.v1.search_routes import router as search_router
+from app.api.v1.standards_routes import router as standards_router
 from app.api.v1.verification_routes import router as verification_router
 from app.api.v1.workspaces import router as workspaces_router
 from app.api.v2.routes import router as v2_router
@@ -139,6 +141,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(content_validation_router)
     # Companion router (personal AI learning companion, user-scoped)
     application.include_router(companion_router)
+    # Diagnostic assessment routes (M86)
+    application.include_router(diagnostic_router)
     # Model observability & evaluation admin routes (admin only)
     application.include_router(model_routes_router)
     # Content verification routes (M59: AI Content Verification & Trust Engine)
@@ -175,6 +179,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(search_router)
     # Educational Standards & Learning Interoperability (M80)
     application.include_router(interoperability_router)
+    # Standards-based Interoperability Adapters (M86)
+    application.include_router(standards_router)
     # AI-Powered Learning Content Recommendation & Discovery (M81)
     application.include_router(recommendations_router)
     # AI Learning Path Generator & Dynamic Curriculum Orchestration (M82)

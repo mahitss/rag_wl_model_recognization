@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 40
+SCHEMA_VERSION = 41
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -5590,10 +5590,798 @@ def initialize_storage(database_path: Path) -> None:
             "CREATE INDEX IF NOT EXISTS idx_intervention_outcomes_tenant_id "
             "ON intervention_outcomes(tenant_id)"
         )
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learner_behavior_patterns (
+                pattern_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                pattern_type TEXT NOT NULL CHECK (length(pattern_type) BETWEEN 1 AND 100),
+                severity TEXT NOT NULL CHECK (severity IN ('minor','moderate','major','critical')),
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                evidence_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 2000),
+                first_observed TEXT NOT NULL,
+                last_observed TEXT NOT NULL,
+                recurrence_count INTEGER NOT NULL CHECK (recurrence_count >= 1),
+                is_active INTEGER NOT NULL CHECK (is_active IN (0,1)) DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_behavior_patterns_user_id "
+            "ON learner_behavior_patterns(user_id, is_active)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_behavior_patterns_tenant_id "
+            "ON learner_behavior_patterns(tenant_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_behavior_patterns_type "
+            "ON learner_behavior_patterns(pattern_type, is_active)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learner_state (
+                state_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                overall_mastery REAL CHECK (overall_mastery >= 0.0 AND overall_mastery <= 1.0),
+                average_confidence REAL CHECK (average_confidence >= 0.0 AND average_confidence <= 1.0),
+                recent_assessment_average REAL CHECK (recent_assessment_average >= 0.0 AND recent_assessment_average <= 1.0),
+                study_consistency_score REAL CHECK (study_consistency_score >= 0.0 AND study_consistency_score <= 1.0),
+                prerequisite_readiness_score REAL CHECK (prerequisite_readiness_score >= 0.0 AND prerequisite_readiness_score <= 1.0),
+                progress_velocity REAL CHECK (progress_velocity >= 0.0),
+                revision_regularity_score REAL CHECK (revision_regularity_score >= 0.0 AND revision_regularity_score <= 1.0),
+                state_snapshot TEXT NOT NULL CHECK (length(state_snapshot) > 0),
+                stale_after TEXT NOT NULL,
+                computed_at TEXT NOT NULL,
+                evidence_summary_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learner_state_user_id "
+            "ON learner_state(user_id, computed_at)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learner_state_tenant_id "
+            "ON learner_state(tenant_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS interventions (
+                intervention_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                intervention_type TEXT NOT NULL CHECK (length(intervention_type) BETWEEN 1 AND 100),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 2000),
+                observed_evidence_json TEXT NOT NULL DEFAULT '[]',
+                rationale TEXT NOT NULL CHECK (length(rationale) BETWEEN 1 AND 2000),
+                expected_benefit TEXT NOT NULL CHECK (length(expected_benefit) BETWEEN 1 AND 1000),
+                priority TEXT NOT NULL CHECK (priority IN ('low','medium','high','critical')),
+                urgency INTEGER NOT NULL CHECK (urgency >= 1 AND urgency <= 5),
+                next_action TEXT NOT NULL CHECK (length(next_action) BETWEEN 1 AND 1000),
+                resolution_conditions_json TEXT NOT NULL DEFAULT '[]',
+                status TEXT NOT NULL CHECK (status IN ('proposed','dismissed','completed','expired')) DEFAULT 'proposed',
+                target_entity_type TEXT CHECK (length(target_entity_type) BETWEEN 1 AND 100),
+                target_entity_id TEXT CHECK (length(target_entity_id) BETWEEN 1 AND 200),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                resolved_at TEXT,
+                cooldown_until TEXT,
+                ai_generated INTEGER NOT NULL CHECK (ai_generated IN (0,1)) DEFAULT 0
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_user_id "
+            "ON interventions(user_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_tenant_id "
+            "ON interventions(tenant_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_type "
+            "ON interventions(intervention_type, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_interventions_cooldown "
+            "ON interventions(cooldown_until)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS intervention_outcomes (
+                outcome_id TEXT PRIMARY KEY,
+                intervention_id TEXT NOT NULL REFERENCES interventions(intervention_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL,
+                outcome_type TEXT NOT NULL CHECK (length(outcome_type) BETWEEN 1 AND 100),
+                mastered_before REAL CHECK (mastered_before >= 0.0 AND mastered_before <= 1.0),
+                mastered_after REAL CHECK (mastered_after >= 0.0 AND mastered_after <= 1.0),
+                improvement_delta REAL,
+                measurement_date TEXT NOT NULL,
+                evidence_event_ids_json TEXT NOT NULL DEFAULT '[]',
+                notes TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intervention_outcomes_intervention_id "
+            "ON intervention_outcomes(intervention_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intervention_outcomes_user_id "
+            "ON intervention_outcomes(user_id, measurement_date)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_intervention_outcomes_tenant_id "
+            "ON intervention_outcomes(tenant_id)"
+        )
+
+        # ------------------------------------------------------------------
+        # M86: AI-Powered Knowledge Assessment & Diagnostic Intelligence.
+        # Diagnostic assessment sessions, per-concept results, misconception
+        # patterns, and question versioning built on the existing M64
+        # assessment tables (assessments, assessment_questions,
+        # assessment_attempts, assessment_question_attempts, competencies,
+        # user_competency_mastery, learning_gaps).
+        # ------------------------------------------------------------------
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS diagnostic_sessions (
+                session_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                topic_id TEXT NOT NULL,
+                topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 200),
+                assessment_id TEXT REFERENCES assessments(assessment_id)
+                    ON DELETE SET NULL,
+                status TEXT NOT NULL CHECK (status IN (
+                    'in_progress', 'completed', 'abandoned', 'insufficient_evidence'
+                )) DEFAULT 'in_progress',
+                difficulty_level TEXT CHECK (difficulty_level IN (
+                    'foundational', 'building', 'practice', 'advanced'
+                )),
+                current_concept_id TEXT,
+                concepts_assessed_json TEXT NOT NULL DEFAULT '[]',
+                questions_asked_json TEXT NOT NULL DEFAULT '[]',
+                stopping_reason TEXT,
+                max_questions INTEGER NOT NULL CHECK (max_questions > 0),
+                min_evidence_questions INTEGER NOT NULL CHECK (min_evidence_questions > 0),
+                confidence_threshold REAL NOT NULL CHECK (confidence_threshold >= 0.0 AND confidence_threshold <= 1.0),
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_diagnostic_sessions_user_id "
+            "ON diagnostic_sessions(user_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_diagnostic_sessions_topic_id "
+            "ON diagnostic_sessions(topic_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS diagnostic_concept_results (
+                result_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES diagnostic_sessions(session_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                concept_id TEXT NOT NULL,
+                concept_name TEXT NOT NULL CHECK (length(concept_name) BETWEEN 1 AND 200),
+                competency_score REAL NOT NULL CHECK (competency_score >= 0.0 AND competency_score <= 1.0),
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                evidence_question_ids_json TEXT NOT NULL DEFAULT '[]',
+                correct_count INTEGER NOT NULL CHECK (correct_count >= 0),
+                incorrect_count INTEGER NOT NULL CHECK (incorrect_count >= 0),
+                ambiguous_count INTEGER NOT NULL CHECK (ambiguous_count >= 0),
+                total_questions INTEGER NOT NULL CHECK (total_questions >= 0),
+                prerequisite_gap TEXT,
+                areas_requiring_assessment_json TEXT NOT NULL DEFAULT '[]',
+                misconception_ids_json TEXT NOT NULL DEFAULT '[]',
+                assessed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_diagnostic_concept_results_session_id "
+            "ON diagnostic_concept_results(session_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_diagnostic_concept_results_user_id "
+            "ON diagnostic_concept_results(user_id, concept_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS diagnostic_misconceptions (
+                misconception_id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL REFERENCES diagnostic_sessions(session_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                concept_id TEXT NOT NULL,
+                concept_name TEXT NOT NULL CHECK (length(concept_name) BETWEEN 1 AND 200),
+                misconception_type TEXT NOT NULL CHECK (misconception_type IN (
+                    'incorrect_response', 'repeated_misconception', 'prerequisite_gap',
+                    'confusion_between_concepts', 'partial_understanding'
+                )),
+                description TEXT NOT NULL CHECK (length(description) BETWEEN 1 AND 2000),
+                evidence_question_ids_json TEXT NOT NULL DEFAULT '[]',
+                severity TEXT NOT NULL CHECK (severity IN ('minor', 'moderate', 'critical')),
+                detected_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_diagnostic_misconceptions_session_id "
+            "ON diagnostic_misconceptions(session_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_diagnostic_misconceptions_user_id "
+            "ON diagnostic_misconceptions(user_id, concept_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS question_versions (
+                version_id TEXT PRIMARY KEY,
+                question_id TEXT NOT NULL,
+                version_number INTEGER NOT NULL CHECK (version_number >= 1),
+                prompt_hash TEXT NOT NULL CHECK (length(prompt_hash) = 64),
+                options_hash TEXT,
+                answer_key_hash TEXT NOT NULL CHECK (length(answer_key_hash) = 64),
+                difficulty_level TEXT CHECK (difficulty_level IN (
+                    'foundational', 'building', 'practice', 'advanced'
+                )),
+                concept_id TEXT,
+                is_current INTEGER NOT NULL CHECK (is_current IN (0, 1)) DEFAULT 1,
+                created_at TEXT NOT NULL,
+                created_by TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_question_versions_question_id "
+            "ON question_versions(question_id, version_number)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_question_versions_current "
+            "ON question_versions(question_id, is_current)"
+        )
+
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise RuntimeError("Database migration produced invalid foreign-key references")
+
+
+# ---------------------------------------------------------------------------
+# M86: Diagnostic assessment storage helpers.
+# ---------------------------------------------------------------------------
+
+def create_diagnostic_session(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str,
+    topic: str,
+    assessment_id: str | None = None,
+    difficulty_level: str | None = None,
+    max_questions: int = 20,
+    min_evidence_questions: int = 5,
+    confidence_threshold: float = 0.80,
+) -> dict[str, Any]:
+    """Create a new adaptive diagnostic assessment session for the user."""
+    session_id = f"diag_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO diagnostic_sessions(
+                    session_id, user_id, topic_id, topic, assessment_id,
+                    status, difficulty_level, max_questions,
+                    min_evidence_questions, confidence_threshold,
+                    started_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    session_id,
+                    user_id,
+                    topic_id,
+                    topic,
+                    assessment_id,
+                    difficulty_level,
+                    max_questions,
+                    min_evidence_questions,
+                    confidence_threshold,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+    return get_diagnostic_session(database_path, session_id, user_id=user_id)
+
+
+def get_diagnostic_session(
+    database_path: Path,
+    session_id: str,
+    *,
+    user_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return one diagnostic session, enforcing ownership when user_id is given."""
+    with closing(connect_database(database_path)) as connection:
+        if user_id is not None:
+            row = connection.execute(
+                "SELECT * FROM diagnostic_sessions WHERE session_id=? AND user_id=?",
+                (session_id, user_id),
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM diagnostic_sessions WHERE session_id=?",
+                (session_id,),
+            ).fetchone()
+    if row is None:
+        return None
+    return {
+        "session_id": row["session_id"],
+        "user_id": row["user_id"],
+        "topic_id": row["topic_id"],
+        "topic": row["topic"],
+        "assessment_id": row["assessment_id"],
+        "status": row["status"],
+        "difficulty_level": row["difficulty_level"],
+        "current_concept_id": row["current_concept_id"],
+        "concepts_assessed": json.loads(row["concepts_assessed_json"] or "[]"),
+        "questions_asked": json.loads(row["questions_asked_json"] or "[]"),
+        "stopping_reason": row["stopping_reason"],
+        "max_questions": row["max_questions"],
+        "min_evidence_questions": row["min_evidence_questions"],
+        "confidence_threshold": row["confidence_threshold"],
+        "started_at": row["started_at"],
+        "completed_at": row["completed_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def update_diagnostic_session(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    status: str | None = None,
+    difficulty_level: str | None = None,
+    current_concept_id: str | None = None,
+    concepts_assessed: list[str] | None = None,
+    questions_asked: list[str] | None = None,
+    stopping_reason: str | None = None,
+    completed_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Update mutable diagnostic session fields atomically."""
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            existing = connection.execute(
+                "SELECT session_id FROM diagnostic_sessions WHERE session_id=? AND user_id=?",
+                (session_id, user_id),
+            ).fetchone()
+            if existing is None:
+                return None
+            updates: list[str] = []
+            values: list[Any] = []
+            if status is not None:
+                updates.append("status = ?")
+                values.append(status)
+            if difficulty_level is not None:
+                updates.append("difficulty_level = ?")
+                values.append(difficulty_level)
+            if current_concept_id is not None:
+                updates.append("current_concept_id = ?")
+                values.append(current_concept_id)
+            if concepts_assessed is not None:
+                updates.append("concepts_assessed_json = ?")
+                values.append(json.dumps(concepts_assessed))
+            if questions_asked is not None:
+                updates.append("questions_asked_json = ?")
+                values.append(json.dumps(questions_asked))
+            if stopping_reason is not None:
+                updates.append("stopping_reason = ?")
+                values.append(stopping_reason)
+            if completed_at is not None:
+                updates.append("completed_at = ?")
+                values.append(completed_at)
+            if not updates:
+                return get_diagnostic_session(database_path, session_id, user_id=user_id)
+            updates.append("updated_at = ?")
+            values.append(datetime.now(UTC).isoformat())
+            values.append(session_id)
+            connection.execute(
+                f"UPDATE diagnostic_sessions SET {', '.join(updates)} WHERE session_id = ?",
+                tuple(values),
+            )
+    return get_diagnostic_session(database_path, session_id, user_id=user_id)
+
+
+def record_diagnostic_concept_result(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    concept_id: str,
+    concept_name: str,
+    competency_score: float,
+    confidence: float,
+    evidence_question_ids: list[str],
+    correct_count: int,
+    incorrect_count: int,
+    ambiguous_count: int,
+    total_questions: int,
+    prerequisite_gap: str | None = None,
+    areas_requiring_assessment: list[str] | None = None,
+    misconception_ids: list[str] | None = None,
+    assessed_at: str | None = None,
+) -> dict[str, Any]:
+    """Persist one per-concept diagnostic result for a session."""
+    result_id = f"diagres_{secrets.token_urlsafe(12)}"
+    now = assessed_at or datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO diagnostic_concept_results(
+                    result_id, session_id, user_id, concept_id, concept_name,
+                    competency_score, confidence, evidence_question_ids_json,
+                    correct_count, incorrect_count, ambiguous_count, total_questions,
+                    prerequisite_gap, areas_requiring_assessment_json,
+                    misconception_ids_json, assessed_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    result_id,
+                    session_id,
+                    user_id,
+                    concept_id,
+                    concept_name,
+                    competency_score,
+                    confidence,
+                    json.dumps(evidence_question_ids),
+                    correct_count,
+                    incorrect_count,
+                    ambiguous_count,
+                    total_questions,
+                    prerequisite_gap,
+                    json.dumps(areas_requiring_assessment or []),
+                    json.dumps(misconception_ids or []),
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "result_id": result_id,
+        "session_id": session_id,
+        "user_id": user_id,
+        "concept_id": concept_id,
+        "concept_name": concept_name,
+        "competency_score": competency_score,
+        "confidence": confidence,
+        "evidence_question_ids": evidence_question_ids,
+        "correct_count": correct_count,
+        "incorrect_count": incorrect_count,
+        "ambiguous_count": ambiguous_count,
+        "total_questions": total_questions,
+        "prerequisite_gap": prerequisite_gap,
+        "areas_requiring_assessment": areas_requiring_assessment or [],
+        "misconception_ids": misconception_ids or [],
+        "assessed_at": now,
+        "created_at": now,
+    }
+
+
+def get_diagnostic_concept_results(
+    database_path: Path,
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    concept_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List diagnostic concept results with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = "SELECT * FROM diagnostic_concept_results WHERE 1=1"
+        params: list[Any] = []
+        if session_id is not None:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if concept_id is not None:
+            query += " AND concept_id = ?"
+            params.append(concept_id)
+        query += " ORDER BY assessed_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "result_id": row["result_id"],
+            "session_id": row["session_id"],
+            "user_id": row["user_id"],
+            "concept_id": row["concept_id"],
+            "concept_name": row["concept_name"],
+            "competency_score": row["competency_score"],
+            "confidence": row["confidence"],
+            "evidence_question_ids": json.loads(row["evidence_question_ids_json"] or "[]"),
+            "correct_count": row["correct_count"],
+            "incorrect_count": row["incorrect_count"],
+            "ambiguous_count": row["ambiguous_count"],
+            "total_questions": row["total_questions"],
+            "prerequisite_gap": row["prerequisite_gap"],
+            "areas_requiring_assessment": json.loads(row["areas_requiring_assessment_json"] or "[]"),
+            "misconception_ids": json.loads(row["misconception_ids_json"] or "[]"),
+            "assessed_at": row["assessed_at"],
+            "created_at": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def record_diagnostic_misconception(
+    database_path: Path,
+    *,
+    session_id: str,
+    user_id: str,
+    concept_id: str,
+    concept_name: str,
+    misconception_type: str,
+    description: str,
+    evidence_question_ids: list[str],
+    severity: str = "moderate",
+    detected_at: str | None = None,
+) -> dict[str, Any]:
+    """Record a detected misconception pattern for a session/concept."""
+    misconception_id = f"diagmis_{secrets.token_urlsafe(12)}"
+    now = detected_at or datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO diagnostic_misconceptions(
+                    misconception_id, session_id, user_id, concept_id, concept_name,
+                    misconception_type, description, evidence_question_ids_json,
+                    severity, detected_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    misconception_id,
+                    session_id,
+                    user_id,
+                    concept_id,
+                    concept_name,
+                    misconception_type,
+                    description,
+                    json.dumps(evidence_question_ids),
+                    severity,
+                    now,
+                ),
+            )
+    return {
+        "misconception_id": misconception_id,
+        "session_id": session_id,
+        "user_id": user_id,
+        "concept_id": concept_id,
+        "concept_name": concept_name,
+        "misconception_type": misconception_type,
+        "description": description,
+        "evidence_question_ids": evidence_question_ids,
+        "severity": severity,
+        "detected_at": now,
+    }
+
+
+def get_diagnostic_misconceptions(
+    database_path: Path,
+    *,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    concept_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List diagnostic misconceptions with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = "SELECT * FROM diagnostic_misconceptions WHERE 1=1"
+        params: list[Any] = []
+        if session_id is not None:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if concept_id is not None:
+            query += " AND concept_id = ?"
+            params.append(concept_id)
+        query += " ORDER BY detected_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "misconception_id": row["misconception_id"],
+            "session_id": row["session_id"],
+            "user_id": row["user_id"],
+            "concept_id": row["concept_id"],
+            "concept_name": row["concept_name"],
+            "misconception_type": row["misconception_type"],
+            "description": row["description"],
+            "evidence_question_ids": json.loads(row["evidence_question_ids_json"] or "[]"),
+            "severity": row["severity"],
+            "detected_at": row["detected_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_question_version(
+    database_path: Path,
+    *,
+    question_id: str,
+    version_number: int,
+    prompt: str,
+    options: list[dict[str, str]] | None,
+    answer_key: str,
+    difficulty_level: str | None = None,
+    concept_id: str | None = None,
+    created_by: str | None = None,
+) -> dict[str, Any]:
+    """Store a new version of an assessment question (hashes protect answer keys)."""
+    import hashlib as _hashlib
+    version_id = f"qver_{secrets.token_urlsafe(12)}"
+    prompt_hash = _hashlib.sha256(prompt.strip().encode("utf-8")).hexdigest()
+    options_hash = (
+        _hashlib.sha256(json.dumps(options, sort_keys=True).encode("utf-8")).hexdigest()
+        if options is not None else None
+    )
+    answer_key_hash = _hashlib.sha256(answer_key.strip().encode("utf-8")).hexdigest()
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            # Mark previous versions as not current.
+            connection.execute(
+                "UPDATE question_versions SET is_current = 0 WHERE question_id = ?",
+                (question_id,),
+            )
+            connection.execute(
+                """
+                INSERT INTO question_versions(
+                    version_id, question_id, version_number, prompt_hash,
+                    options_hash, answer_key_hash, difficulty_level, concept_id,
+                    is_current, created_at, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    version_id,
+                    question_id,
+                    version_number,
+                    prompt_hash,
+                    options_hash,
+                    answer_key_hash,
+                    difficulty_level,
+                    concept_id,
+                    now,
+                    created_by,
+                ),
+            )
+    return {
+        "version_id": version_id,
+        "question_id": question_id,
+        "version_number": version_number,
+        "difficulty_level": difficulty_level,
+        "concept_id": concept_id,
+        "is_current": True,
+        "created_at": now,
+        "created_by": created_by,
+    }
+
+
+def get_current_question_version(
+    database_path: Path,
+    *,
+    question_id: str,
+) -> dict[str, Any] | None:
+    """Return the current version record for a question (hashes only, no answer key)."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT version_id, question_id, version_number, prompt_hash,
+                   options_hash, answer_key_hash, difficulty_level, concept_id,
+                   is_current, created_at, created_by
+            FROM question_versions
+            WHERE question_id = ? AND is_current = 1
+            """,
+            (question_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "version_id": row["version_id"],
+        "question_id": row["question_id"],
+        "version_number": row["version_number"],
+        "prompt_hash": row["prompt_hash"],
+        "options_hash": row["options_hash"],
+        "answer_key_hash": row["answer_key_hash"],
+        "difficulty_level": row["difficulty_level"],
+        "concept_id": row["concept_id"],
+        "is_current": bool(row["is_current"]),
+        "created_at": row["created_at"],
+        "created_by": row["created_by"],
+    }
+
+
+def list_diagnostic_sessions(
+    database_path: Path,
+    *,
+    user_id: str,
+    topic_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[dict[str, Any]], int]:
+    """List diagnostic sessions for a user with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = "SELECT * FROM diagnostic_sessions WHERE user_id = ?"
+        params: list[Any] = [user_id]
+        if topic_id is not None:
+            query += " AND topic_id = ?"
+            params.append(topic_id)
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        total = connection.execute(
+            f"SELECT COUNT(*) AS c FROM ({query})", params
+        ).fetchone()["c"]
+        query += " ORDER BY started_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    items = [
+        {
+            "session_id": row["session_id"],
+            "user_id": row["user_id"],
+            "topic_id": row["topic_id"],
+            "topic": row["topic"],
+            "assessment_id": row["assessment_id"],
+            "status": row["status"],
+            "difficulty_level": row["difficulty_level"],
+            "current_concept_id": row["current_concept_id"],
+            "concepts_assessed": json.loads(row["concepts_assessed_json"] or "[]"),
+            "questions_asked": json.loads(row["questions_asked_json"] or "[]"),
+            "stopping_reason": row["stopping_reason"],
+            "max_questions": row["max_questions"],
+            "min_evidence_questions": row["min_evidence_questions"],
+            "confidence_threshold": row["confidence_threshold"],
+            "started_at": row["started_at"],
+            "completed_at": row["completed_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+        for row in rows
+    ]
+    return items, int(total)
 
 
 def reset_user_progress(database_path: Path, user_id: str) -> dict[str, int]:

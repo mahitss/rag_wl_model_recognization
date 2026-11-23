@@ -5334,3 +5334,173 @@ class QuestionVersionResponse(ApiModel):
     createdBy: str | None
 
 
+# ---------------------------------------------------------------------------
+# M87: Learning Outcome Verification & Competency Certification schemas.
+# Learning outcomes, outcome evidence, outcome verifications, competency
+# evaluation history, certification definitions, certificates, revocations,
+# and public certificate verification built on existing competency/
+# assessment/diagnostic tables.
+# ---------------------------------------------------------------------------
+
+
+class LearningOutcomeCreateRequest(ApiModel):
+    competencyId: str = Field(min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    performanceCriteria: list[dict[str, Any]] | None = Field(default=None)
+    evidenceRequirements: list[dict[str, Any]] | None = Field(default=None)
+    proficiencyThreshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    status: str = Field(default="active")
+
+
+class LearningOutcomeResponse(ApiModel):
+    outcomeId: str
+    userId: str
+    competencyId: str
+    title: str
+    description: str | None
+    performanceCriteria: list[dict[str, Any]]
+    evidenceRequirements: list[dict[str, Any]]
+    proficiencyThreshold: float
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class LearningOutcomeListResponse(ApiModel):
+    outcomes: list[LearningOutcomeResponse]
+
+
+class OutcomeEvidenceRecordRequest(ApiModel):
+    evidenceType: str = Field(
+        description="assessment_result, diagnostic_result, practical_exercise, project_submission, mastery_demonstration"
+    )
+    sourceId: str = Field(min_length=1, max_length=120)
+    sourceType: str = Field(min_length=1, max_length=80)
+    score: float = Field(ge=0.0, le=1.0)
+    recordedAt: str | None = Field(default=None)
+
+
+class OutcomeEvidenceResponse(ApiModel):
+    evidenceId: str
+    outcomeId: str
+    userId: str
+    evidenceType: str
+    sourceId: str
+    sourceType: str
+    score: float
+    recordedAt: str
+    evidenceHash: str
+
+
+class OutcomeVerificationResponse(ApiModel):
+    verificationId: str
+    outcomeId: str
+    userId: str
+    status: str
+    confidence: float
+    computedScore: float
+    decisionReason: str
+    limitations: list[dict[str, Any]]
+    remainingRequirements: list[dict[str, Any]]
+    assessmentReferences: list[str]
+    evaluatedAt: str
+    evaluator: str
+
+
+class CompetencyEvaluationResponse(ApiModel):
+    competencyId: str
+    competencyName: str
+    userId: str
+    status: str
+    weightedScore: float
+    confidence: float
+    proficiencyThreshold: float
+    evidenceCount: int
+    distinctSources: int
+    meetsThreshold: bool
+    remainingRequirements: list[str]
+    decisionReason: str
+    evaluatedAt: str
+    prerequisites: list[dict[str, Any]]
+
+
+class CompetencyEvaluationRequest(ApiModel):
+    proficiencyThreshold: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class CertificationDefinitionCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    requirements: list[dict[str, Any]] | None = Field(default=None)
+    proficiencyThreshold: float = Field(default=0.80, ge=0.0, le=1.0)
+    expiresDays: int | None = Field(default=None, ge=1)
+    isActive: bool = Field(default=True)
+
+
+class CertificationDefinitionResponse(ApiModel):
+    certId: str
+    userId: str
+    title: str
+    description: str | None
+    requirements: list[dict[str, Any]]
+    proficiencyThreshold: float
+    expiresDays: int | None
+    isActive: bool
+    createdAt: str
+    updatedAt: str
+
+
+class CertificationDefinitionListResponse(ApiModel):
+    definitions: list[CertificationDefinitionResponse]
+
+
+class CertificationEligibilityResponse(ApiModel):
+    certId: str
+    userId: str
+    eligible: bool
+    alreadyCertified: bool
+    reason: str
+    existingCertificate: dict[str, Any] | None = None
+    requirements: list[dict[str, Any]]
+    checkedAt: str
+
+
+class CertificateIssueRequest(ApiModel):
+    verificationCode: str | None = Field(default=None, min_length=8, max_length=40)
+
+
+class CertificateResponse(ApiModel):
+    certificateId: str
+    certDefinitionId: str
+    userId: str
+    verificationCode: str
+    status: str
+    issuedAt: str
+    expiresAt: str | None
+    revokedAt: str | None
+    revocationReason: str | None
+
+
+class CertificateListResponse(ApiModel):
+    certificates: list[CertificateResponse]
+
+
+class CertificateRevokeRequest(ApiModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class PublicCertificateVerifyResponse(ApiModel):
+    found: bool
+    result: str
+    verificationCode: str
+    certificateId: str | None = None
+    certificateTitle: str | None = None
+    certificateDescription: str | None = None
+    issuedAt: str | None = None
+    expiresAt: str | None = None
+    status: str | None = None
+    summary: str | None = None
+
+
+

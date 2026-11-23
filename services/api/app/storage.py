@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 41
+SCHEMA_VERSION = 42
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -5871,6 +5871,209 @@ def initialize_storage(database_path: Path) -> None:
             "ON question_versions(question_id, is_current)"
         )
 
+        # ------------------------------------------------------------------
+        # M87: Learning Outcome Verification & Competency Certification.
+        # Normalized competency/certification models built on existing
+        # competencies, competency_prerequisites, assessment_question_competencies,
+        # user_competency_mastery, and M86 diagnostic tables.
+        # ------------------------------------------------------------------
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learning_outcomes (
+                outcome_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                competency_id TEXT NOT NULL REFERENCES competencies(competency_id)
+                    ON DELETE CASCADE,
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT CHECK (length(description) <= 4000),
+                performance_criteria_json TEXT NOT NULL DEFAULT '[]',
+                evidence_requirements_json TEXT NOT NULL DEFAULT '[]',
+                proficiency_threshold REAL NOT NULL CHECK (proficiency_threshold >= 0.0 AND proficiency_threshold <= 1.0),
+                status TEXT NOT NULL CHECK (status IN ('draft','active','archived')) DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_outcomes_user_id "
+            "ON learning_outcomes(user_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learning_outcomes_competency_id "
+            "ON learning_outcomes(competency_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS outcome_evidence (
+                evidence_id TEXT PRIMARY KEY,
+                outcome_id TEXT NOT NULL REFERENCES learning_outcomes(outcome_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                evidence_type TEXT NOT NULL CHECK (evidence_type IN (
+                    'assessment_result', 'diagnostic_result', 'practical_exercise',
+                    'project_submission', 'mastery_demonstration'
+                )),
+                source_id TEXT NOT NULL CHECK (length(source_id) BETWEEN 1 AND 120),
+                source_type TEXT NOT NULL CHECK (length(source_type) BETWEEN 1 AND 80),
+                score REAL NOT NULL CHECK (score >= 0.0 AND score <= 1.0),
+                recorded_at TEXT NOT NULL,
+                evidence_hash TEXT NOT NULL CHECK (length(evidence_hash) = 64)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcome_evidence_outcome_id "
+            "ON outcome_evidence(outcome_id)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_outcome_evidence_unique "
+            "ON outcome_evidence(outcome_id, evidence_hash)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS outcome_verifications (
+                verification_id TEXT PRIMARY KEY,
+                outcome_id TEXT NOT NULL REFERENCES learning_outcomes(outcome_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK (status IN (
+                    'attempted', 'progressing', 'achieved', 'verified'
+                )),
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                computed_score REAL NOT NULL CHECK (computed_score >= 0.0 AND computed_score <= 1.0),
+                decision_reason TEXT NOT NULL CHECK (length(decision_reason) BETWEEN 1 AND 2000),
+                limitations_json TEXT NOT NULL DEFAULT '[]',
+                remaining_requirements_json TEXT NOT NULL DEFAULT '[]',
+                assessment_references_json TEXT NOT NULL DEFAULT '[]',
+                evaluated_at TEXT NOT NULL,
+                evaluator TEXT NOT NULL DEFAULT 'system'
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcome_verifications_outcome_id "
+            "ON outcome_verifications(outcome_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_outcome_verifications_user_id "
+            "ON outcome_verifications(user_id, evaluated_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS competency_evaluation_history (
+                history_id TEXT PRIMARY KEY,
+                competency_id TEXT NOT NULL REFERENCES competencies(competency_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                mastery_score REAL NOT NULL CHECK (mastery_score >= 0.0 AND mastery_score <= 1.0),
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                status TEXT NOT NULL CHECK (status IN ('attempted','progressing','achieved','verified')),
+                evidence_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                decision_reason TEXT NOT NULL CHECK (length(decision_reason) BETWEEN 1 AND 2000),
+                evaluated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_competency_eval_history_competency_id "
+            "ON competency_evaluation_history(competency_id, user_id, evaluated_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS certification_definitions (
+                cert_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT CHECK (length(description) <= 4000),
+                requirements_json TEXT NOT NULL DEFAULT '[]',
+                proficiency_threshold REAL NOT NULL CHECK (proficiency_threshold >= 0.0 AND proficiency_threshold <= 1.0),
+                expires_days INTEGER CHECK (expires_days > 0),
+                is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)) DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_certification_definitions_user_id "
+            "ON certification_definitions(user_id, is_active)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS certificates (
+                certificate_id TEXT PRIMARY KEY,
+                cert_definition_id TEXT NOT NULL REFERENCES certification_definitions(cert_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                verification_code TEXT NOT NULL UNIQUE CHECK (length(verification_code) BETWEEN 8 AND 40),
+                status TEXT NOT NULL CHECK (status IN ('issued','revoked','expired')) DEFAULT 'issued',
+                issued_at TEXT NOT NULL,
+                expires_at TEXT,
+                revoked_at TEXT,
+                revocation_reason TEXT CHECK (length(revocation_reason) <= 1000)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_certificates_user_id "
+            "ON certificates(user_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_certificates_verification_code "
+            "ON certificates(verification_code)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_certificates_def_user_active "
+            "ON certificates(cert_definition_id, user_id) WHERE status = 'issued'"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS certificate_revocations (
+                revocation_id TEXT PRIMARY KEY,
+                certificate_id TEXT NOT NULL REFERENCES certificates(certificate_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                reason TEXT NOT NULL CHECK (length(reason) BETWEEN 1 AND 1000),
+                revoked_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_certificate_revocations_certificate_id "
+            "ON certificate_revocations(certificate_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS certificate_verification_records (
+                record_id TEXT PRIMARY KEY,
+                certificate_id TEXT NOT NULL REFERENCES certificates(certificate_id)
+                    ON DELETE CASCADE,
+                verified_at TEXT NOT NULL,
+                result TEXT NOT NULL CHECK (result IN ('valid','revoked','expired','not_found')),
+                result_summary TEXT NOT NULL CHECK (length(result_summary) BETWEEN 1 AND 200)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_cert_verification_records_certificate_id "
+            "ON certificate_verification_records(certificate_id, verified_at DESC)"
+        )
+
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
@@ -6382,6 +6585,898 @@ def list_diagnostic_sessions(
         for row in rows
     ]
     return items, int(total)
+
+
+# ---------------------------------------------------------------------------
+# M87: Learning Outcome Verification & Competency Certification storage helpers.
+# ---------------------------------------------------------------------------
+
+def create_learning_outcome(
+    database_path: Path,
+    *,
+    user_id: str,
+    competency_id: str,
+    title: str,
+    description: str | None = None,
+    performance_criteria: list[dict[str, Any]] | None = None,
+    evidence_requirements: list[dict[str, Any]] | None = None,
+    proficiency_threshold: float = 0.80,
+    status: str = "active",
+) -> dict[str, Any] | None:
+    """Create a learning outcome linked to a competency. Owner only."""
+    if status not in {"draft", "active", "archived"}:
+        return None
+    if not (0.0 <= proficiency_threshold <= 1.0):
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+    outcome_id = f"outcome_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = (description or "").strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO learning_outcomes(
+                    outcome_id, user_id, competency_id, title, description,
+                    performance_criteria_json, evidence_requirements_json,
+                    proficiency_threshold, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    outcome_id,
+                    user_id,
+                    competency_id,
+                    title,
+                    description,
+                    json.dumps(performance_criteria or []),
+                    json.dumps(evidence_requirements or []),
+                    proficiency_threshold,
+                    status,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "outcomeId": outcome_id,
+        "userId": user_id,
+        "competencyId": competency_id,
+        "title": title,
+        "description": description,
+        "performanceCriteria": performance_criteria or [],
+        "evidenceRequirements": evidence_requirements or [],
+        "proficiencyThreshold": proficiency_threshold,
+        "status": status,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_learning_outcome(
+    database_path: Path,
+    *,
+    outcome_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a learning outcome if owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT outcome_id, user_id, competency_id, title, description,
+                   performance_criteria_json, evidence_requirements_json,
+                   proficiency_threshold, status, created_at, updated_at
+            FROM learning_outcomes
+            WHERE outcome_id = ?
+            """,
+            (outcome_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "outcomeId": row["outcome_id"],
+        "userId": row["user_id"],
+        "competencyId": row["competency_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "performanceCriteria": json.loads(row["performance_criteria_json"] or "[]"),
+        "evidenceRequirements": json.loads(row["evidence_requirements_json"] or "[]"),
+        "proficiencyThreshold": row["proficiency_threshold"],
+        "status": row["status"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_learning_outcomes(
+    database_path: Path,
+    *,
+    user_id: str,
+    competency_id: str | None = None,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List learning outcomes owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT outcome_id, user_id, competency_id, title, description,
+                   performance_criteria_json, evidence_requirements_json,
+                   proficiency_threshold, status, created_at, updated_at
+            FROM learning_outcomes
+            WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if competency_id is not None:
+            query += " AND competency_id = ?"
+            params.append(competency_id)
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "outcomeId": row["outcome_id"],
+            "userId": row["user_id"],
+            "competencyId": row["competency_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "performanceCriteria": json.loads(row["performance_criteria_json"] or "[]"),
+            "evidenceRequirements": json.loads(row["evidence_requirements_json"] or "[]"),
+            "proficiencyThreshold": row["proficiency_threshold"],
+            "status": row["status"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def record_outcome_evidence(
+    database_path: Path,
+    *,
+    outcome_id: str,
+    user_id: str,
+    evidence_type: str,
+    source_id: str,
+    source_type: str,
+    score: float,
+    recorded_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Record evidence for a learning outcome.
+
+    Duplicate evidence (same outcome + evidence_hash) is rejected to prevent
+    score inflation from repeated submissions.
+    """
+    if not (0.0 <= score <= 1.0):
+        return None
+    if evidence_type not in {
+        "assessment_result", "diagnostic_result", "practical_exercise",
+        "project_submission", "mastery_demonstration",
+    }:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_outcomes WHERE outcome_id = ?",
+            (outcome_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+    now = recorded_at or datetime.now(UTC).isoformat()
+    evidence_id = f"evid_{secrets.token_urlsafe(12)}"
+    evidence_hash = hashlib.sha256(
+        f"{outcome_id}|{evidence_type}|{source_id}|{source_type}".encode()
+    ).hexdigest()
+    with closing(connect_database(database_path)) as connection:
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO outcome_evidence(
+                        evidence_id, outcome_id, user_id, evidence_type,
+                        source_id, source_type, score, recorded_at, evidence_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        evidence_id,
+                        outcome_id,
+                        user_id,
+                        evidence_type,
+                        source_id,
+                        source_type,
+                        score,
+                        now,
+                        evidence_hash,
+                    ),
+                )
+        except sqlite3.IntegrityError:
+            # Duplicate evidence_hash — reject to prevent inflation.
+            return None
+    return {
+        "evidenceId": evidence_id,
+        "outcomeId": outcome_id,
+        "userId": user_id,
+        "evidenceType": evidence_type,
+        "sourceId": source_id,
+        "sourceType": source_type,
+        "score": score,
+        "recordedAt": now,
+    }
+
+
+def list_outcome_evidence(
+    database_path: Path,
+    *,
+    outcome_id: str | None = None,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List outcome evidence with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT evidence_id, outcome_id, user_id, evidence_type,
+                   source_id, source_type, score, recorded_at, evidence_hash
+            FROM outcome_evidence
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if outcome_id is not None:
+            query += " AND outcome_id = ?"
+            params.append(outcome_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY recorded_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "evidenceId": row["evidence_id"],
+            "outcomeId": row["outcome_id"],
+            "userId": row["user_id"],
+            "evidenceType": row["evidence_type"],
+            "sourceId": row["source_id"],
+            "sourceType": row["source_type"],
+            "score": row["score"],
+            "recordedAt": row["recorded_at"],
+            "evidenceHash": row["evidence_hash"],
+        }
+        for row in rows
+    ]
+
+
+def record_outcome_verification(
+    database_path: Path,
+    *,
+    outcome_id: str,
+    user_id: str,
+    status: str,
+    confidence: float,
+    computed_score: float,
+    decision_reason: str,
+    limitations: list[dict[str, Any]] | None = None,
+    remaining_requirements: list[dict[str, Any]] | None = None,
+    assessment_references: list[str] | None = None,
+    evaluated_at: str | None = None,
+    evaluator: str = "system",
+) -> dict[str, Any] | None:
+    """Record an outcome verification decision. Preserves history (never overwrites)."""
+    if status not in {"attempted", "progressing", "achieved", "verified"}:
+        return None
+    if not (0.0 <= confidence <= 1.0) or not (0.0 <= computed_score <= 1.0):
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM learning_outcomes WHERE outcome_id = ?",
+            (outcome_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+    verification_id = f"verify_{secrets.token_urlsafe(12)}"
+    now = evaluated_at or datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO outcome_verifications(
+                    verification_id, outcome_id, user_id, status, confidence,
+                    computed_score, decision_reason, limitations_json,
+                    remaining_requirements_json, assessment_references_json,
+                    evaluated_at, evaluator
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    verification_id,
+                    outcome_id,
+                    user_id,
+                    status,
+                    confidence,
+                    computed_score,
+                    decision_reason,
+                    json.dumps(limitations or []),
+                    json.dumps(remaining_requirements or []),
+                    json.dumps(assessment_references or []),
+                    now,
+                    evaluator,
+                ),
+            )
+    return {
+        "verificationId": verification_id,
+        "outcomeId": outcome_id,
+        "userId": user_id,
+        "status": status,
+        "confidence": confidence,
+        "computedScore": computed_score,
+        "decisionReason": decision_reason,
+        "limitations": limitations or [],
+        "remainingRequirements": remaining_requirements or [],
+        "assessmentReferences": assessment_references or [],
+        "evaluatedAt": now,
+        "evaluator": evaluator,
+    }
+
+
+def list_outcome_verifications(
+    database_path: Path,
+    *,
+    outcome_id: str | None = None,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List outcome verification decisions (history preserved)."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT verification_id, outcome_id, user_id, status, confidence,
+                   computed_score, decision_reason, limitations_json,
+                   remaining_requirements_json, assessment_references_json,
+                   evaluated_at, evaluator
+            FROM outcome_verifications
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if outcome_id is not None:
+            query += " AND outcome_id = ?"
+            params.append(outcome_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY evaluated_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "verificationId": row["verification_id"],
+            "outcomeId": row["outcome_id"],
+            "userId": row["user_id"],
+            "status": row["status"],
+            "confidence": row["confidence"],
+            "computedScore": row["computed_score"],
+            "decisionReason": row["decision_reason"],
+            "limitations": json.loads(row["limitations_json"] or "[]"),
+            "remainingRequirements": json.loads(row["remaining_requirements_json"] or "[]"),
+            "assessmentReferences": json.loads(row["assessment_references_json"] or "[]"),
+            "evaluatedAt": row["evaluated_at"],
+            "evaluator": row["evaluator"],
+        }
+        for row in rows
+    ]
+
+
+def record_competency_evaluation(
+    database_path: Path,
+    *,
+    competency_id: str,
+    user_id: str,
+    mastery_score: float,
+    confidence: float,
+    status: str,
+    evidence_snapshot: dict[str, Any],
+    decision_reason: str,
+    evaluated_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Record a historical competency evaluation decision (never overwrites)."""
+    if not (0.0 <= mastery_score <= 1.0) or not (0.0 <= confidence <= 1.0):
+        return None
+    if status not in {"attempted", "progressing", "achieved", "verified"}:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM competencies WHERE competency_id = ?",
+            (competency_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+    history_id = f"ceval_{secrets.token_urlsafe(12)}"
+    now = evaluated_at or datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO competency_evaluation_history(
+                    history_id, competency_id, user_id, mastery_score,
+                    confidence, status, evidence_snapshot_json, decision_reason,
+                    evaluated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    history_id,
+                    competency_id,
+                    user_id,
+                    mastery_score,
+                    confidence,
+                    status,
+                    json.dumps(evidence_snapshot),
+                    decision_reason,
+                    now,
+                ),
+            )
+    return {
+        "historyId": history_id,
+        "competencyId": competency_id,
+        "userId": user_id,
+        "masteryScore": mastery_score,
+        "confidence": confidence,
+        "status": status,
+        "evidenceSnapshot": evidence_snapshot,
+        "decisionReason": decision_reason,
+        "evaluatedAt": now,
+    }
+
+
+def list_competency_evaluations(
+    database_path: Path,
+    *,
+    competency_id: str | None = None,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List historical competency evaluation decisions."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT history_id, competency_id, user_id, mastery_score, confidence,
+                   status, evidence_snapshot_json, decision_reason, evaluated_at
+            FROM competency_evaluation_history
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if competency_id is not None:
+            query += " AND competency_id = ?"
+            params.append(competency_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY evaluated_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "historyId": row["history_id"],
+            "competencyId": row["competency_id"],
+            "userId": row["user_id"],
+            "masteryScore": row["mastery_score"],
+            "confidence": row["confidence"],
+            "status": row["status"],
+            "evidenceSnapshot": json.loads(row["evidence_snapshot_json"] or "{}"),
+            "decisionReason": row["decision_reason"],
+            "evaluatedAt": row["evaluated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_certification_definition(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    description: str | None = None,
+    requirements: list[dict[str, Any]] | None = None,
+    proficiency_threshold: float = 0.80,
+    expires_days: int | None = None,
+    is_active: bool = True,
+) -> dict[str, Any] | None:
+    """Create a certification definition with eligibility requirements. Owner only."""
+    if not (0.0 <= proficiency_threshold <= 1.0):
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM users WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    cert_id = f"certdef_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    description = (description or "").strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO certification_definitions(
+                    cert_id, user_id, title, description, requirements_json,
+                    proficiency_threshold, expires_days, is_active,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cert_id,
+                    user_id,
+                    title,
+                    description,
+                    json.dumps(requirements or []),
+                    proficiency_threshold,
+                    expires_days,
+                    1 if is_active else 0,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "certId": cert_id,
+        "userId": user_id,
+        "title": title,
+        "description": description,
+        "requirements": requirements or [],
+        "proficiencyThreshold": proficiency_threshold,
+        "expiresDays": expires_days,
+        "isActive": bool(is_active),
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_certification_definition(
+    database_path: Path,
+    *,
+    cert_id: str,
+    user_id: str,
+) -> dict[str, Any] | None:
+    """Return a certification definition if owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT cert_id, user_id, title, description, requirements_json,
+                   proficiency_threshold, expires_days, is_active,
+                   created_at, updated_at
+            FROM certification_definitions
+            WHERE cert_id = ?
+            """,
+            (cert_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if row["user_id"] != user_id:
+            return None
+    return {
+        "certId": row["cert_id"],
+        "userId": row["user_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "requirements": json.loads(row["requirements_json"] or "[]"),
+        "proficiencyThreshold": row["proficiency_threshold"],
+        "expiresDays": row["expires_days"],
+        "isActive": bool(row["is_active"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_certification_definitions(
+    database_path: Path,
+    *,
+    user_id: str,
+    is_active: bool | None = None,
+) -> list[dict[str, Any]]:
+    """List certification definitions owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT cert_id, user_id, title, description, requirements_json,
+                   proficiency_threshold, expires_days, is_active,
+                   created_at, updated_at
+            FROM certification_definitions
+            WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if is_active is not None:
+            query += " AND is_active = ?"
+            params.append(1 if is_active else 0)
+        query += " ORDER BY created_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "certId": row["cert_id"],
+            "userId": row["user_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "requirements": json.loads(row["requirements_json"] or "[]"),
+            "proficiencyThreshold": row["proficiency_threshold"],
+            "expiresDays": row["expires_days"],
+            "isActive": bool(row["is_active"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def issue_certificate(
+    database_path: Path,
+    *,
+    cert_definition_id: str,
+    user_id: str,
+    verification_code: str | None = None,
+    expires_days: int | None = None,
+) -> dict[str, Any] | None:
+    """Issue a certificate transactionally. Idempotent: one active issued
+    certificate per definition per user. Returns None if already issued."""
+    now = datetime.now(UTC)
+    now_iso = now.isoformat()
+    expires_at_iso: str | None = None
+    if expires_days is not None:
+        from datetime import timedelta as _timedelta
+        expires_at_iso = (now + _timedelta(days=expires_days)).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        # Verify definition exists, is active, and owned by user.
+        defn = connection.execute(
+            """
+            SELECT cert_id, user_id, expires_days, is_active
+            FROM certification_definitions
+            WHERE cert_id = ?
+            """,
+            (cert_definition_id,),
+        ).fetchone()
+        if defn is None or defn["user_id"] != user_id or not defn["is_active"]:
+            return None
+        # Idempotency: no existing issued certificate for this def+user.
+        existing = connection.execute(
+            """
+            SELECT certificate_id FROM certificates
+            WHERE cert_definition_id = ? AND user_id = ? AND status = 'issued'
+            """,
+            (cert_definition_id, user_id),
+        ).fetchone()
+        if existing is not None:
+            return None
+        certificate_id = f"cert_{secrets.token_urlsafe(16)}"
+        code = verification_code or f"WL-{secrets.token_urlsafe(12)}".upper()
+        with connection:
+            try:
+                connection.execute(
+                    """
+                    INSERT INTO certificates(
+                        certificate_id, cert_definition_id, user_id,
+                        verification_code, status, issued_at, expires_at
+                    ) VALUES (?, ?, ?, ?, 'issued', ?, ?)
+                    """,
+                    (
+                        certificate_id,
+                        cert_definition_id,
+                        user_id,
+                        code,
+                        now_iso,
+                        expires_at_iso,
+                    ),
+                )
+            except sqlite3.IntegrityError:
+                # Duplicate verification_code or unique active certificate.
+                return None
+    return {
+        "certificateId": certificate_id,
+        "certDefinitionId": cert_definition_id,
+        "userId": user_id,
+        "verificationCode": code,
+        "status": "issued",
+        "issuedAt": now_iso,
+        "expiresAt": expires_at_iso,
+    }
+
+
+def get_certificate(
+    database_path: Path,
+    *,
+    certificate_id: str,
+    user_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a certificate (optionally enforcing ownership)."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT certificate_id, cert_definition_id, user_id, verification_code,
+                   status, issued_at, expires_at, revoked_at, revocation_reason
+            FROM certificates
+            WHERE certificate_id = ?
+            """,
+            (certificate_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if user_id is not None and row["user_id"] != user_id:
+            return None
+    return {
+        "certificateId": row["certificate_id"],
+        "certDefinitionId": row["cert_definition_id"],
+        "userId": row["user_id"],
+        "verificationCode": row["verification_code"],
+        "status": row["status"],
+        "issuedAt": row["issued_at"],
+        "expiresAt": row["expires_at"],
+        "revokedAt": row["revoked_at"],
+        "revocationReason": row["revocation_reason"],
+    }
+
+
+def revoke_certificate(
+    database_path: Path,
+    *,
+    certificate_id: str,
+    user_id: str,
+    reason: str,
+) -> dict[str, Any] | None:
+    """Revoke an issued certificate. Owner only."""
+    if not reason or not reason.strip():
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id, status FROM certificates WHERE certificate_id = ?",
+            (certificate_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        if row["status"] != "issued":
+            return None
+        with connection:
+            connection.execute(
+                """
+                UPDATE certificates
+                SET status = 'revoked', revoked_at = ?, revocation_reason = ?
+                WHERE certificate_id = ?
+                """,
+                (now, reason.strip(), certificate_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO certificate_revocations(
+                    revocation_id, certificate_id, user_id, reason, revoked_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    f"rev_{secrets.token_urlsafe(12)}",
+                    certificate_id,
+                    user_id,
+                    reason.strip(),
+                    now,
+                ),
+            )
+    return get_certificate(database_path, certificate_id=certificate_id)
+
+
+def list_certificates(
+    database_path: Path,
+    *,
+    user_id: str,
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List certificates owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT certificate_id, cert_definition_id, user_id, verification_code,
+                   status, issued_at, expires_at, revoked_at, revocation_reason
+            FROM certificates
+            WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY issued_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "certificateId": row["certificate_id"],
+            "certDefinitionId": row["cert_definition_id"],
+            "userId": row["user_id"],
+            "verificationCode": row["verification_code"],
+            "status": row["status"],
+            "issuedAt": row["issued_at"],
+            "expiresAt": row["expires_at"],
+            "revokedAt": row["revoked_at"],
+            "revocationReason": row["revocation_reason"],
+        }
+        for row in rows
+    ]
+
+
+def verify_certificate_public(
+    database_path: Path,
+    *,
+    verification_code: str,
+) -> dict[str, Any] | None:
+    """Public certificate verification.
+
+    Returns only explicitly approved, non-sensitive certificate information.
+    Never exposes learner personal data, assessment answers, or analytics.
+    """
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT c.certificate_id, c.cert_definition_id, c.status,
+                   c.issued_at, c.expires_at, c.revoked_at,
+                   d.title, d.description
+            FROM certificates c
+            JOIN certification_definitions d ON d.cert_id = c.cert_definition_id
+            WHERE c.verification_code = ?
+            """,
+            (verification_code,),
+        ).fetchone()
+        if row is None:
+            return {
+                "found": False,
+                "result": "not_found",
+                "verificationCode": verification_code,
+            }
+        now = datetime.now(UTC)
+        status = row["status"]
+        result = "valid"
+        summary_parts = []
+        if status == "revoked":
+            result = "revoked"
+            summary_parts.append("Certificate has been revoked.")
+        elif status == "expired":
+            result = "expired"
+            summary_parts.append("Certificate has expired.")
+        elif row["expires_at"] is not None:
+            try:
+                exp = datetime.fromisoformat(row["expires_at"])
+                if exp <= now:
+                    result = "expired"
+                    summary_parts.append("Certificate has expired.")
+            except ValueError:
+                pass
+        if result == "valid":
+            summary_parts.append("Certificate is valid and currently issued.")
+        summary = " ".join(summary_parts)
+        # Record the public verification (no private data stored).
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO certificate_verification_records(
+                        record_id, certificate_id, verified_at, result, result_summary
+                    ) VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (
+                        f"vrec_{secrets.token_urlsafe(12)}",
+                        row["certificate_id"],
+                        now.isoformat(),
+                        result,
+                        summary,
+                    ),
+                )
+        except sqlite3.Error:
+            pass
+    return {
+        "found": True,
+        "result": result,
+        "verificationCode": verification_code,
+        "certificateId": row["certificate_id"],
+        "certificateTitle": row["title"],
+        "certificateDescription": row["description"],
+        "issuedAt": row["issued_at"],
+        "expiresAt": row["expires_at"],
+        "status": status,
+        "summary": summary,
+    }
 
 
 def reset_user_progress(database_path: Path, user_id: str) -> dict[str, int]:

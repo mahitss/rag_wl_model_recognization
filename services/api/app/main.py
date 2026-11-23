@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1.analytics_routes import router as analytics_router
 from app.api.v1.assessment_routes import router as assessment_router
 from app.api.v1.auth_routes import router as auth_router
+from app.api.v1.certification_routes import router as certification_router
 from app.api.v1.classroom_intelligence_routes import router as classroom_intelligence_router
 from app.api.v1.classroom_routes import router as classroom_router
 from app.api.v1.communication_routes import router as communication_router
@@ -141,6 +142,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(content_validation_router)
     # Companion router (personal AI learning companion, user-scoped)
     application.include_router(companion_router)
+    # Competency certification routes (M87)
+    application.include_router(certification_router)
     # Diagnostic assessment routes (M86)
     application.include_router(diagnostic_router)
     # Model observability & evaluation admin routes (admin only)

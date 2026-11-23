@@ -5503,4 +5503,253 @@ class PublicCertificateVerifyResponse(ApiModel):
     summary: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# M88: Learning Portfolio, Achievement & Evidence Management schemas.
+# Portfolios, portfolio entries, evidence submissions with version history,
+# project artifacts, and revocable sharing links built on existing
+# competency/certification/assessment/diagnostic tables.
+# ---------------------------------------------------------------------------
+
+
+class PortfolioCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    summary: str | None = Field(default=None, max_length=2000)
+    visibility: str = Field(default="private")
+
+
+class PortfolioResponse(ApiModel):
+    portfolioId: str
+    userId: str
+    title: str
+    summary: str | None
+    visibility: str
+    shareToken: str | None
+    shareExpiresAt: str | None
+    createdAt: str
+    updatedAt: str
+
+
+class PortfolioListResponse(ApiModel):
+    portfolios: list[PortfolioResponse]
+
+
+class PortfolioUpdateRequest(ApiModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    summary: str | None = Field(default=None, max_length=2000)
+    visibility: str | None = Field(default=None)
+    shareToken: str | None = Field(default=None, min_length=8, max_length=60)
+    shareExpiresAt: str | None = Field(default=None)
+
+
+class PortfolioEntryCreateRequest(ApiModel):
+    entryType: str = Field(
+        description="competency, certificate, learning_path, course, project, assessment, milestone, artifact"
+    )
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    sourceType: str = Field(min_length=1, max_length=80)
+    sourceId: str = Field(min_length=1, max_length=120)
+    sourceUrl: str | None = Field(default=None, max_length=2000)
+    verificationStatus: str = Field(default="self_reported")
+    visibility: str = Field(default="private")
+    competencyIds: list[str] | None = Field(default=None)
+    skillTags: list[str] | None = Field(default=None)
+    metadata: dict[str, Any] | None = Field(default=None)
+
+
+class PortfolioEntryResponse(ApiModel):
+    entryId: str
+    portfolioId: str
+    userId: str
+    entryType: str
+    title: str
+    description: str | None
+    sourceType: str
+    sourceId: str
+    sourceUrl: str | None
+    verificationStatus: str
+    verifiedAt: str | None
+    verifiedBy: str | None
+    visibility: str
+    competencyIds: list[str]
+    skillTags: list[str]
+    metadata: dict[str, Any]
+    createdAt: str
+    updatedAt: str
+
+
+class PortfolioEntryListResponse(ApiModel):
+    entries: list[PortfolioEntryResponse]
+
+
+class EvidenceSubmitRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    evidenceType: str = Field(
+        description="assessment_result, diagnostic_result, project_submission, practical_exercise, certificate, learning_path_completion, external_link, file_attachment, other"
+    )
+    sourceType: str = Field(min_length=1, max_length=80)
+    sourceId: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=4000)
+    portfolioEntryId: str | None = Field(default=None)
+    verificationStatus: str = Field(default="self_reported")
+    verificationNotes: str | None = Field(default=None, max_length=2000)
+    expiresAt: str | None = Field(default=None)
+    metadata: dict[str, Any] | None = Field(default=None)
+    initialVersion: dict[str, Any] | None = Field(default=None)
+
+
+class EvidenceResponse(ApiModel):
+    evidenceId: str
+    portfolioEntryId: str | None
+    userId: str
+    title: str
+    description: str | None
+    evidenceType: str
+    sourceType: str
+    sourceId: str | None
+    verificationStatus: str
+    verificationNotes: str | None
+    currentVersionId: str | None
+    expiresAt: str | None
+    metadata: dict[str, Any]
+    createdAt: str
+    updatedAt: str
+
+
+class EvidenceListResponse(ApiModel):
+    evidence: list[EvidenceResponse]
+
+
+class EvidenceVersionCreateRequest(ApiModel):
+    versionNumber: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=4000)
+    content: dict[str, Any] | None = Field(default=None)
+    fileAttachments: list[dict[str, Any]] | None = Field(default=None)
+    externalLinks: list[dict[str, Any]] | None = Field(default=None)
+    submittedBy: str | None = Field(default=None)
+    submittedAt: str | None = Field(default=None)
+    reviewStatus: str = Field(default="submitted")
+    isCurrent: bool = Field(default=True)
+
+
+class EvidenceVersionResponse(ApiModel):
+    versionId: str
+    evidenceId: str
+    userId: str
+    versionNumber: int
+    title: str
+    description: str | None
+    content: dict[str, Any]
+    fileAttachments: list[dict[str, Any]]
+    externalLinks: list[dict[str, Any]]
+    submittedBy: str
+    submittedAt: str
+    reviewStatus: str
+    reviewedBy: str | None
+    reviewedAt: str | None
+    rejectionReason: str | None
+    isCurrent: bool
+
+
+class EvidenceReviewRequest(ApiModel):
+    versionId: str = Field(min_length=1, max_length=80)
+    reviewStatus: str = Field(
+        description="submitted, under_review, approved, rejected"
+    )
+    reviewedBy: str | None = Field(default=None)
+    rejectionReason: str | None = Field(default=None, max_length=2000)
+
+
+class EvidenceReviewResponse(ApiModel):
+    evidenceId: str
+    versionId: str
+    reviewStatus: str
+    reviewedBy: str | None
+    reviewedAt: str
+    rejectionReason: str | None
+
+
+class ProjectArtifactCreateRequest(ApiModel):
+    title: str = Field(min_length=1, max_length=200)
+    artifactType: str = Field(
+        description="file, link, github, demo, other"
+    )
+    description: str | None = Field(default=None, max_length=4000)
+    fileName: str | None = Field(default=None)
+    filePath: str | None = Field(default=None)
+    fileSizeBytes: int | None = Field(default=None, ge=0)
+    fileHash: str | None = Field(default=None, min_length=64, max_length=64)
+    contentType: str | None = Field(default=None, max_length=120)
+    externalUrl: str | None = Field(default=None, max_length=2000)
+    skills: list[str] | None = Field(default=None)
+
+
+class ProjectArtifactResponse(ApiModel):
+    artifactId: str
+    portfolioEntryId: str
+    userId: str
+    title: str
+    description: str | None
+    artifactType: str
+    fileName: str | None
+    filePath: str | None
+    fileSizeBytes: int | None
+    fileHash: str | None
+    contentType: str | None
+    externalUrl: str | None
+    skills: list[str]
+    createdAt: str
+    updatedAt: str
+
+
+class ProjectArtifactListResponse(ApiModel):
+    artifacts: list[ProjectArtifactResponse]
+
+
+class SharingLinkCreateRequest(ApiModel):
+    token: str | None = Field(default=None, min_length=8, max_length=60)
+    entryIds: list[str] | None = Field(default=None)
+    expiresAt: str | None = Field(default=None)
+    maxUses: int | None = Field(default=None, ge=1)
+
+
+class SharingLinkResponse(ApiModel):
+    linkId: str
+    portfolioId: str
+    userId: str
+    token: str
+    entryIds: list[str]
+    expiresAt: str | None
+    maxUses: int | None
+    useCount: int
+    isActive: bool
+    createdAt: str
+    revokedAt: str | None
+
+
+class SharingLinkResolveResponse(ApiModel):
+    portfolioId: str
+    title: str
+    summary: str | None
+    visibility: str
+    entries: list[dict[str, Any]]
+    linkToken: str
+    expiresAt: str | None
+
+
+class PortfolioIntelligenceResponse(ApiModel):
+    userId: str
+    portfolioId: str | None
+    portfolioCount: int
+    entryCount: int
+    verifiedEntryCount: int
+    demonstratedCompetencies: list[dict[str, Any]]
+    missingEvidence: list[dict[str, Any]]
+    certificates: list[dict[str, Any]]
+    competencyStatus: list[dict[str, Any]]
+    generatedAt: str
+
+
+
 

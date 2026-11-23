@@ -33,6 +33,7 @@ from app.api.v1.learning_path_routes import router as learning_path_router
 from app.api.v1.lesson_routes import router as lesson_router
 from app.api.v1.model_routes import router as model_routes_router
 from app.api.v1.platform_routes import router as platform_router
+from app.api.v1.portfolio_routes import router as portfolio_router
 from app.api.v1.progress_routes import router as progress_router
 from app.api.v1.recommendations_routes import router as recommendations_router
 from app.api.v1.routes import make_error_response, router
@@ -178,6 +179,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(institutions_router)
     # API Platform & Third-Party Integration Ecosystem (M74)
     application.include_router(platform_router)
+    # Learning Portfolio, Achievement & Evidence Management (M88)
+    application.include_router(portfolio_router)
     # Universal Search & Intelligent Knowledge Discovery (M78)
     application.include_router(search_router)
     # Educational Standards & Learning Interoperability (M80)

@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 42
+SCHEMA_VERSION = 43
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -6074,6 +6074,229 @@ def initialize_storage(database_path: Path) -> None:
             "ON certificate_verification_records(certificate_id, verified_at DESC)"
         )
 
+        # ------------------------------------------------------------------
+        # M88: Learning Portfolio, Achievement & Evidence Management.
+        # Portfolios, portfolio entries, evidence submissions with version
+        # history, project artifacts, and revocable sharing links.
+        # Built on existing users, competencies, certificates,
+        # learning_outcomes, learning_paths, certifications, and diagnostics.
+        # ------------------------------------------------------------------
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolios (
+                portfolio_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                summary TEXT CHECK (length(summary) <= 2000),
+                visibility TEXT NOT NULL CHECK (visibility IN (
+                    'private', 'share_link', 'public'
+                )) DEFAULT 'private',
+                share_token TEXT UNIQUE CHECK (length(share_token) BETWEEN 8 AND 60),
+                share_expires_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_portfolios_user_id "
+            "ON portfolios(user_id)"
+        )
+        connection.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_portfolios_share_token "
+            "ON portfolios(share_token) WHERE share_token IS NOT NULL"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_entries (
+                entry_id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL REFERENCES portfolios(portfolio_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                entry_type TEXT NOT NULL CHECK (entry_type IN (
+                    'competency', 'certificate', 'learning_path', 'course',
+                    'project', 'assessment', 'milestone', 'artifact'
+                )),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT CHECK (length(description) <= 4000),
+                source_type TEXT NOT NULL CHECK (length(source_type) BETWEEN 1 AND 80),
+                source_id TEXT NOT NULL CHECK (length(source_id) BETWEEN 1 AND 120),
+                source_url TEXT CHECK (length(source_url) <= 2000),
+                verification_status TEXT NOT NULL CHECK (verification_status IN (
+                    'self_reported', 'pending_verification', 'verified', 'rejected'
+                )) DEFAULT 'self_reported',
+                verified_at TEXT,
+                verified_by TEXT,
+                visibility TEXT NOT NULL CHECK (visibility IN (
+                    'private', 'share_link', 'public'
+                )) DEFAULT 'private',
+                competency_ids_json TEXT NOT NULL DEFAULT '[]',
+                skill_tags_json TEXT NOT NULL DEFAULT '[]',
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_portfolio_entries_portfolio_id "
+            "ON portfolio_entries(portfolio_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_portfolio_entries_user_id "
+            "ON portfolio_entries(user_id, entry_type)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_portfolio_entries_source "
+            "ON portfolio_entries(source_type, source_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evidence (
+                evidence_id TEXT PRIMARY KEY,
+                portfolio_entry_id TEXT REFERENCES portfolio_entries(entry_id)
+                    ON DELETE SET NULL,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT CHECK (length(description) <= 4000),
+                evidence_type TEXT NOT NULL CHECK (evidence_type IN (
+                    'assessment_result', 'diagnostic_result', 'project_submission',
+                    'practical_exercise', 'certificate', 'learning_path_completion',
+                    'external_link', 'file_attachment', 'other'
+                )),
+                source_type TEXT NOT NULL CHECK (length(source_type) BETWEEN 1 AND 80),
+                source_id TEXT CHECK (length(source_id) BETWEEN 1 AND 120),
+                verification_status TEXT NOT NULL CHECK (verification_status IN (
+                    'self_reported', 'pending_verification', 'verified', 'rejected'
+                )) DEFAULT 'self_reported',
+                verification_notes TEXT CHECK (length(verification_notes) <= 2000),
+                current_version_id TEXT,
+                expires_at TEXT,
+                metadata_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_user_id "
+            "ON evidence(user_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_entry_id "
+            "ON evidence(portfolio_entry_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_type_status "
+            "ON evidence(evidence_type, verification_status)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS evidence_versions (
+                version_id TEXT PRIMARY KEY,
+                evidence_id TEXT NOT NULL REFERENCES evidence(evidence_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                version_number INTEGER NOT NULL CHECK (version_number >= 1),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT CHECK (length(description) <= 4000),
+                content_json TEXT NOT NULL DEFAULT '{}',
+                file_attachments_json TEXT NOT NULL DEFAULT '[]',
+                external_links_json TEXT NOT NULL DEFAULT '[]',
+                submitted_by TEXT NOT NULL,
+                submitted_at TEXT NOT NULL,
+                review_status TEXT NOT NULL CHECK (review_status IN (
+                    'submitted', 'under_review', 'approved', 'rejected'
+                )) DEFAULT 'submitted',
+                reviewed_by TEXT,
+                reviewed_at TEXT,
+                rejection_reason TEXT CHECK (length(rejection_reason) <= 2000),
+                is_current INTEGER NOT NULL CHECK (is_current IN (0, 1)) DEFAULT 1
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_versions_evidence_id "
+            "ON evidence_versions(evidence_id, version_number)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_evidence_versions_current "
+            "ON evidence_versions(evidence_id, is_current)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS project_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                portfolio_entry_id TEXT NOT NULL REFERENCES portfolio_entries(entry_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT CHECK (length(description) <= 4000),
+                artifact_type TEXT NOT NULL CHECK (artifact_type IN (
+                    'file', 'link', 'github', 'demo', 'other'
+                )),
+                file_name TEXT,
+                file_path TEXT,
+                file_size_bytes INTEGER CHECK (file_size_bytes >= 0),
+                file_hash TEXT CHECK (length(file_hash) = 64),
+                content_type TEXT CHECK (length(content_type) <= 120),
+                external_url TEXT CHECK (length(external_url) <= 2000),
+                skills_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_artifacts_entry_id "
+            "ON project_artifacts(portfolio_entry_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_project_artifacts_user_id "
+            "ON project_artifacts(user_id, created_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sharing_links (
+                link_id TEXT PRIMARY KEY,
+                portfolio_id TEXT NOT NULL REFERENCES portfolios(portfolio_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                token TEXT NOT NULL UNIQUE CHECK (length(token) BETWEEN 8 AND 60),
+                entry_ids_json TEXT NOT NULL DEFAULT '[]',
+                expires_at TEXT,
+                max_uses INTEGER CHECK (max_uses > 0),
+                use_count INTEGER NOT NULL CHECK (use_count >= 0) DEFAULT 0,
+                is_active INTEGER NOT NULL CHECK (is_active IN (0, 1)) DEFAULT 1,
+                created_at TEXT NOT NULL,
+                revoked_at TEXT
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sharing_links_token "
+            "ON sharing_links(token)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sharing_links_user_id "
+            "ON sharing_links(user_id, is_active)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sharing_links_portfolio_id "
+            "ON sharing_links(portfolio_id)"
+        )
+
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
@@ -7477,6 +7700,882 @@ def verify_certificate_public(
         "status": status,
         "summary": summary,
     }
+
+
+# ---------------------------------------------------------------------------
+# M88: Learning Portfolio, Achievement & Evidence Management storage helpers.
+# ---------------------------------------------------------------------------
+
+def create_portfolio(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    summary: str | None = None,
+    visibility: str = "private",
+    share_token: str | None = None,
+    share_expires_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Create a learner portfolio. Owner only."""
+    if visibility not in {"private", "share_link", "public"}:
+        return None
+    portfolio_id = f"port_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    if not title:
+        return None
+    if visibility == "share_link" and not share_token:
+        share_token = f"wl_{secrets.token_urlsafe(12)}"
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO portfolios(
+                    portfolio_id, user_id, title, summary, visibility,
+                    share_token, share_expires_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    portfolio_id,
+                    user_id,
+                    title,
+                    summary,
+                    visibility,
+                    share_token,
+                    share_expires_at,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "portfolioId": portfolio_id,
+        "userId": user_id,
+        "title": title,
+        "summary": summary,
+        "visibility": visibility,
+        "shareToken": share_token,
+        "shareExpiresAt": share_expires_at,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def get_portfolio(
+    database_path: Path,
+    *,
+    portfolio_id: str,
+    user_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a portfolio, optionally enforcing ownership."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT portfolio_id, user_id, title, summary, visibility,
+                   share_token, share_expires_at, created_at, updated_at
+            FROM portfolios
+            WHERE portfolio_id = ?
+            """,
+            (portfolio_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if user_id is not None and row["user_id"] != user_id:
+            return None
+    return {
+        "portfolioId": row["portfolio_id"],
+        "userId": row["user_id"],
+        "title": row["title"],
+        "summary": row["summary"],
+        "visibility": row["visibility"],
+        "shareToken": row["share_token"],
+        "shareExpiresAt": row["share_expires_at"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_portfolios(
+    database_path: Path,
+    *,
+    user_id: str,
+    visibility: str | None = None,
+) -> list[dict[str, Any]]:
+    """List portfolios owned by the user."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT portfolio_id, user_id, title, summary, visibility,
+                   share_token, share_expires_at, created_at, updated_at
+            FROM portfolios
+            WHERE user_id = ?
+        """
+        params: list[Any] = [user_id]
+        if visibility is not None:
+            query += " AND visibility = ?"
+            params.append(visibility)
+        query += " ORDER BY updated_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "portfolioId": row["portfolio_id"],
+            "userId": row["user_id"],
+            "title": row["title"],
+            "summary": row["summary"],
+            "visibility": row["visibility"],
+            "shareToken": row["share_token"],
+            "shareExpiresAt": row["share_expires_at"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def update_portfolio(
+    database_path: Path,
+    *,
+    portfolio_id: str,
+    user_id: str,
+    title: str | None = None,
+    summary: str | None = None,
+    visibility: str | None = None,
+    share_token: str | None = None,
+    share_expires_at: str | None = None,
+) -> dict[str, Any] | None:
+    """Update portfolio fields. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM portfolios WHERE portfolio_id = ?",
+            (portfolio_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+        updates: list[str] = []
+        values: list[Any] = []
+        now = datetime.now(UTC).isoformat()
+        if title is not None:
+            title = title.strip()
+            if not title:
+                return None
+            updates.append("title = ?")
+            values.append(title)
+        if summary is not None:
+            updates.append("summary = ?")
+            values.append(summary)
+        if visibility is not None:
+            if visibility not in {"private", "share_link", "public"}:
+                return None
+            updates.append("visibility = ?")
+            values.append(visibility)
+        if share_token is not None:
+            updates.append("share_token = ?")
+            values.append(share_token)
+        if share_expires_at is not None:
+            updates.append("share_expires_at = ?")
+            values.append(share_expires_at)
+        if not updates:
+            return get_portfolio(database_path, portfolio_id=portfolio_id, user_id=user_id)
+        updates.append("updated_at = ?")
+        values.append(now)
+        values.append(portfolio_id)
+        with connection:
+            connection.execute(
+                f"UPDATE portfolios SET {', '.join(updates)} WHERE portfolio_id = ?",
+                tuple(values),
+            )
+    return get_portfolio(database_path, portfolio_id=portfolio_id, user_id=user_id)
+
+
+def delete_portfolio(
+    database_path: Path,
+    *,
+    portfolio_id: str,
+    user_id: str,
+) -> bool:
+    """Delete a portfolio and its entries. Owner only."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM portfolios WHERE portfolio_id = ?",
+            (portfolio_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        with connection:
+            connection.execute(
+                "DELETE FROM portfolios WHERE portfolio_id = ?",
+                (portfolio_id,),
+            )
+    return True
+
+
+def create_portfolio_entry(
+    database_path: Path,
+    *,
+    portfolio_id: str,
+    user_id: str,
+    entry_type: str,
+    title: str,
+    description: str | None = None,
+    source_type: str,
+    source_id: str,
+    source_url: str | None = None,
+    verification_status: str = "self_reported",
+    visibility: str = "private",
+    competency_ids: list[str] | None = None,
+    skill_tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Create a portfolio entry. Owner only."""
+    if entry_type not in {
+        "competency", "certificate", "learning_path", "course",
+        "project", "assessment", "milestone", "artifact",
+    }:
+        return None
+    if verification_status not in {
+        "self_reported", "pending_verification", "verified", "rejected",
+    }:
+        return None
+    if visibility not in {"private", "share_link", "public"}:
+        return None
+    portfolio = get_portfolio(database_path, portfolio_id=portfolio_id, user_id=user_id)
+    if portfolio is None:
+        return None
+    entry_id = f"portent_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO portfolio_entries(
+                    entry_id, portfolio_id, user_id, entry_type, title,
+                    description, source_type, source_id, source_url,
+                    verification_status, visibility, competency_ids_json,
+                    skill_tags_json, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    portfolio_id,
+                    user_id,
+                    entry_type,
+                    title,
+                    description,
+                    source_type,
+                    source_id,
+                    source_url,
+                    verification_status,
+                    visibility,
+                    json.dumps(competency_ids or []),
+                    json.dumps(skill_tags or []),
+                    json.dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "entryId": entry_id,
+        "portfolioId": portfolio_id,
+        "userId": user_id,
+        "entryType": entry_type,
+        "title": title,
+        "description": description,
+        "sourceType": source_type,
+        "sourceId": source_id,
+        "sourceUrl": source_url,
+        "verificationStatus": verification_status,
+        "visibility": visibility,
+        "competencyIds": competency_ids or [],
+        "skillTags": skill_tags or [],
+        "metadata": metadata or {},
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_portfolio_entries(
+    database_path: Path,
+    *,
+    portfolio_id: str | None = None,
+    user_id: str | None = None,
+    entry_type: str | None = None,
+    verification_status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List portfolio entries with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT entry_id, portfolio_id, user_id, entry_type, title,
+                   description, source_type, source_id, source_url,
+                   verification_status, verified_at, verified_by, visibility,
+                   competency_ids_json, skill_tags_json, metadata_json,
+                   created_at, updated_at
+            FROM portfolio_entries
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if portfolio_id is not None:
+            query += " AND portfolio_id = ?"
+            params.append(portfolio_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if entry_type is not None:
+            query += " AND entry_type = ?"
+            params.append(entry_type)
+        if verification_status is not None:
+            query += " AND verification_status = ?"
+            params.append(verification_status)
+        query += " ORDER BY created_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "entryId": row["entry_id"],
+            "portfolioId": row["portfolio_id"],
+            "userId": row["user_id"],
+            "entryType": row["entry_type"],
+            "title": row["title"],
+            "description": row["description"],
+            "sourceType": row["source_type"],
+            "sourceId": row["source_id"],
+            "sourceUrl": row["source_url"],
+            "verificationStatus": row["verification_status"],
+            "verifiedAt": row["verified_at"],
+            "verifiedBy": row["verified_by"],
+            "visibility": row["visibility"],
+            "competencyIds": json.loads(row["competency_ids_json"] or "[]"),
+            "skillTags": json.loads(row["skill_tags_json"] or "[]"),
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def record_evidence(
+    database_path: Path,
+    *,
+    user_id: str,
+    title: str,
+    evidence_type: str,
+    source_type: str,
+    source_id: str | None = None,
+    description: str | None = None,
+    portfolio_entry_id: str | None = None,
+    verification_status: str = "self_reported",
+    verification_notes: str | None = None,
+    expires_at: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    current_version: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Record an evidence submission.
+
+    Optionally creates the first evidence version. Duplicate evidence is
+    allowed (evidence is versioned, not deduplicated like outcome evidence).
+    """
+    if evidence_type not in {
+        "assessment_result", "diagnostic_result", "project_submission",
+        "practical_exercise", "certificate", "learning_path_completion",
+        "external_link", "file_attachment", "other",
+    }:
+        return None
+    if verification_status not in {
+        "self_reported", "pending_verification", "verified", "rejected",
+    }:
+        return None
+    evidence_id = f"evid_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    if not title:
+        return None
+    current_version_id = None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            if portfolio_entry_id is not None:
+                row = connection.execute(
+                    "SELECT user_id FROM portfolio_entries WHERE entry_id = ?",
+                    (portfolio_entry_id,),
+                ).fetchone()
+                if row is None or row["user_id"] != user_id:
+                    return None
+            connection.execute(
+                """
+                INSERT INTO evidence(
+                    evidence_id, portfolio_entry_id, user_id, title,
+                    description, evidence_type, source_type, source_id,
+                    verification_status, verification_notes, current_version_id,
+                    expires_at, metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    evidence_id,
+                    portfolio_entry_id,
+                    user_id,
+                    title,
+                    description,
+                    evidence_type,
+                    source_type,
+                    source_id,
+                    verification_status,
+                    verification_notes,
+                    current_version_id,
+                    expires_at,
+                    json.dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+            if current_version is not None:
+                version_id = f"evver_{secrets.token_urlsafe(12)}"
+                version_number = 1
+                current_version_id = version_id
+                connection.execute(
+                    """
+                    INSERT INTO evidence_versions(
+                        version_id, evidence_id, user_id, version_number,
+                        title, description, content_json,
+                        file_attachments_json, external_links_json,
+                        submitted_by, submitted_at, review_status,
+                        reviewed_by, reviewed_at, rejection_reason, is_current
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        version_id,
+                        evidence_id,
+                        user_id,
+                        version_number,
+                        current_version.get("title", title),
+                        current_version.get("description", description),
+                        json.dumps(current_version.get("content", {})),
+                        json.dumps(current_version.get("fileAttachments", [])),
+                        json.dumps(current_version.get("externalLinks", [])),
+                        current_version.get("submittedBy", user_id),
+                        current_version.get("submittedAt", now),
+                        current_version.get("reviewStatus", "submitted"),
+                        current_version.get("reviewedBy"),
+                        current_version.get("reviewedAt"),
+                        current_version.get("rejectionReason"),
+                        1,
+                    ),
+                )
+                connection.execute(
+                    "UPDATE evidence SET current_version_id = ? WHERE evidence_id = ?",
+                    (version_id, evidence_id),
+                )
+    return {
+        "evidenceId": evidence_id,
+        "portfolioEntryId": portfolio_entry_id,
+        "userId": user_id,
+        "title": title,
+        "description": description,
+        "evidenceType": evidence_type,
+        "sourceType": source_type,
+        "sourceId": source_id,
+        "verificationStatus": verification_status,
+        "verificationNotes": verification_notes,
+        "currentVersionId": current_version_id,
+        "expiresAt": expires_at,
+        "metadata": metadata or {},
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_evidence(
+    database_path: Path,
+    *,
+    evidence_id: str | None = None,
+    user_id: str | None = None,
+    portfolio_entry_id: str | None = None,
+    evidence_type: str | None = None,
+    verification_status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List evidence records with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT evidence_id, portfolio_entry_id, user_id, title,
+                   description, evidence_type, source_type, source_id,
+                   verification_status, verification_notes, current_version_id,
+                   expires_at, metadata_json, created_at, updated_at
+            FROM evidence
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if evidence_id is not None:
+            query += " AND evidence_id = ?"
+            params.append(evidence_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if portfolio_entry_id is not None:
+            query += " AND portfolio_entry_id = ?"
+            params.append(portfolio_entry_id)
+        if evidence_type is not None:
+            query += " AND evidence_type = ?"
+            params.append(evidence_type)
+        if verification_status is not None:
+            query += " AND verification_status = ?"
+            params.append(verification_status)
+        query += " ORDER BY created_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "evidenceId": row["evidence_id"],
+            "portfolioEntryId": row["portfolio_entry_id"],
+            "userId": row["user_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "evidenceType": row["evidence_type"],
+            "sourceType": row["source_type"],
+            "sourceId": row["source_id"],
+            "verificationStatus": row["verification_status"],
+            "verificationNotes": row["verification_notes"],
+            "currentVersionId": row["current_version_id"],
+            "expiresAt": row["expires_at"],
+            "metadata": json.loads(row["metadata_json"] or "{}"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_evidence_version(
+    database_path: Path,
+    *,
+    evidence_id: str,
+    user_id: str,
+    version_number: int,
+    title: str,
+    description: str | None = None,
+    content: dict[str, Any] | None = None,
+    file_attachments: list[dict[str, Any]] | None = None,
+    external_links: list[dict[str, Any]] | None = None,
+    submitted_by: str | None = None,
+    submitted_at: str | None = None,
+    review_status: str = "submitted",
+    is_current: bool = True,
+) -> dict[str, Any] | None:
+    """Create a new version of an evidence record."""
+    if review_status not in {"submitted", "under_review", "approved", "rejected"}:
+        return None
+    row = None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM evidence WHERE evidence_id = ?",
+            (evidence_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return None
+    version_id = f"evver_{secrets.token_urlsafe(12)}"
+    now = submitted_at or datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            if is_current:
+                connection.execute(
+                    "UPDATE evidence_versions SET is_current = 0 WHERE evidence_id = ?",
+                    (evidence_id,),
+                )
+                connection.execute(
+                    "UPDATE evidence SET current_version_id = ? WHERE evidence_id = ?",
+                    (version_id, evidence_id),
+                )
+            connection.execute(
+                """
+                INSERT INTO evidence_versions(
+                    version_id, evidence_id, user_id, version_number, title,
+                    description, content_json, file_attachments_json,
+                    external_links_json, submitted_by, submitted_at,
+                    review_status, reviewed_by, reviewed_at, rejection_reason,
+                    is_current
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    evidence_id,
+                    user_id,
+                    version_number,
+                    title,
+                    description,
+                    json.dumps(content or {}),
+                    json.dumps(file_attachments or []),
+                    json.dumps(external_links or []),
+                    submitted_by or user_id,
+                    now,
+                    review_status,
+                    None,
+                    None,
+                    None,
+                    1 if is_current else 0,
+                ),
+            )
+    return {
+        "versionId": version_id,
+        "evidenceId": evidence_id,
+        "userId": user_id,
+        "versionNumber": version_number,
+        "title": title,
+        "description": description,
+        "content": content or {},
+        "fileAttachments": file_attachments or [],
+        "externalLinks": external_links or [],
+        "submittedBy": submitted_by or user_id,
+        "submittedAt": now,
+        "reviewStatus": review_status,
+        "isCurrent": is_current,
+    }
+
+
+def create_project_artifact(
+    database_path: Path,
+    *,
+    portfolio_entry_id: str,
+    user_id: str,
+    title: str,
+    artifact_type: str,
+    description: str | None = None,
+    file_name: str | None = None,
+    file_path: str | None = None,
+    file_size_bytes: int | None = None,
+    file_hash: str | None = None,
+    content_type: str | None = None,
+    external_url: str | None = None,
+    skills: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Create a project artifact linked to a portfolio entry."""
+    if artifact_type not in {"file", "link", "github", "demo", "other"}:
+        return None
+    entry = None
+    with closing(connect_database(database_path)) as connection:
+        entry = connection.execute(
+            "SELECT user_id FROM portfolio_entries WHERE entry_id = ?",
+            (portfolio_entry_id,),
+        ).fetchone()
+        if entry is None or entry["user_id"] != user_id:
+            return None
+    artifact_id = f"art_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO project_artifacts(
+                    artifact_id, portfolio_entry_id, user_id, title,
+                    description, artifact_type, file_name, file_path,
+                    file_size_bytes, file_hash, content_type, external_url,
+                    skills_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    portfolio_entry_id,
+                    user_id,
+                    title,
+                    description,
+                    artifact_type,
+                    file_name,
+                    file_path,
+                    file_size_bytes,
+                    file_hash,
+                    content_type,
+                    external_url,
+                    json.dumps(skills or []),
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "artifactId": artifact_id,
+        "portfolioEntryId": portfolio_entry_id,
+        "userId": user_id,
+        "title": title,
+        "description": description,
+        "artifactType": artifact_type,
+        "fileName": file_name,
+        "filePath": file_path,
+        "fileSizeBytes": file_size_bytes,
+        "fileHash": file_hash,
+        "contentType": content_type,
+        "externalUrl": external_url,
+        "skills": skills or [],
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_project_artifacts(
+    database_path: Path,
+    *,
+    portfolio_entry_id: str | None = None,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List project artifacts with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT artifact_id, portfolio_entry_id, user_id, title,
+                   description, artifact_type, file_name, file_path,
+                   file_size_bytes, file_hash, content_type, external_url,
+                   skills_json, created_at, updated_at
+            FROM project_artifacts
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if portfolio_entry_id is not None:
+            query += " AND portfolio_entry_id = ?"
+            params.append(portfolio_entry_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY created_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "artifactId": row["artifact_id"],
+            "portfolioEntryId": row["portfolio_entry_id"],
+            "userId": row["user_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "artifactType": row["artifact_type"],
+            "fileName": row["file_name"],
+            "filePath": row["file_path"],
+            "fileSizeBytes": row["file_size_bytes"],
+            "fileHash": row["file_hash"],
+            "contentType": row["content_type"],
+            "externalUrl": row["external_url"],
+            "skills": json.loads(row["skills_json"] or "[]"),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_sharing_link(
+    database_path: Path,
+    *,
+    portfolio_id: str,
+    user_id: str,
+    token: str | None = None,
+    entry_ids: list[str] | None = None,
+    expires_at: str | None = None,
+    max_uses: int | None = None,
+) -> dict[str, Any] | None:
+    """Create a revocable sharing link for a portfolio. Owner only."""
+    portfolio = get_portfolio(database_path, portfolio_id=portfolio_id, user_id=user_id)
+    if portfolio is None:
+        return None
+    link_id = f"share_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    code = token or f"wlshare_{secrets.token_urlsafe(12)}"
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO sharing_links(
+                    link_id, portfolio_id, user_id, token, entry_ids_json,
+                    expires_at, max_uses, use_count, is_active,
+                    created_at, revoked_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, 1, ?, NULL)
+                """,
+                (
+                    link_id,
+                    portfolio_id,
+                    user_id,
+                    code,
+                    json.dumps(entry_ids or []),
+                    expires_at,
+                    max_uses,
+                    now,
+                ),
+            )
+    return {
+        "linkId": link_id,
+        "portfolioId": portfolio_id,
+        "userId": user_id,
+        "token": code,
+        "entryIds": entry_ids or [],
+        "expiresAt": expires_at,
+        "maxUses": max_uses,
+        "useCount": 0,
+        "isActive": True,
+        "createdAt": now,
+        "revokedAt": None,
+    }
+
+
+def get_sharing_link(
+    database_path: Path,
+    *,
+    token: str,
+) -> dict[str, Any] | None:
+    """Resolve a sharing link token to portfolio info (public use)."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT link_id, portfolio_id, user_id, token, entry_ids_json,
+                   expires_at, max_uses, use_count, is_active,
+                   created_at, revoked_at
+            FROM sharing_links
+            WHERE token = ?
+            """,
+            (token,),
+        ).fetchone()
+        if row is None:
+            return None
+        if not row["is_active"] or row["revoked_at"] is not None:
+            return None
+        if row["expires_at"] is not None:
+            try:
+                if datetime.fromisoformat(row["expires_at"]) <= datetime.now(UTC):
+                    return None
+            except ValueError:
+                return None
+        if row["max_uses"] is not None and row["use_count"] >= row["max_uses"]:
+            return None
+    return {
+        "linkId": row["link_id"],
+        "portfolioId": row["portfolio_id"],
+        "userId": row["user_id"],
+        "token": row["token"],
+        "entryIds": json.loads(row["entry_ids_json"] or "[]"),
+        "expiresAt": row["expires_at"],
+        "maxUses": row["max_uses"],
+        "useCount": row["use_count"],
+        "isActive": bool(row["is_active"]),
+        "createdAt": row["created_at"],
+        "revokedAt": row["revoked_at"],
+    }
+
+
+def revoke_sharing_link(
+    database_path: Path,
+    *,
+    link_id: str,
+    user_id: str,
+) -> bool:
+    """Revoke a sharing link. Owner only."""
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT user_id FROM sharing_links WHERE link_id = ?",
+            (link_id,),
+        ).fetchone()
+        if row is None or row["user_id"] != user_id:
+            return False
+        with connection:
+            connection.execute(
+                """
+                UPDATE sharing_links
+                SET is_active = 0, revoked_at = ?
+                WHERE link_id = ?
+                """,
+                (now, link_id),
+            )
+    return True
 
 
 def reset_user_progress(database_path: Path, user_id: str) -> dict[str, int]:

@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 44
+SCHEMA_VERSION = 45
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -6456,6 +6456,232 @@ def initialize_storage(database_path: Path) -> None:
             "ON contribution_reports(status, created_at DESC)"
         )
 
+        # ------------------------------------------------------------------
+        # M90: AI-Powered Peer Learning & Collaborative Knowledge Intelligence.
+        # Collaborative discussions, AI facilitator summaries, peer
+        # explanations & feedback, shared knowledge artifacts with versioning
+        # and contributor attribution, and read-only group analytics. Built on
+        # existing M89 social discussions/replies, M61 groups, M72
+        # notifications, M64 competencies, and the tutor/model gateway.
+        # ------------------------------------------------------------------
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collaborative_discussions (
+                discussion_id TEXT PRIMARY KEY,
+                group_id TEXT,
+                author_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 200),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                discussion_type TEXT NOT NULL CHECK (discussion_type IN (
+                    'concept_explanation', 'peer_qna', 'group_discussion',
+                    'problem_solving', 'study_notes', 'revision'
+                )),
+                visibility TEXT NOT NULL CHECK (visibility IN (
+                    'group', 'connections', 'public'
+                )) DEFAULT 'group',
+                ai_generated INTEGER NOT NULL CHECK (ai_generated IN (0, 1)) DEFAULT 0,
+                is_closed INTEGER NOT NULL CHECK (is_closed IN (0, 1)) DEFAULT 0,
+                unanswered_count INTEGER NOT NULL CHECK (unanswered_count >= 0) DEFAULT 0,
+                helpful_count INTEGER NOT NULL CHECK (helpful_count >= 0) DEFAULT 0,
+                report_count INTEGER NOT NULL CHECK (report_count >= 0) DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collab_discussions_group_id "
+            "ON collaborative_discussions(group_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collab_discussions_author_id "
+            "ON collaborative_discussions(author_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collab_discussions_topic_type "
+            "ON collaborative_discussions(topic, discussion_type, created_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collaboration_ai_summaries (
+                summary_id TEXT PRIMARY KEY,
+                discussion_id TEXT NOT NULL REFERENCES collaborative_discussions(discussion_id)
+                    ON DELETE CASCADE,
+                generated_by TEXT NOT NULL CHECK (generated_by IN ('ai', 'system')),
+                summary_type TEXT NOT NULL CHECK (summary_type IN (
+                    'discussion_summary', 'unanswered_questions', 'conflicting_explanations',
+                    'concept_clarification', 'revision_summary', 'discussion_questions',
+                    'study_activity'
+                )),
+                content_json TEXT NOT NULL DEFAULT '{}',
+                source_reference_ids_json TEXT NOT NULL DEFAULT '[]',
+                confidence REAL NOT NULL CHECK (confidence >= 0.0 AND confidence <= 1.0),
+                grounded_in_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_collab_ai_summaries_discussion_id "
+            "ON collaboration_ai_summaries(discussion_id, summary_type, created_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS peer_explanations (
+                explanation_id TEXT PRIMARY KEY,
+                discussion_id TEXT REFERENCES collaborative_discussions(discussion_id)
+                    ON DELETE SET NULL,
+                author_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                concept_id TEXT,
+                concept_name TEXT NOT NULL CHECK (length(concept_name) BETWEEN 1 AND 200),
+                explanation TEXT NOT NULL CHECK (length(explanation) BETWEEN 1 AND 10000),
+                learning_objective TEXT CHECK (length(learning_objective) <= 1000),
+                verification_status TEXT NOT NULL CHECK (verification_status IN (
+                    'self_reported', 'pending_verification', 'verified', 'rejected'
+                )) DEFAULT 'self_reported',
+                ai_feedback_json TEXT NOT NULL DEFAULT '[]',
+                helpful_count INTEGER NOT NULL CHECK (helpful_count >= 0) DEFAULT 0,
+                report_count INTEGER NOT NULL CHECK (report_count >= 0) DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_peer_explanations_concept_id "
+            "ON peer_explanations(concept_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_peer_explanations_author_id "
+            "ON peer_explanations(author_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_peer_explanations_discussion_id "
+            "ON peer_explanations(discussion_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS peer_feedback (
+                feedback_id TEXT PRIMARY KEY,
+                explanation_id TEXT NOT NULL REFERENCES peer_explanations(explanation_id)
+                    ON DELETE CASCADE,
+                author_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                feedback_type TEXT NOT NULL CHECK (feedback_type IN (
+                    'helpful', 'needs_clarification', 'incorrect', 'partial', 'suggestion'
+                )),
+                comment TEXT CHECK (length(comment) <= 2000),
+                addresses_concept_gap INTEGER NOT NULL CHECK (addresses_concept_gap IN (0, 1)) DEFAULT 0,
+                suggestion TEXT CHECK (length(suggestion) <= 2000),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_peer_feedback_explanation_id "
+            "ON peer_feedback(explanation_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_peer_feedback_author_id "
+            "ON peer_feedback(author_id, created_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS shared_artifacts (
+                artifact_id TEXT PRIMARY KEY,
+                group_id TEXT,
+                author_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                description TEXT CHECK (length(description) <= 2000),
+                artifact_type TEXT NOT NULL CHECK (artifact_type IN (
+                    'study_notes', 'concept_summary', 'question_collection',
+                    'revision_sheet', 'collaborative_explanation', 'knowledge_collection'
+                )),
+                visibility TEXT NOT NULL CHECK (visibility IN (
+                    'group', 'connections', 'public'
+                )) DEFAULT 'group',
+                current_version_id TEXT,
+                contributor_count INTEGER NOT NULL CHECK (contributor_count >= 0) DEFAULT 0,
+                version_number INTEGER NOT NULL CHECK (version_number >= 1) DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shared_artifacts_group_id "
+            "ON shared_artifacts(group_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shared_artifacts_author_id "
+            "ON shared_artifacts(author_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shared_artifacts_type_visibility "
+            "ON shared_artifacts(artifact_type, visibility, created_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artifact_versions (
+                version_id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL REFERENCES shared_artifacts(artifact_id)
+                    ON DELETE CASCADE,
+                author_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                version_number INTEGER NOT NULL CHECK (version_number >= 1),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                content_json TEXT NOT NULL DEFAULT '{}',
+                edit_summary TEXT CHECK (length(edit_summary) <= 1000),
+                is_current INTEGER NOT NULL CHECK (is_current IN (0, 1)) DEFAULT 1,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact_id "
+            "ON artifact_versions(artifact_id, version_number)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifact_versions_current "
+            "ON artifact_versions(artifact_id, is_current)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS artifact_contributors (
+                contributor_id TEXT PRIMARY KEY,
+                artifact_id TEXT NOT NULL REFERENCES shared_artifacts(artifact_id)
+                    ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                role TEXT NOT NULL CHECK (role IN (
+                    'author', 'editor', 'reviewer', 'contributor'
+                )),
+                contribution_summary TEXT CHECK (length(contribution_summary) <= 1000),
+                first_contributed_at TEXT NOT NULL,
+                last_contributed_at TEXT NOT NULL,
+                UNIQUE (artifact_id, user_id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifact_contributors_artifact_id "
+            "ON artifact_contributors(artifact_id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_artifact_contributors_user_id "
+            "ON artifact_contributors(user_id, artifact_id)"
+        )
+
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
@@ -9551,6 +9777,909 @@ def moderate_report(
         "status": "reviewed" if action == "dismiss" else "actioned",
         "moderatorId": moderator_id,
         "moderatedAt": now,
+    }
+
+
+# ---------------------------------------------------------------------------
+# M90: AI-Powered Peer Learning & Collaborative Knowledge Intelligence storage helpers.
+# ---------------------------------------------------------------------------
+
+def create_collaborative_discussion(
+    database_path: Path,
+    *,
+    group_id: str | None,
+    author_id: str,
+    topic: str,
+    title: str,
+    discussion_type: str = "group_discussion",
+    visibility: str = "group",
+    ai_generated: bool = False,
+) -> dict[str, Any] | None:
+    """Create a collaborative discussion. Author only; group membership
+    enforced by callers."""
+    if discussion_type not in {
+        "concept_explanation", "peer_qna", "group_discussion",
+        "problem_solving", "study_notes", "revision",
+    }:
+        return None
+    if visibility not in {"group", "connections", "public"}:
+        return None
+    discussion_id = f"collab_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    topic = topic.strip()
+    title = title.strip()
+    if not topic or not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO collaborative_discussions(
+                    discussion_id, group_id, author_id, topic, title,
+                    discussion_type, visibility, ai_generated, is_closed,
+                    unanswered_count, helpful_count, report_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?)
+                """,
+                (
+                    discussion_id,
+                    group_id,
+                    author_id,
+                    topic,
+                    title,
+                    discussion_type,
+                    visibility,
+                    1 if ai_generated else 0,
+                    now,
+                    now,
+                ),
+            )
+    return get_collaborative_discussion(database_path, discussion_id=discussion_id)
+
+
+def get_collaborative_discussion(
+    database_path: Path,
+    *,
+    discussion_id: str,
+) -> dict[str, Any] | None:
+    """Return a collaborative discussion."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT discussion_id, group_id, author_id, topic, title,
+                   discussion_type, visibility, ai_generated, is_closed,
+                   unanswered_count, helpful_count, report_count,
+                   created_at, updated_at
+            FROM collaborative_discussions
+            WHERE discussion_id = ?
+            """,
+            (discussion_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    return {
+        "discussionId": row["discussion_id"],
+        "groupId": row["group_id"],
+        "authorId": row["author_id"],
+        "topic": row["topic"],
+        "title": row["title"],
+        "discussionType": row["discussion_type"],
+        "visibility": row["visibility"],
+        "aiGenerated": bool(row["ai_generated"]),
+        "isClosed": bool(row["is_closed"]),
+        "unansweredCount": row["unanswered_count"],
+        "helpfulCount": row["helpful_count"],
+        "reportCount": row["report_count"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_collaborative_discussions(
+    database_path: Path,
+    *,
+    group_id: str | None = None,
+    topic: str | None = None,
+    discussion_type: str | None = None,
+    visibility: str | None = None,
+    author_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List collaborative discussions with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT discussion_id, group_id, author_id, topic, title,
+                   discussion_type, visibility, ai_generated, is_closed,
+                   unanswered_count, helpful_count, report_count,
+                   created_at, updated_at
+            FROM collaborative_discussions
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if group_id is not None:
+            query += " AND group_id = ?"
+            params.append(group_id)
+        if topic is not None:
+            query += " AND topic = ?"
+            params.append(topic)
+        if discussion_type is not None:
+            query += " AND discussion_type = ?"
+            params.append(discussion_type)
+        if visibility is not None:
+            query += " AND visibility = ?"
+            params.append(visibility)
+        if author_id is not None:
+            query += " AND author_id = ?"
+            params.append(author_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "discussionId": row["discussion_id"],
+            "groupId": row["group_id"],
+            "authorId": row["author_id"],
+            "topic": row["topic"],
+            "title": row["title"],
+            "discussionType": row["discussion_type"],
+            "visibility": row["visibility"],
+            "aiGenerated": bool(row["ai_generated"]),
+            "isClosed": bool(row["is_closed"]),
+            "unansweredCount": row["unanswered_count"],
+            "helpfulCount": row["helpful_count"],
+            "reportCount": row["report_count"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_collaboration_ai_summary(
+    database_path: Path,
+    *,
+    discussion_id: str,
+    generated_by: str,
+    summary_type: str,
+    content: dict[str, Any],
+    source_reference_ids: list[str] | None = None,
+    confidence: float = 0.0,
+    grounded_in: list[str] | None = None,
+) -> dict[str, Any] | None:
+    """Record an AI facilitator summary for a collaborative discussion."""
+    if generated_by not in {"ai", "system"}:
+        return None
+    if summary_type not in {
+        "discussion_summary", "unanswered_questions", "conflicting_explanations",
+        "concept_clarification", "revision_summary", "discussion_questions",
+        "study_activity",
+    }:
+        return None
+    if not (0.0 <= confidence <= 1.0):
+        return None
+    summary_id = f"caisum_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT discussion_id FROM collaborative_discussions WHERE discussion_id = ?",
+            (discussion_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO collaboration_ai_summaries(
+                    summary_id, discussion_id, generated_by, summary_type,
+                    content_json, source_reference_ids_json, confidence,
+                    grounded_in_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    summary_id,
+                    discussion_id,
+                    generated_by,
+                    summary_type,
+                    json.dumps(content),
+                    json.dumps(source_reference_ids or []),
+                    confidence,
+                    json.dumps(grounded_in or []),
+                    now,
+                ),
+            )
+    return {
+        "summaryId": summary_id,
+        "discussionId": discussion_id,
+        "generatedBy": generated_by,
+        "summaryType": summary_type,
+        "content": content,
+        "sourceReferenceIds": source_reference_ids or [],
+        "confidence": confidence,
+        "groundedIn": grounded_in or [],
+        "createdAt": now,
+    }
+
+
+def list_collaboration_ai_summaries(
+    database_path: Path,
+    *,
+    discussion_id: str | None = None,
+    summary_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List AI summaries for a discussion."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT summary_id, discussion_id, generated_by, summary_type,
+                   content_json, source_reference_ids_json, confidence,
+                   grounded_in_json, created_at
+            FROM collaboration_ai_summaries
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if discussion_id is not None:
+            query += " AND discussion_id = ?"
+            params.append(discussion_id)
+        if summary_type is not None:
+            query += " AND summary_type = ?"
+            params.append(summary_type)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "summaryId": row["summary_id"],
+            "discussionId": row["discussion_id"],
+            "generatedBy": row["generated_by"],
+            "summaryType": row["summary_type"],
+            "content": json.loads(row["content_json"] or "{}"),
+            "sourceReferenceIds": json.loads(row["source_reference_ids_json"] or "[]"),
+            "confidence": row["confidence"],
+            "groundedIn": json.loads(row["grounded_in_json"] or "[]"),
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_peer_explanation(
+    database_path: Path,
+    *,
+    discussion_id: str | None,
+    author_id: str,
+    concept_id: str | None,
+    concept_name: str,
+    explanation: str,
+    learning_objective: str | None = None,
+    verification_status: str = "self_reported",
+) -> dict[str, Any] | None:
+    """Record a learner-submitted explanation of a concept."""
+    if verification_status not in {
+        "self_reported", "pending_verification", "verified", "rejected",
+    }:
+        return None
+    explanation_id = f"pexp_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    concept_name = concept_name.strip()
+    explanation = explanation.strip()
+    if not concept_name or not explanation:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO peer_explanations(
+                    explanation_id, discussion_id, author_id, concept_id,
+                    concept_name, explanation, learning_objective,
+                    verification_status, ai_feedback_json, helpful_count,
+                    report_count, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '[]', 0, 0, ?, ?)
+                """,
+                (
+                    explanation_id,
+                    discussion_id,
+                    author_id,
+                    concept_id,
+                    concept_name,
+                    explanation,
+                    learning_objective,
+                    verification_status,
+                    now,
+                    now,
+                ),
+            )
+    return get_peer_explanation(database_path, explanation_id=explanation_id)
+
+
+def get_peer_explanation(
+    database_path: Path,
+    *,
+    explanation_id: str,
+) -> dict[str, Any] | None:
+    """Return a peer explanation."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT explanation_id, discussion_id, author_id, concept_id,
+                   concept_name, explanation, learning_objective,
+                   verification_status, ai_feedback_json, helpful_count,
+                   report_count, created_at, updated_at
+            FROM peer_explanations
+            WHERE explanation_id = ?
+            """,
+            (explanation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    return {
+        "explanationId": row["explanation_id"],
+        "discussionId": row["discussion_id"],
+        "authorId": row["author_id"],
+        "conceptId": row["concept_id"],
+        "conceptName": row["concept_name"],
+        "explanation": row["explanation"],
+        "learningObjective": row["learning_objective"],
+        "verificationStatus": row["verification_status"],
+        "aiFeedback": json.loads(row["ai_feedback_json"] or "[]"),
+        "helpfulCount": row["helpful_count"],
+        "reportCount": row["report_count"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_peer_explanations(
+    database_path: Path,
+    *,
+    discussion_id: str | None = None,
+    concept_id: str | None = None,
+    author_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List peer explanations with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT explanation_id, discussion_id, author_id, concept_id,
+                   concept_name, explanation, learning_objective,
+                   verification_status, ai_feedback_json, helpful_count,
+                   report_count, created_at, updated_at
+            FROM peer_explanations
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if discussion_id is not None:
+            query += " AND discussion_id = ?"
+            params.append(discussion_id)
+        if concept_id is not None:
+            query += " AND concept_id = ?"
+            params.append(concept_id)
+        if author_id is not None:
+            query += " AND author_id = ?"
+            params.append(author_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "explanationId": row["explanation_id"],
+            "discussionId": row["discussion_id"],
+            "authorId": row["author_id"],
+            "conceptId": row["concept_id"],
+            "conceptName": row["concept_name"],
+            "explanation": row["explanation"],
+            "learningObjective": row["learning_objective"],
+            "verificationStatus": row["verification_status"],
+            "aiFeedback": json.loads(row["ai_feedback_json"] or "[]"),
+            "helpfulCount": row["helpful_count"],
+            "reportCount": row["report_count"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_peer_feedback(
+    database_path: Path,
+    *,
+    explanation_id: str,
+    author_id: str,
+    feedback_type: str,
+    comment: str | None = None,
+    addresses_concept_gap: bool = False,
+    suggestion: str | None = None,
+) -> dict[str, Any] | None:
+    """Record structured peer feedback on an explanation."""
+    if feedback_type not in {
+        "helpful", "needs_clarification", "incorrect", "partial", "suggestion",
+    }:
+        return None
+    feedback_id = f"pfeed_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT explanation_id, author_id FROM peer_explanations WHERE explanation_id = ?",
+            (explanation_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO peer_feedback(
+                    feedback_id, explanation_id, author_id, feedback_type,
+                    comment, addresses_concept_gap, suggestion, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    feedback_id,
+                    explanation_id,
+                    author_id,
+                    feedback_type,
+                    comment,
+                    1 if addresses_concept_gap else 0,
+                    suggestion,
+                    now,
+                    now,
+                ),
+            )
+    return {
+        "feedbackId": feedback_id,
+        "explanationId": explanation_id,
+        "authorId": author_id,
+        "feedbackType": feedback_type,
+        "comment": comment,
+        "addressesConceptGap": bool(addresses_concept_gap),
+        "suggestion": suggestion,
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_peer_feedback(
+    database_path: Path,
+    *,
+    explanation_id: str | None = None,
+    author_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List peer feedback with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT feedback_id, explanation_id, author_id, feedback_type,
+                   comment, addresses_concept_gap, suggestion, created_at,
+                   updated_at
+            FROM peer_feedback
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if explanation_id is not None:
+            query += " AND explanation_id = ?"
+            params.append(explanation_id)
+        if author_id is not None:
+            query += " AND author_id = ?"
+            params.append(author_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "feedbackId": row["feedback_id"],
+            "explanationId": row["explanation_id"],
+            "authorId": row["author_id"],
+            "feedbackType": row["feedback_type"],
+            "comment": row["comment"],
+            "addressesConceptGap": bool(row["addresses_concept_gap"]),
+            "suggestion": row["suggestion"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_shared_artifact(
+    database_path: Path,
+    *,
+    group_id: str | None,
+    author_id: str,
+    title: str,
+    artifact_type: str,
+    description: str | None = None,
+    visibility: str = "group",
+    content: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Create a shared knowledge artifact with an initial version."""
+    if artifact_type not in {
+        "study_notes", "concept_summary", "question_collection",
+        "revision_sheet", "collaborative_explanation", "knowledge_collection",
+    }:
+        return None
+    if visibility not in {"group", "connections", "public"}:
+        return None
+    artifact_id = f"artf_{secrets.token_urlsafe(16)}"
+    version_id = f"artfver_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO shared_artifacts(
+                    artifact_id, group_id, author_id, title, description,
+                    artifact_type, visibility, current_version_id,
+                    contributor_count, version_number, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 1, ?, ?)
+                """,
+                (
+                    artifact_id,
+                    group_id,
+                    author_id,
+                    title,
+                    description,
+                    artifact_type,
+                    visibility,
+                    version_id,
+                    now,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO artifact_versions(
+                    version_id, artifact_id, author_id, version_number,
+                    title, content_json, edit_summary, is_current, created_at
+                ) VALUES (?, ?, ?, 1, ?, ?, NULL, 1, ?)
+                """,
+                (
+                    version_id,
+                    artifact_id,
+                    author_id,
+                    title,
+                    json.dumps(content or {}),
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO artifact_contributors(
+                    contributor_id, artifact_id, user_id, role,
+                    contribution_summary, first_contributed_at, last_contributed_at
+                ) VALUES (?, ?, ?, 'author', ?, ?, ?)
+                """,
+                (
+                    f"artfcon_{secrets.token_urlsafe(12)}",
+                    artifact_id,
+                    author_id,
+                    "Authored the initial version.",
+                    now,
+                    now,
+                ),
+            )
+    return get_shared_artifact(database_path, artifact_id=artifact_id)
+
+
+def get_shared_artifact(
+    database_path: Path,
+    *,
+    artifact_id: str,
+) -> dict[str, Any] | None:
+    """Return a shared artifact with its current version."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT artifact_id, group_id, author_id, title, description,
+                   artifact_type, visibility, current_version_id,
+                   contributor_count, version_number, created_at, updated_at
+            FROM shared_artifacts
+            WHERE artifact_id = ?
+            """,
+            (artifact_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    version = get_artifact_version(database_path, version_id=row["current_version_id"])
+    contributors = list_artifact_contributors(database_path, artifact_id=artifact_id)
+    return {
+        "artifactId": row["artifact_id"],
+        "groupId": row["group_id"],
+        "authorId": row["author_id"],
+        "title": row["title"],
+        "description": row["description"],
+        "artifactType": row["artifact_type"],
+        "visibility": row["visibility"],
+        "currentVersion": version,
+        "contributorCount": row["contributor_count"],
+        "versionNumber": row["version_number"],
+        "contributors": contributors,
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_shared_artifacts(
+    database_path: Path,
+    *,
+    group_id: str | None = None,
+    artifact_type: str | None = None,
+    visibility: str | None = None,
+    author_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List shared artifacts with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT artifact_id, group_id, author_id, title, description,
+                   artifact_type, visibility, current_version_id,
+                   contributor_count, version_number, created_at, updated_at
+            FROM shared_artifacts
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if group_id is not None:
+            query += " AND group_id = ?"
+            params.append(group_id)
+        if artifact_type is not None:
+            query += " AND artifact_type = ?"
+            params.append(artifact_type)
+        if visibility is not None:
+            query += " AND visibility = ?"
+            params.append(visibility)
+        if author_id is not None:
+            query += " AND author_id = ?"
+            params.append(author_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "artifactId": row["artifact_id"],
+            "groupId": row["group_id"],
+            "authorId": row["author_id"],
+            "title": row["title"],
+            "description": row["description"],
+            "artifactType": row["artifact_type"],
+            "visibility": row["visibility"],
+            "currentVersionId": row["current_version_id"],
+            "contributorCount": row["contributor_count"],
+            "versionNumber": row["version_number"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def get_artifact_version(
+    database_path: Path,
+    *,
+    version_id: str,
+) -> dict[str, Any] | None:
+    """Return an artifact version."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT version_id, artifact_id, author_id, version_number,
+                   title, content_json, edit_summary, is_current, created_at
+            FROM artifact_versions
+            WHERE version_id = ?
+            """,
+            (version_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    return {
+        "versionId": row["version_id"],
+        "artifactId": row["artifact_id"],
+        "authorId": row["author_id"],
+        "versionNumber": row["version_number"],
+        "title": row["title"],
+        "content": json.loads(row["content_json"] or "{}"),
+        "editSummary": row["edit_summary"],
+        "isCurrent": bool(row["is_current"]),
+        "createdAt": row["created_at"],
+    }
+
+
+def create_artifact_version(
+    database_path: Path,
+    *,
+    artifact_id: str,
+    author_id: str,
+    version_number: int,
+    title: str,
+    content: dict[str, Any] | None = None,
+    edit_summary: str | None = None,
+    is_current: bool = True,
+) -> dict[str, Any] | None:
+    """Create a new version of a shared artifact."""
+    version_id = f"artfver_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    title = title.strip()
+    if not title:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            "SELECT author_id FROM shared_artifacts WHERE artifact_id = ?",
+            (artifact_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        with connection:
+            if is_current:
+                connection.execute(
+                    "UPDATE artifact_versions SET is_current = 0 WHERE artifact_id = ?",
+                    (artifact_id,),
+                )
+                connection.execute(
+                    "UPDATE shared_artifacts SET version_number = ?, updated_at = ? WHERE artifact_id = ?",
+                    (version_number, now, artifact_id),
+                )
+            connection.execute(
+                """
+                INSERT INTO artifact_versions(
+                    version_id, artifact_id, author_id, version_number,
+                    title, content_json, edit_summary, is_current, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    version_id,
+                    artifact_id,
+                    author_id,
+                    version_number,
+                    title,
+                    json.dumps(content or {}),
+                    edit_summary,
+                    1 if is_current else 0,
+                    now,
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE shared_artifacts
+                SET current_version_id = ?, updated_at = ?
+                WHERE artifact_id = ?
+                """,
+                (version_id, now, artifact_id),
+            )
+    return get_artifact_version(database_path, version_id=version_id)
+
+
+def list_artifact_versions(
+    database_path: Path,
+    *,
+    artifact_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List versions of an artifact."""
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT version_id, artifact_id, author_id, version_number,
+                   title, content_json, edit_summary, is_current, created_at
+            FROM artifact_versions
+            WHERE artifact_id = ?
+            ORDER BY version_number DESC
+            LIMIT ? OFFSET ?
+            """,
+            (artifact_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "versionId": row["version_id"],
+            "artifactId": row["artifact_id"],
+            "authorId": row["author_id"],
+            "versionNumber": row["version_number"],
+            "title": row["title"],
+            "content": json.loads(row["content_json"] or "{}"),
+            "editSummary": row["edit_summary"],
+            "isCurrent": bool(row["is_current"]),
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def list_artifact_contributors(
+    database_path: Path,
+    *,
+    artifact_id: str | None = None,
+    user_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """List artifact contributors with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT contributor_id, artifact_id, user_id, role,
+                   contribution_summary, first_contributed_at, last_contributed_at
+            FROM artifact_contributors
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if artifact_id is not None:
+            query += " AND artifact_id = ?"
+            params.append(artifact_id)
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        query += " ORDER BY last_contributed_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "contributorId": row["contributor_id"],
+            "artifactId": row["artifact_id"],
+            "userId": row["user_id"],
+            "role": row["role"],
+            "contributionSummary": row["contribution_summary"],
+            "firstContributedAt": row["first_contributed_at"],
+            "lastContributedAt": row["last_contributed_at"],
+        }
+        for row in rows
+    ]
+
+
+def add_artifact_contributor(
+    database_path: Path,
+    *,
+    artifact_id: str,
+    user_id: str,
+    role: str = "contributor",
+    contribution_summary: str | None = None,
+) -> dict[str, Any] | None:
+    """Add or update a contributor to an artifact."""
+    if role not in {"author", "editor", "reviewer", "contributor"}:
+        return None
+    contributor_id = f"artfcon_{secrets.token_urlsafe(12)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        existing = connection.execute(
+            "SELECT contributor_id, role FROM artifact_contributors WHERE artifact_id = ? AND user_id = ?",
+            (artifact_id, user_id),
+        ).fetchone()
+        with connection:
+            if existing is not None:
+                connection.execute(
+                    """
+                    UPDATE artifact_contributors
+                    SET role = ?, last_contributed_at = ?
+                    WHERE contributor_id = ?
+                    """,
+                    (role, now, existing["contributor_id"]),
+                )
+                contributor_id = existing["contributor_id"]
+            else:
+                connection.execute(
+                    """
+                    INSERT INTO artifact_contributors(
+                        contributor_id, artifact_id, user_id, role,
+                        contribution_summary, first_contributed_at, last_contributed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        contributor_id,
+                        artifact_id,
+                        user_id,
+                        role,
+                        contribution_summary,
+                        now,
+                        now,
+                    ),
+                )
+    return {
+        "contributorId": contributor_id,
+        "artifactId": artifact_id,
+        "userId": user_id,
+        "role": role,
+        "contributionSummary": contribution_summary,
+        "firstContributedAt": now,
+        "lastContributedAt": now,
     }
 
 

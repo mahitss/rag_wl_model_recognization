@@ -15,6 +15,7 @@ from app.api.v1.auth_routes import router as auth_router
 from app.api.v1.certification_routes import router as certification_router
 from app.api.v1.classroom_intelligence_routes import router as classroom_intelligence_router
 from app.api.v1.classroom_routes import router as classroom_router
+from app.api.v1.collaborative_routes import router as collaborative_router
 from app.api.v1.communication_routes import router as communication_router
 from app.api.v1.companion_routes import router as companion_router
 from app.api.v1.content import router as content_router
@@ -196,6 +197,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(scheduler_router)
     # Social Learning Network & Peer Knowledge Exchange (M89)
     application.include_router(social_router)
+    # AI-Powered Peer Learning & Collaborative Knowledge Intelligence (M90)
+    application.include_router(collaborative_router)
     # Real-Time Learning Progress & Engagement Intelligence (M84)
     application.include_router(progress_router)
     # AI Learning Behavior Intelligence & Personalized Intervention (M85)

@@ -5966,6 +5966,214 @@ class SocialIntelligenceResponse(ApiModel):
     generatedAt: str
 
 
+# ---------------------------------------------------------------------------
+# M90: AI-Powered Peer Learning & Collaborative Knowledge Intelligence schemas.
+# Collaborative discussions, AI facilitator summaries, peer explanations &
+# feedback, shared knowledge artifacts with versioning & contributor
+# attribution, and read-only group analytics built on existing M89 social,
+# M61 group, M64 competency, and M72 notification tables.
+# ---------------------------------------------------------------------------
+
+
+class CollaborativeDiscussionCreateRequest(ApiModel):
+    groupId: str | None = Field(default=None, min_length=1, max_length=80)
+    topic: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
+    discussionType: str = Field(default="group_discussion")
+    visibility: str = Field(default="group")
+    aiGenerated: bool = Field(default=False)
+
+
+class CollaborativeDiscussionResponse(ApiModel):
+    discussionId: str
+    groupId: str | None
+    authorId: str
+    topic: str
+    title: str
+    discussionType: str
+    visibility: str
+    aiGenerated: bool
+    isClosed: bool
+    unansweredCount: int
+    helpfulCount: int
+    reportCount: int
+    createdAt: str
+    updatedAt: str
+
+
+class CollaborativeDiscussionListResponse(ApiModel):
+    discussions: list[CollaborativeDiscussionResponse]
+
+
+class CollaborationAISummaryResponse(ApiModel):
+    summaryId: str
+    discussionId: str
+    generatedBy: str
+    summaryType: str
+    content: dict[str, Any]
+    sourceReferenceIds: list[str]
+    confidence: float
+    groundedIn: list[str]
+    createdAt: str
+
+
+class PeerExplanationCreateRequest(ApiModel):
+    discussionId: str | None = Field(default=None, min_length=1, max_length=80)
+    conceptId: str | None = Field(default=None, min_length=1, max_length=80)
+    conceptName: str = Field(min_length=1, max_length=200)
+    explanation: str = Field(min_length=1, max_length=10000)
+    learningObjective: str | None = Field(default=None, max_length=1000)
+    verificationStatus: str = Field(default="self_reported")
+
+
+class PeerExplanationResponse(ApiModel):
+    explanationId: str
+    discussionId: str | None
+    authorId: str
+    conceptId: str | None
+    conceptName: str
+    explanation: str
+    learningObjective: str | None
+    verificationStatus: str
+    aiFeedback: list[dict[str, Any]]
+    helpfulCount: int
+    reportCount: int
+    createdAt: str
+    updatedAt: str
+
+
+class PeerExplanationListResponse(ApiModel):
+    explanations: list[PeerExplanationResponse]
+
+
+class ExplainEvaluationResponse(ApiModel):
+    explanationId: str
+    conceptName: str
+    objective: str
+    supportedByEvidence: bool
+    masteryScore: float | None
+    missingConcepts: list[str]
+    unsupportedClaims: list[str]
+    improvementSuggestions: list[str]
+    verificationStatus: str
+
+
+class PeerFeedbackCreateRequest(ApiModel):
+    explanationId: str = Field(min_length=1, max_length=80)
+    feedbackType: str = Field(
+        description="helpful, needs_clarification, incorrect, partial, suggestion"
+    )
+    comment: str | None = Field(default=None, max_length=2000)
+    addressesConceptGap: bool = Field(default=False)
+    suggestion: str | None = Field(default=None, max_length=2000)
+
+
+class PeerFeedbackResponse(ApiModel):
+    feedbackId: str
+    explanationId: str
+    authorId: str
+    feedbackType: str
+    comment: str | None
+    addressesConceptGap: bool
+    suggestion: str | None
+    createdAt: str
+    updatedAt: str
+
+
+class PeerFeedbackListResponse(ApiModel):
+    feedback: list[PeerFeedbackResponse]
+
+
+class SharedArtifactCreateRequest(ApiModel):
+    groupId: str | None = Field(default=None, min_length=1, max_length=80)
+    title: str = Field(min_length=1, max_length=200)
+    artifactType: str = Field(
+        description="study_notes, concept_summary, question_collection, revision_sheet, collaborative_explanation, knowledge_collection"
+    )
+    description: str | None = Field(default=None, max_length=2000)
+    visibility: str = Field(default="group")
+    content: dict[str, Any] | None = Field(default=None)
+
+
+class SharedArtifactResponse(ApiModel):
+    artifactId: str
+    groupId: str | None
+    authorId: str
+    title: str
+    description: str | None
+    artifactType: str
+    visibility: str
+    currentVersion: dict[str, Any] | None
+    contributorCount: int
+    versionNumber: int
+    contributors: list[dict[str, Any]]
+    createdAt: str
+    updatedAt: str
+
+
+class SharedArtifactListResponse(ApiModel):
+    artifacts: list[SharedArtifactResponse]
+
+
+class ArtifactVersionCreateRequest(ApiModel):
+    versionNumber: int = Field(ge=1)
+    title: str = Field(min_length=1, max_length=200)
+    content: dict[str, Any] | None = Field(default=None)
+    editSummary: str | None = Field(default=None, max_length=1000)
+    isCurrent: bool = Field(default=True)
+
+
+class ArtifactVersionResponse(ApiModel):
+    versionId: str
+    artifactId: str
+    authorId: str
+    versionNumber: int
+    title: str
+    content: dict[str, Any]
+    editSummary: str | None
+    isCurrent: bool
+    createdAt: str
+
+
+class ArtifactVersionListResponse(ApiModel):
+    versions: list[ArtifactVersionResponse]
+
+
+class ArtifactContributorAddRequest(ApiModel):
+    userId: str = Field(min_length=1, max_length=80)
+    role: str = Field(default="contributor")
+    contributionSummary: str | None = Field(default=None, max_length=1000)
+
+
+class GroupAnalyticsResponse(ApiModel):
+    groupId: str
+    groupTitle: str
+    discussionCount: int
+    replyCount: int
+    unansweredQuestionCount: int
+    peerExplanationCount: int
+    verifiedExplanationCount: int
+    artifactCount: int
+    artifactTypes: list[str]
+    generatedAt: str
+    dataSources: list[str]
+
+
+class ContributionHistoryItem(ApiModel):
+    type: str
+    id: str
+    title: str | None = None
+    conceptName: str | None = None
+    verificationStatus: str | None = None
+    artifactType: str | None = None
+    createdAt: str
+
+
+class ContributionHistoryResponse(ApiModel):
+    history: list[ContributionHistoryItem]
+
+
+
 
 
 

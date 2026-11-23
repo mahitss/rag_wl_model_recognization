@@ -5751,5 +5751,221 @@ class PortfolioIntelligenceResponse(ApiModel):
     generatedAt: str
 
 
+# ---------------------------------------------------------------------------
+# M89: Social Learning Network & Peer Knowledge Exchange schemas.
+# Learner profiles, connections/follows, topic-based discussions and replies,
+# contribution reporting/moderation, and social notification preferences
+# built on existing users, portfolios, certificates, competencies, and the
+# M72 notification infrastructure.
+# ---------------------------------------------------------------------------
+
+
+class LearnerProfileCreateRequest(ApiModel):
+    displayName: str | None = Field(default=None, max_length=100)
+    biography: str | None = Field(default=None, max_length=2000)
+    learningInterests: list[str] | None = Field(default=None)
+    subjects: list[str] | None = Field(default=None)
+    skills: list[str] | None = Field(default=None)
+    learningGoals: list[str] | None = Field(default=None)
+    selectedPortfolioEntryIds: list[str] | None = Field(default=None)
+    discoveryEnabled: bool = Field(default=True)
+    showSkills: bool = Field(default=True)
+    showCertificates: bool = Field(default=True)
+    showPortfolio: bool = Field(default=True)
+
+
+class LearnerProfileResponse(ApiModel):
+    profileId: str
+    userId: str
+    displayName: str | None
+    biography: str | None
+    learningInterests: list[str]
+    subjects: list[str]
+    skills: list[str]
+    learningGoals: list[str]
+    selectedPortfolioEntryIds: list[str]
+    discoveryEnabled: bool
+    showSkills: bool
+    showCertificates: bool
+    showPortfolio: bool
+    createdAt: str
+    updatedAt: str
+
+
+class LearnerProfileUpdateRequest(ApiModel):
+    displayName: str | None = Field(default=None, max_length=100)
+    biography: str | None = Field(default=None, max_length=2000)
+    learningInterests: list[str] | None = Field(default=None)
+    subjects: list[str] | None = Field(default=None)
+    skills: list[str] | None = Field(default=None)
+    learningGoals: list[str] | None = Field(default=None)
+    selectedPortfolioEntryIds: list[str] | None = Field(default=None)
+    discoveryEnabled: bool | None = Field(default=None)
+    showSkills: bool | None = Field(default=None)
+    showCertificates: bool | None = Field(default=None)
+    showPortfolio: bool | None = Field(default=None)
+
+
+class LearnerDiscoveryRequest(ApiModel):
+    interest: str | None = Field(default=None)
+    subject: str | None = Field(default=None)
+    limit: int = Field(default=50, ge=1, le=200)
+    offset: int = Field(default=0, ge=0)
+
+
+class LearnerDiscoveryResponse(ApiModel):
+    profiles: list[LearnerProfileResponse]
+
+
+class ConnectionRequest(ApiModel):
+    followingId: str = Field(min_length=1, max_length=80)
+
+
+class ConnectionResponse(ApiModel):
+    connectionId: str
+    followerId: str
+    followingId: str
+    status: str
+    createdAt: str
+    updatedAt: str
+
+
+class ConnectionListResponse(ApiModel):
+    connections: list[ConnectionResponse]
+
+
+class ConnectionRespondRequest(ApiModel):
+    action: str = Field(description="accept, reject, or block")
+
+
+class DiscussionCreateRequest(ApiModel):
+    topic: str = Field(min_length=1, max_length=200)
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=5000)
+    discussionType: str = Field(default="discussion")
+    visibility: str = Field(default="public")
+    aiGenerated: bool = Field(default=False)
+
+
+class DiscussionResponse(ApiModel):
+    discussionId: str
+    authorId: str
+    topic: str
+    title: str
+    content: str
+    discussionType: str
+    visibility: str
+    aiGenerated: bool
+    isVerified: bool
+    isClosed: bool
+    helpfulCount: int
+    reportCount: int
+    createdAt: str
+    updatedAt: str
+
+
+class DiscussionListResponse(ApiModel):
+    discussions: list[DiscussionResponse]
+
+
+class DiscussionReplyCreateRequest(ApiModel):
+    content: str = Field(min_length=1, max_length=5000)
+    aiGenerated: bool = Field(default=False)
+
+
+class DiscussionReplyResponse(ApiModel):
+    replyId: str
+    discussionId: str
+    authorId: str
+    content: str
+    aiGenerated: bool
+    isVerified: bool
+    helpfulCount: int
+    reportCount: int
+    createdAt: str
+    updatedAt: str
+
+
+class DiscussionReplyListResponse(ApiModel):
+    replies: list[DiscussionReplyResponse]
+
+
+class ContributionReportRequest(ApiModel):
+    reason: str = Field(
+        description="spam, inappropriate, inaccurate, harassment, copyright, other"
+    )
+    discussionId: str | None = Field(default=None, min_length=1, max_length=80)
+    replyId: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class ContributionReportResponse(ApiModel):
+    reportId: str
+    reporterId: str
+    discussionId: str | None
+    replyId: str | None
+    reason: str
+    description: str | None
+    status: str
+    createdAt: str
+
+
+class ContributionReportListResponse(ApiModel):
+    reports: list[ContributionReportResponse]
+
+
+class ModerateReportRequest(ApiModel):
+    action: str = Field(description="dismiss or actioned")
+
+
+class SocialNotificationResponse(ApiModel):
+    notificationId: str
+    userId: str
+    type: str
+    title: str
+    body: str
+    relatedId: str | None
+    relatedType: str | None
+    isRead: bool
+    readAt: str | None
+    createdAt: str
+    expiresAt: str | None
+
+
+class SocialNotificationListResponse(ApiModel):
+    notifications: list[SocialNotificationResponse]
+
+
+class SocialNotificationPreferenceRequest(ApiModel):
+    emailEnabled: bool | None = Field(default=None)
+    inAppEnabled: bool | None = Field(default=None)
+    announcementEnabled: bool | None = Field(default=None)
+    assignmentEnabled: bool | None = Field(default=None)
+    feedbackEnabled: bool | None = Field(default=None)
+    assessmentEnabled: bool | None = Field(default=None)
+    progressUpdateEnabled: bool | None = Field(default=None)
+
+
+class SocialNotificationPreferenceResponse(ApiModel):
+    userId: str
+    emailEnabled: bool
+    inAppEnabled: bool
+    announcementEnabled: bool
+    assignmentEnabled: bool
+    feedbackEnabled: bool
+    assessmentEnabled: bool
+    progressUpdateEnabled: bool
+    updatedAt: str
+
+
+class SocialIntelligenceResponse(ApiModel):
+    userId: str
+    connectionCount: int
+    discussionCount: int
+    reportCount: int
+    generatedAt: str
+
+
+
 
 

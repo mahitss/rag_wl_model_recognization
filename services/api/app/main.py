@@ -39,6 +39,7 @@ from app.api.v1.recommendations_routes import router as recommendations_router
 from app.api.v1.routes import make_error_response, router
 from app.api.v1.scheduler_routes import router as scheduler_router
 from app.api.v1.search_routes import router as search_router
+from app.api.v1.social_routes import router as social_router
 from app.api.v1.standards_routes import router as standards_router
 from app.api.v1.verification_routes import router as verification_router
 from app.api.v1.workspaces import router as workspaces_router
@@ -193,6 +194,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(learning_path_router)
     # Intelligent Study Scheduler & Adaptive Time Management (M83)
     application.include_router(scheduler_router)
+    # Social Learning Network & Peer Knowledge Exchange (M89)
+    application.include_router(social_router)
     # Real-Time Learning Progress & Engagement Intelligence (M84)
     application.include_router(progress_router)
     # AI Learning Behavior Intelligence & Personalized Intervention (M85)

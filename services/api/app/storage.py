@@ -15,7 +15,7 @@ from typing import Any
 
 from app.learning_analytics import _parse_datetime, build_analytics
 
-SCHEMA_VERSION = 43
+SCHEMA_VERSION = 44
 
 
 def _user_scoped_id(prefix: str, identifier: str, user_id: str | None) -> str:
@@ -6297,6 +6297,165 @@ def initialize_storage(database_path: Path) -> None:
             "ON sharing_links(portfolio_id)"
         )
 
+        # ------------------------------------------------------------------
+        # M89: Social Learning Network & Peer Knowledge Exchange.
+        # Learner profiles, connections/follows, topic-based discussions and
+        # replies, contribution reporting/moderation, and social notification
+        # preferences. Built on existing users, portfolios, competencies,
+        # certificates, and the M72 notification infrastructure.
+        # ------------------------------------------------------------------
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learner_profiles (
+                profile_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE UNIQUE,
+                display_name TEXT CHECK (length(display_name) BETWEEN 1 AND 100),
+                biography TEXT CHECK (length(biography) <= 2000),
+                learning_interests_json TEXT NOT NULL DEFAULT '[]',
+                subjects_json TEXT NOT NULL DEFAULT '[]',
+                skills_json TEXT NOT NULL DEFAULT '[]',
+                learning_goals_json TEXT NOT NULL DEFAULT '[]',
+                selected_portfolio_entry_ids_json TEXT NOT NULL DEFAULT '[]',
+                discovery_enabled INTEGER NOT NULL CHECK (discovery_enabled IN (0, 1)) DEFAULT 1,
+                show_skills INTEGER NOT NULL CHECK (show_skills IN (0, 1)) DEFAULT 1,
+                show_certificates INTEGER NOT NULL CHECK (show_certificates IN (0, 1)) DEFAULT 1,
+                show_portfolio INTEGER NOT NULL CHECK (show_portfolio IN (0, 1)) DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learner_profiles_user_id "
+            "ON learner_profiles(user_id)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS connections (
+                connection_id TEXT PRIMARY KEY,
+                follower_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                following_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                status TEXT NOT NULL CHECK (status IN (
+                    'pending', 'accepted', 'blocked', 'rejected'
+                )) DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE (follower_id, following_id)
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_connections_follower_id "
+            "ON connections(follower_id, status)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_connections_following_id "
+            "ON connections(following_id, status)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discussions (
+                discussion_id TEXT PRIMARY KEY,
+                author_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                topic TEXT NOT NULL CHECK (length(topic) BETWEEN 1 AND 200),
+                title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 200),
+                content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 5000),
+                discussion_type TEXT NOT NULL CHECK (discussion_type IN (
+                    'question', 'discussion', 'note', 'resource'
+                )),
+                visibility TEXT NOT NULL CHECK (visibility IN (
+                    'public', 'connections', 'private'
+                )) DEFAULT 'public',
+                ai_generated INTEGER NOT NULL CHECK (ai_generated IN (0, 1)) DEFAULT 0,
+                is_verified INTEGER NOT NULL CHECK (is_verified IN (0, 1)) DEFAULT 0,
+                is_closed INTEGER NOT NULL CHECK (is_closed IN (0, 1)) DEFAULT 0,
+                helpful_count INTEGER NOT NULL CHECK (helpful_count >= 0) DEFAULT 0,
+                report_count INTEGER NOT NULL CHECK (report_count >= 0) DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discussions_author_id "
+            "ON discussions(author_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discussions_topic "
+            "ON discussions(topic, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discussions_type_visibility "
+            "ON discussions(discussion_type, visibility, created_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS discussion_replies (
+                reply_id TEXT PRIMARY KEY,
+                discussion_id TEXT NOT NULL REFERENCES discussions(discussion_id)
+                    ON DELETE CASCADE,
+                author_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                content TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 5000),
+                ai_generated INTEGER NOT NULL CHECK (ai_generated IN (0, 1)) DEFAULT 0,
+                is_verified INTEGER NOT NULL CHECK (is_verified IN (0, 1)) DEFAULT 0,
+                helpful_count INTEGER NOT NULL CHECK (helpful_count >= 0) DEFAULT 0,
+                report_count INTEGER NOT NULL CHECK (report_count >= 0) DEFAULT 0,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discussion_replies_discussion_id "
+            "ON discussion_replies(discussion_id, created_at ASC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_discussion_replies_author_id "
+            "ON discussion_replies(author_id, created_at DESC)"
+        )
+
+        connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS contribution_reports (
+                report_id TEXT PRIMARY KEY,
+                reporter_id TEXT NOT NULL REFERENCES users(user_id)
+                    ON DELETE CASCADE,
+                discussion_id TEXT REFERENCES discussions(discussion_id)
+                    ON DELETE CASCADE,
+                reply_id TEXT REFERENCES discussion_replies(reply_id)
+                    ON DELETE CASCADE,
+                reason TEXT NOT NULL CHECK (reason IN (
+                    'spam', 'inappropriate', 'inaccurate', 'harassment',
+                    'copyright', 'other'
+                )),
+                description TEXT CHECK (length(description) <= 2000),
+                status TEXT NOT NULL CHECK (status IN (
+                    'open', 'reviewed', 'dismissed', 'actioned'
+                )) DEFAULT 'open',
+                moderator_id TEXT REFERENCES users(user_id)
+                    ON DELETE SET NULL,
+                moderated_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contribution_reports_reporter_id "
+            "ON contribution_reports(reporter_id, created_at DESC)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_contribution_reports_status "
+            "ON contribution_reports(status, created_at DESC)"
+        )
+
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         violations = connection.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
@@ -8576,6 +8735,823 @@ def revoke_sharing_link(
                 (now, link_id),
             )
     return True
+
+
+# ---------------------------------------------------------------------------
+# M89: Social Learning Network & Peer Knowledge Exchange storage helpers.
+# ---------------------------------------------------------------------------
+
+def create_learner_profile(
+    database_path: Path,
+    *,
+    user_id: str,
+    display_name: str | None = None,
+    biography: str | None = None,
+    learning_interests: list[str] | None = None,
+    subjects: list[str] | None = None,
+    skills: list[str] | None = None,
+    learning_goals: list[str] | None = None,
+    selected_portfolio_entry_ids: list[str] | None = None,
+    discovery_enabled: bool = True,
+    show_skills: bool = True,
+    show_certificates: bool = True,
+    show_portfolio: bool = True,
+) -> dict[str, Any] | None:
+    """Create a learner profile. Owner only."""
+    profile_id = f"prof_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    user = get_user_by_id(database_path, user_id)
+    if user is None:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        existing = connection.execute(
+            "SELECT user_id FROM learner_profiles WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        if existing is not None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO learner_profiles(
+                    profile_id, user_id, display_name, biography,
+                    learning_interests_json, subjects_json, skills_json,
+                    learning_goals_json, selected_portfolio_entry_ids_json,
+                    discovery_enabled, show_skills, show_certificates,
+                    show_portfolio, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    profile_id,
+                    user_id,
+                    display_name,
+                    biography,
+                    json.dumps(learning_interests or []),
+                    json.dumps(subjects or []),
+                    json.dumps(skills or []),
+                    json.dumps(learning_goals or []),
+                    json.dumps(selected_portfolio_entry_ids or []),
+                    1 if discovery_enabled else 0,
+                    1 if show_skills else 0,
+                    1 if show_certificates else 0,
+                    1 if show_portfolio else 0,
+                    now,
+                    now,
+                ),
+            )
+    return get_learner_profile(database_path, user_id=user_id)
+
+
+def get_learner_profile(
+    database_path: Path,
+    *,
+    profile_id: str | None = None,
+    user_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a learner profile by id or user_id."""
+    with closing(connect_database(database_path)) as connection:
+        if profile_id is not None:
+            row = connection.execute(
+                "SELECT * FROM learner_profiles WHERE profile_id = ?",
+                (profile_id,),
+            ).fetchone()
+        elif user_id is not None:
+            row = connection.execute(
+                "SELECT * FROM learner_profiles WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        else:
+            return None
+        if row is None:
+            return None
+    return {
+        "profileId": row["profile_id"],
+        "userId": row["user_id"],
+        "displayName": row["display_name"],
+        "biography": row["biography"],
+        "learningInterests": json.loads(row["learning_interests_json"] or "[]"),
+        "subjects": json.loads(row["subjects_json"] or "[]"),
+        "skills": json.loads(row["skills_json"] or "[]"),
+        "learningGoals": json.loads(row["learning_goals_json"] or "[]"),
+        "selectedPortfolioEntryIds": json.loads(
+            row["selected_portfolio_entry_ids_json"] or "[]"
+        ),
+        "discoveryEnabled": bool(row["discovery_enabled"]),
+        "showSkills": bool(row["show_skills"]),
+        "showCertificates": bool(row["show_certificates"]),
+        "showPortfolio": bool(row["show_portfolio"]),
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def update_learner_profile(
+    database_path: Path,
+    *,
+    user_id: str,
+    display_name: str | None = None,
+    biography: str | None = None,
+    learning_interests: list[str] | None = None,
+    subjects: list[str] | None = None,
+    skills: list[str] | None = None,
+    learning_goals: list[str] | None = None,
+    selected_portfolio_entry_ids: list[str] | None = None,
+    discovery_enabled: bool | None = None,
+    show_skills: bool | None = None,
+    show_certificates: bool | None = None,
+    show_portfolio: bool | None = None,
+) -> dict[str, Any] | None:
+    """Update a learner profile. Owner only."""
+    profile = get_learner_profile(database_path, user_id=user_id)
+    if profile is None:
+        return None
+    now = datetime.now(UTC).isoformat()
+    updates: list[str] = []
+    values: list[Any] = []
+    if display_name is not None:
+        display_name = display_name.strip()
+        if len(display_name) > 100:
+            return None
+        updates.append("display_name = ?")
+        values.append(display_name)
+    if biography is not None:
+        if len(biography) > 2000:
+            return None
+        updates.append("biography = ?")
+        values.append(biography)
+    if learning_interests is not None:
+        updates.append("learning_interests_json = ?")
+        values.append(json.dumps(learning_interests))
+    if subjects is not None:
+        updates.append("subjects_json = ?")
+        values.append(json.dumps(subjects))
+    if skills is not None:
+        updates.append("skills_json = ?")
+        values.append(json.dumps(skills))
+    if learning_goals is not None:
+        updates.append("learning_goals_json = ?")
+        values.append(json.dumps(learning_goals))
+    if selected_portfolio_entry_ids is not None:
+        updates.append("selected_portfolio_entry_ids_json = ?")
+        values.append(json.dumps(selected_portfolio_entry_ids))
+    if discovery_enabled is not None:
+        updates.append("discovery_enabled = ?")
+        values.append(1 if discovery_enabled else 0)
+    if show_skills is not None:
+        updates.append("show_skills = ?")
+        values.append(1 if show_skills else 0)
+    if show_certificates is not None:
+        updates.append("show_certificates = ?")
+        values.append(1 if show_certificates else 0)
+    if show_portfolio is not None:
+        updates.append("show_portfolio = ?")
+        values.append(1 if show_portfolio else 0)
+    if not updates:
+        return profile
+    updates.append("updated_at = ?")
+    values.append(now)
+    values.append(profile["profileId"])
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                f"UPDATE learner_profiles SET {', '.join(updates)} WHERE profile_id = ?",
+                tuple(values),
+            )
+    return get_learner_profile(database_path, user_id=user_id)
+
+
+def list_discoverable_profiles(
+    database_path: Path,
+    *,
+    current_user_id: str,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List discoverable learner profiles for discovery.
+
+    Only returns profiles with discovery_enabled=1 and excludes the current
+    user. Never exposes private assessment data.
+    """
+    with closing(connect_database(database_path)) as connection:
+        rows = connection.execute(
+            """
+            SELECT profile_id, user_id, display_name, biography,
+                   learning_interests_json, subjects_json, skills_json,
+                   learning_goals_json, selected_portfolio_entry_ids_json,
+                   show_skills, show_certificates, show_portfolio,
+                   created_at, updated_at
+            FROM learner_profiles
+            WHERE user_id != ? AND discovery_enabled = 1
+            ORDER BY updated_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (current_user_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "profileId": row["profile_id"],
+            "userId": row["user_id"],
+            "displayName": row["display_name"],
+            "biography": row["biography"],
+            "learningInterests": json.loads(row["learning_interests_json"] or "[]"),
+            "subjects": json.loads(row["subjects_json"] or "[]"),
+            "skills": json.loads(row["skills_json"] or "[]")
+            if row["show_skills"] else [],
+            "learningGoals": json.loads(row["learning_goals_json"] or "[]"),
+            "selectedPortfolioEntryIds": json.loads(
+                row["selected_portfolio_entry_ids_json"] or "[]"
+            ),
+            "showSkills": bool(row["show_skills"]),
+            "showCertificates": bool(row["show_certificates"]),
+            "showPortfolio": bool(row["show_portfolio"]),
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_connection(
+    database_path: Path,
+    *,
+    follower_id: str,
+    following_id: str,
+) -> dict[str, Any] | None:
+    """Create a follow/connection request. follower follows following."""
+    if follower_id == following_id:
+        return None
+    user = get_user_by_id(database_path, following_id)
+    if user is None:
+        return None
+    connection_id = f"conn_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        existing = connection.execute(
+            """
+            SELECT connection_id, status FROM connections
+            WHERE follower_id = ? AND following_id = ?
+            """,
+            (follower_id, following_id),
+        ).fetchone()
+        if existing is not None:
+            return None
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO connections(
+                    connection_id, follower_id, following_id, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, 'pending', ?, ?)
+                """,
+                (connection_id, follower_id, following_id, now, now),
+            )
+    return {
+        "connectionId": connection_id,
+        "followerId": follower_id,
+        "followingId": following_id,
+        "status": "pending",
+        "createdAt": now,
+        "updatedAt": now,
+    }
+
+
+def list_connections(
+    database_path: Path,
+    *,
+    user_id: str,
+    direction: str = "following",
+    status: str | None = None,
+) -> list[dict[str, Any]]:
+    """List connections for a user.
+
+    direction='following' -> users this user follows.
+    direction='followers' -> users following this user.
+    """
+    with closing(connect_database(database_path)) as connection:
+        if direction == "following":
+            query = """
+                SELECT connection_id, follower_id, following_id, status,
+                       created_at, updated_at
+                FROM connections
+                WHERE follower_id = ?
+            """
+            params: list[Any] = [user_id]
+            id_col = "following_id"
+        else:
+            query = """
+                SELECT connection_id, follower_id, following_id, status,
+                       created_at, updated_at
+                FROM connections
+                WHERE following_id = ?
+            """
+            params = [user_id]
+            id_col = "follower_id"
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC"
+        rows = connection.execute(query, params).fetchall()
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        target_id = row[id_col]
+        target = get_user_by_id(database_path, target_id)
+        results.append(
+            {
+                "connectionId": row["connection_id"],
+                "followerId": row["follower_id"],
+                "followingId": row["following_id"],
+                "status": row["status"],
+                "createdAt": row["created_at"],
+                "updatedAt": row["updated_at"],
+                "targetUserId": target_id,
+                "targetUsername": target["username"] if target else None,
+            }
+        )
+    return results
+
+
+def respond_to_connection(
+    database_path: Path,
+    *,
+    connection_id: str,
+    user_id: str,
+    action: str,
+) -> dict[str, Any] | None:
+    """Accept, reject, or block a connection request. User must be the
+    following_id (the one being followed)."""
+    if action not in {"accept", "reject", "block"}:
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT connection_id, follower_id, following_id, status
+            FROM connections WHERE connection_id = ?
+            """,
+            (connection_id,),
+        ).fetchone()
+        if row is None or row["following_id"] != user_id:
+            return None
+        if row["status"] != "pending":
+            return None
+        new_status = "accepted" if action == "accept" else (
+            "rejected" if action == "reject" else "blocked"
+        )
+        with connection:
+            connection.execute(
+                """
+                UPDATE connections
+                SET status = ?, updated_at = ?
+                WHERE connection_id = ?
+                """,
+                (new_status, now, connection_id),
+            )
+    return {
+        "connectionId": connection_id,
+        "status": new_status,
+        "updatedAt": now,
+    }
+
+
+def create_discussion(
+    database_path: Path,
+    *,
+    author_id: str,
+    topic: str,
+    title: str,
+    content: str,
+    discussion_type: str = "discussion",
+    visibility: str = "public",
+    ai_generated: bool = False,
+) -> dict[str, Any] | None:
+    """Create a topic-based discussion contribution."""
+    if discussion_type not in {"question", "discussion", "note", "resource"}:
+        return None
+    if visibility not in {"public", "connections", "private"}:
+        return None
+    author = get_user_by_id(database_path, author_id)
+    if author is None:
+        return None
+    discussion_id = f"disc_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    topic = topic.strip()
+    title = title.strip()
+    content = content.strip()
+    if not topic or not title or not content:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO discussions(
+                    discussion_id, author_id, topic, title, content,
+                    discussion_type, visibility, ai_generated, is_verified,
+                    is_closed, helpful_count, report_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, ?, ?)
+                """,
+                (
+                    discussion_id,
+                    author_id,
+                    topic,
+                    title,
+                    content,
+                    discussion_type,
+                    visibility,
+                    1 if ai_generated else 0,
+                    now,
+                    now,
+                ),
+            )
+    return get_discussion(database_path, discussion_id=discussion_id)
+
+
+def get_discussion(
+    database_path: Path,
+    *,
+    discussion_id: str,
+    user_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a discussion. Optionally enforces visibility for the viewer."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT discussion_id, author_id, topic, title, content,
+                   discussion_type, visibility, ai_generated, is_verified,
+                   is_closed, helpful_count, report_count,
+                   created_at, updated_at
+            FROM discussions
+            WHERE discussion_id = ?
+            """,
+            (discussion_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        if (
+            user_id is not None
+            and row["visibility"] == "private"
+            and row["author_id"] != user_id
+        ):
+            return None
+    return {
+        "discussionId": row["discussion_id"],
+        "authorId": row["author_id"],
+        "topic": row["topic"],
+        "title": row["title"],
+        "content": row["content"],
+        "discussionType": row["discussion_type"],
+        "visibility": row["visibility"],
+        "aiGenerated": bool(row["ai_generated"]),
+        "isVerified": bool(row["is_verified"]),
+        "isClosed": bool(row["is_closed"]),
+        "helpfulCount": row["helpful_count"],
+        "reportCount": row["report_count"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_discussions(
+    database_path: Path,
+    *,
+    topic: str | None = None,
+    discussion_type: str | None = None,
+    visibility: str | None = None,
+    author_id: str | None = None,
+    viewer_id: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List discussions with optional filters."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT discussion_id, author_id, topic, title, content,
+                   discussion_type, visibility, ai_generated, is_verified,
+                   is_closed, helpful_count, report_count,
+                   created_at, updated_at
+            FROM discussions
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if topic is not None:
+            query += " AND topic = ?"
+            params.append(topic)
+        if discussion_type is not None:
+            query += " AND discussion_type = ?"
+            params.append(discussion_type)
+        if visibility is not None:
+            query += " AND visibility = ?"
+            params.append(visibility)
+        if author_id is not None:
+            query += " AND author_id = ?"
+            params.append(author_id)
+        if viewer_id is not None:
+            # Public or connections-visible discussions, plus own private ones.
+            query += " AND (visibility = 'public' OR author_id = ?)"
+            params.append(viewer_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "discussionId": row["discussion_id"],
+            "authorId": row["author_id"],
+            "topic": row["topic"],
+            "title": row["title"],
+            "content": row["content"],
+            "discussionType": row["discussion_type"],
+            "visibility": row["visibility"],
+            "aiGenerated": bool(row["ai_generated"]),
+            "isVerified": bool(row["is_verified"]),
+            "isClosed": bool(row["is_closed"]),
+            "helpfulCount": row["helpful_count"],
+            "reportCount": row["report_count"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def create_discussion_reply(
+    database_path: Path,
+    *,
+    discussion_id: str,
+    author_id: str,
+    content: str,
+    ai_generated: bool = False,
+) -> dict[str, Any] | None:
+    """Create a reply to a discussion."""
+    discussion = get_discussion(database_path, discussion_id=discussion_id)
+    if discussion is None:
+        return None
+    if discussion["isClosed"]:
+        return None
+    author = get_user_by_id(database_path, author_id)
+    if author is None:
+        return None
+    reply_id = f"reply_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    content = content.strip()
+    if not content:
+        return None
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO discussion_replies(
+                    reply_id, discussion_id, author_id, content,
+                    ai_generated, is_verified, helpful_count, report_count,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 0, 0, 0, 0, ?, ?)
+                """,
+                (
+                    reply_id,
+                    discussion_id,
+                    author_id,
+                    content,
+                    now,
+                    now,
+                ),
+            )
+    return get_discussion_reply(database_path, reply_id=reply_id)
+
+
+def get_discussion_reply(
+    database_path: Path,
+    *,
+    reply_id: str,
+) -> dict[str, Any] | None:
+    """Return a discussion reply."""
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT reply_id, discussion_id, author_id, content,
+                   ai_generated, is_verified, helpful_count, report_count,
+                   created_at, updated_at
+            FROM discussion_replies
+            WHERE reply_id = ?
+            """,
+            (reply_id,),
+        ).fetchone()
+        if row is None:
+            return None
+    return {
+        "replyId": row["reply_id"],
+        "discussionId": row["discussion_id"],
+        "authorId": row["author_id"],
+        "content": row["content"],
+        "aiGenerated": bool(row["ai_generated"]),
+        "isVerified": bool(row["is_verified"]),
+        "helpfulCount": row["helpful_count"],
+        "reportCount": row["report_count"],
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
+
+
+def list_discussion_replies(
+    database_path: Path,
+    *,
+    discussion_id: str,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List replies to a discussion."""
+    with closing(connect_database(database_path)) as connection:
+        discussion = connection.execute(
+            "SELECT discussion_id FROM discussions WHERE discussion_id = ?",
+            (discussion_id,),
+        ).fetchone()
+        if discussion is None:
+            return []
+        rows = connection.execute(
+            """
+            SELECT reply_id, discussion_id, author_id, content,
+                   ai_generated, is_verified, helpful_count, report_count,
+                   created_at, updated_at
+            FROM discussion_replies
+            WHERE discussion_id = ?
+            ORDER BY created_at ASC
+            LIMIT ? OFFSET ?
+            """,
+            (discussion_id, limit, offset),
+        ).fetchall()
+    return [
+        {
+            "replyId": row["reply_id"],
+            "discussionId": row["discussion_id"],
+            "authorId": row["author_id"],
+            "content": row["content"],
+            "aiGenerated": bool(row["ai_generated"]),
+            "isVerified": bool(row["is_verified"]),
+            "helpfulCount": row["helpful_count"],
+            "reportCount": row["report_count"],
+            "createdAt": row["created_at"],
+            "updatedAt": row["updated_at"],
+        }
+        for row in rows
+    ]
+
+
+def report_contribution(
+    database_path: Path,
+    *,
+    reporter_id: str,
+    reason: str,
+    discussion_id: str | None = None,
+    reply_id: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any] | None:
+    """Report a discussion or reply for moderation."""
+    if reason not in {
+        "spam", "inappropriate", "inaccurate", "harassment", "copyright",
+        "other",
+    }:
+        return None
+    reporter = get_user_by_id(database_path, reporter_id)
+    if reporter is None:
+        return None
+    if discussion_id is None and reply_id is None:
+        return None
+    if discussion_id is not None:
+        d = get_discussion(database_path, discussion_id=discussion_id)
+        if d is None:
+            return None
+    if reply_id is not None:
+        r = get_discussion_reply(database_path, reply_id=reply_id)
+        if r is None:
+            return None
+    report_id = f"rep_{secrets.token_urlsafe(16)}"
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        with connection:
+            connection.execute(
+                """
+                INSERT INTO contribution_reports(
+                    report_id, reporter_id, discussion_id, reply_id, reason,
+                    description, status, moderator_id, moderated_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'open', NULL, NULL, ?)
+                """,
+                (
+                    report_id,
+                    reporter_id,
+                    discussion_id,
+                    reply_id,
+                    reason,
+                    description,
+                    now,
+                ),
+            )
+            if discussion_id is not None:
+                connection.execute(
+                    """
+                    UPDATE discussions
+                    SET report_count = report_count + 1
+                    WHERE discussion_id = ?
+                    """,
+                    (discussion_id,),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE discussion_replies
+                    SET report_count = report_count + 1
+                    WHERE reply_id = ?
+                    """,
+                    (reply_id,),
+                )
+    return {
+        "reportId": report_id,
+        "reporterId": reporter_id,
+        "discussionId": discussion_id,
+        "replyId": reply_id,
+        "reason": reason,
+        "description": description,
+        "status": "open",
+        "createdAt": now,
+    }
+
+
+def list_contribution_reports(
+    database_path: Path,
+    *,
+    moderator_id: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """List contribution reports for moderation."""
+    with closing(connect_database(database_path)) as connection:
+        query = """
+            SELECT report_id, reporter_id, discussion_id, reply_id, reason,
+                   description, status, moderator_id, moderated_at,
+                   created_at
+            FROM contribution_reports
+            WHERE 1=1
+        """
+        params: list[Any] = []
+        if status is not None:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = connection.execute(query, params).fetchall()
+    return [
+        {
+            "reportId": row["report_id"],
+            "reporterId": row["reporter_id"],
+            "discussionId": row["discussion_id"],
+            "replyId": row["reply_id"],
+            "reason": row["reason"],
+            "description": row["description"],
+            "status": row["status"],
+            "moderatorId": row["moderator_id"],
+            "moderatedAt": row["moderated_at"],
+            "createdAt": row["created_at"],
+        }
+        for row in rows
+    ]
+
+
+def moderate_report(
+    database_path: Path,
+    *,
+    report_id: str,
+    moderator_id: str,
+    action: str,
+) -> dict[str, Any] | None:
+    """Moderate a contribution report: dismiss or action."""
+    if action not in {"dismiss", "actioned"}:
+        return None
+    now = datetime.now(UTC).isoformat()
+    with closing(connect_database(database_path)) as connection:
+        row = connection.execute(
+            """
+            SELECT report_id, discussion_id, reply_id, status
+            FROM contribution_reports WHERE report_id = ?
+            """,
+            (report_id,),
+        ).fetchone()
+        if row is None or row["status"] != "open":
+            return None
+        with connection:
+            connection.execute(
+                """
+                UPDATE contribution_reports
+                SET status = ?, moderator_id = ?, moderated_at = ?
+                WHERE report_id = ?
+                """,
+                ("reviewed" if action == "dismiss" else "actioned",
+                 moderator_id, now, report_id),
+            )
+    return {
+        "reportId": report_id,
+        "status": "reviewed" if action == "dismiss" else "actioned",
+        "moderatorId": moderator_id,
+        "moderatedAt": now,
+    }
 
 
 def reset_user_progress(database_path: Path, user_id: str) -> dict[str, int]:
